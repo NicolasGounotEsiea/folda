@@ -94,8 +94,8 @@ pub async fn connect(
                 msg = source.next() => {
                     match msg {
                         Some(Ok(Message::Text(txt))) => {
-                            match serde_json::from_str::<HostMsg>(&txt) {
-                                Ok(host_msg) => match host_msg {
+                            if let Ok(host_msg) = serde_json::from_str::<HostMsg>(&txt) {
+                                match host_msg {
                                     HostMsg::Response { id, ok, payload } => {
                                         if let Some(tx) = pending.remove(&id) {
                                             let _ = tx.send(if ok { Ok(payload) } else {
@@ -122,8 +122,7 @@ pub async fn connect(
                                         );
                                     }
                                     _ => {}
-                                },
-                                Err(_) => {}
+                                }
                             }
                         }
                         Some(Ok(Message::Close(_))) | None => break,

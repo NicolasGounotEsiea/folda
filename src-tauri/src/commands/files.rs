@@ -86,6 +86,7 @@ fn ensure_auto_tag(db: &rusqlite::Connection, name: &str, color: &str) -> rusqli
     db.query_row("SELECT id FROM tags WHERE name = ?1", [name], |r| r.get(0))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn upsert_file(
     db: &rusqlite::Connection,
     path_str: &str,
@@ -219,7 +220,7 @@ pub fn scan_directory(
                 raw_dirs.push(RawDir { path: file_path.to_string_lossy().into_owned(), name, modified_at });
             }
         } else if count < MAX_FILES {
-            if let Some(metadata) = entry.metadata().ok() {
+            if let Ok(metadata) = entry.metadata() {
                 let ts = |t: std::io::Result<std::time::SystemTime>| {
                     t.map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
                         .unwrap_or(0)

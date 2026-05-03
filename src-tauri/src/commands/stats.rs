@@ -44,7 +44,7 @@ pub fn get_folder_stats(path: String) -> Result<FolderStats, String> {
         .into_iter()
         .map(|(ext, (count, size))| TypeBreakdown { ext, count, size })
         .collect();
-    breakdown.sort_by(|a, b| b.size.cmp(&a.size));
+    breakdown.sort_by_key(|b| std::cmp::Reverse(b.size));
     breakdown.truncate(8);
 
     Ok(FolderStats {

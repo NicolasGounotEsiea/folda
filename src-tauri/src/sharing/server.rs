@@ -47,18 +47,19 @@ pub async fn start_server(
                     match res {
                         Ok((stream, addr)) => {
                             let addr_str = addr.to_string();
-                            let pw2 = pw.clone();
-                            let wn2 = wn.clone();
-                            let wi2 = wi.clone();
-                            let rp2 = rp.clone();
-                            let db2 = db.clone();
-                            let ev2 = event_tx_srv.clone();
-                            let cl2 = clients_srv.clone();
-                            let ah2 = app.clone();
+                            let ctx = ClientCtx {
+                                password: pw.clone(),
+                                workspace_name: wn.clone(),
+                                workspace_icon: wi.clone(),
+                                root_paths: rp.clone(),
+                                db: db.clone(),
+                                event_tx: event_tx_srv.clone(),
+                                clients: clients_srv.clone(),
+                                app: app.clone(),
+                            };
+                            let _ = addr_str;
                             tokio::spawn(async move {
-                                let _ = handle_client(
-                                    stream, addr_str, pw2, wn2, wi2, rp2, db2, ev2, cl2, ah2,
-                                ).await;
+                                let _ = handle_client(stream, ctx).await;
                             });
                         }
                         Err(_) => break,
@@ -79,9 +80,7 @@ pub fn broadcast_fs_event(event_tx: &broadcast::Sender<HostMsg>, kind: &str, pat
     });
 }
 
-async fn handle_client(
-    stream: tokio::net::TcpStream,
-    _addr: String,
+struct ClientCtx {
     password: Arc<String>,
     workspace_name: Arc<String>,
     workspace_icon: Arc<String>,
@@ -90,7 +89,13 @@ async fn handle_client(
     event_tx: broadcast::Sender<HostMsg>,
     clients: Arc<Mutex<Vec<String>>>,
     app: tauri::AppHandle,
+}
+
+async fn handle_client(
+    stream: tokio::net::TcpStream,
+    ctx: ClientCtx,
 ) -> anyhow::Result<()> {
+    let ClientCtx { password, workspace_name, workspace_icon, root_paths, db, event_tx, clients, app } = ctx;
     use tauri::Emitter;
 
     let ws = tokio_tungstenite::accept_async(stream).await?;

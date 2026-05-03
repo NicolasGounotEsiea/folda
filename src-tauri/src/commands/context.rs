@@ -81,6 +81,7 @@ pub fn get_contexts(state: tauri::State<AppState>) -> Result<Vec<Context>, Strin
     Ok(contexts)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn update_context(
     id: i64,
