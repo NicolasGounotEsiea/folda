@@ -158,6 +158,7 @@ function EntryRow({
 
   return (
     <div
+      data-is-entry="true"
       style={ROW_COLS}
       onContextMenu={(e) => onContextMenu(e, entry)}
       onClick={renaming ? undefined : onClick}
@@ -210,7 +211,9 @@ function EntryRow({
           </div>
           {/* col 3: size */}
           <span className="text-[11px] text-text-muted text-right">
-            {entry.is_dir ? "—" : formatSize(entry.size)}
+            {entry.is_dir
+              ? `${entry.size} item${entry.size !== 1 ? "s" : ""}`
+              : formatSize(entry.size)}
           </span>
           {/* col 4: modified */}
           <span className="text-[11px] text-text-muted text-right">
@@ -237,6 +240,7 @@ export function FileList() {
     sortBy, sortDir, setSortBy,
     showHidden,
     folderTabs, activeFolderTabId,
+    activeContextId,
   } = useStore();
 
   // Per-tab remote: check the ACTIVE folder tab, not global sharing mode
@@ -255,7 +259,7 @@ export function FileList() {
     listDirRef.current = (path: string) =>
       isCurrentTabRemote
         ? invoke<ListEntry[]>("list_remote_dir", { path })
-        : invoke<ListEntry[]>("list_directory", { path });
+        : invoke<ListEntry[]>("list_directory", { path, contextId: activeContextId ?? 0 });
   });
   const listDir = (path: string) => listDirRef.current(path);
 
@@ -281,6 +285,7 @@ export function FileList() {
 
   // Context menu
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: ListEntry } | null>(null);
+  const [emptyCtxMenu, setEmptyCtxMenu] = useState<{ x: number; y: number } | null>(null);
   // Delete confirmation
   const [deleteTargets, setDeleteTargets] = useState<ListEntry[] | null>(null);
   // Inline rename
@@ -521,16 +526,17 @@ export function FileList() {
     if (!isMulti) {
       items.push({ label: "Copy path", onClick: () => navigator.clipboard.writeText(entry.path) });
       items.push({ label: "Reveal in Explorer", onClick: () => invoke("reveal_in_explorer", { path: entry.path }) });
-      const isPinned = pinnedItems.some((p) => p.path === entry.path);
+      const ctxId = activeContextId ?? 0;
+      const isPinned = pinnedItems.some((p) => p.path === entry.path && p.context_id === ctxId);
       items.push({
         label: isPinned ? "Unpin from sidebar" : "Pin to sidebar",
         onClick: async () => {
           if (isPinned) {
-            await invoke("unpin_item", { path: entry.path });
+            await invoke("unpin_item", { path: entry.path, contextId: ctxId });
             removePinnedItem(entry.path);
           } else {
-            await invoke("pin_item", { path: entry.path, name: entry.name, isDir: entry.is_dir });
-            addPinnedItem({ id: Date.now(), path: entry.path, name: entry.name, is_dir: entry.is_dir });
+            await invoke("pin_item", { path: entry.path, name: entry.name, isDir: entry.is_dir, contextId: ctxId });
+            addPinnedItem({ id: Date.now(), path: entry.path, name: entry.name, is_dir: entry.is_dir, context_id: ctxId });
           }
         },
       });
@@ -690,6 +696,29 @@ export function FileList() {
         setSelectedPaths([]);
         selectEntry(null);
       }
+
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (visibleEntries.length === 0) return;
+        e.preventDefault();
+        const lastPath = selectedPaths[selectedPaths.length - 1];
+        const curIdx = lastPath ? visibleEntries.findIndex((x) => x.path === lastPath) : -1;
+        const newIdx = e.key === "ArrowDown"
+          ? Math.min(curIdx + 1, visibleEntries.length - 1)
+          : Math.max(curIdx - 1, 0);
+        if (newIdx < 0 || newIdx >= visibleEntries.length) return;
+        const entry = visibleEntries[newIdx];
+        setSelectedPaths([entry.path]);
+        selectEntry(entry.is_dir ? { kind: "folder", entry } : { kind: "file", entry: toFileEntry(entry) });
+      }
+
+      if (e.key === "Enter" && selectedPaths.length === 1) {
+        e.preventDefault();
+        const entry = visibleEntries.find((x) => x.path === selectedPaths[0]);
+        if (entry) {
+          if (entry.is_dir) navigate(entry.path);
+          else handleOpen(entry);
+        }
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -700,11 +729,11 @@ export function FileList() {
   if (isScanning) {
     return <div className="flex-1 flex items-center justify-center text-text-muted"><span className="text-[12px]">Scanning…</span></div>;
   }
-  if (rootPaths.length === 0 && !folderTabs.some((t) => t.isRemote)) {
+  if (!currentPath && !folderTabs.some((t) => t.isRemote)) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
         <Folder size={28} className="opacity-20" />
-        <span className="text-[12px]">Open a folder to start</span>
+        <span className="text-[12px]">Navigate to a folder to start</span>
       </div>
     );
   }
@@ -794,7 +823,16 @@ export function FileList() {
         />
       )}
 
-      <div className="flex-1 overflow-y-auto flex flex-col">
+      <div
+        className="flex-1 overflow-y-auto flex flex-col"
+        onContextMenu={(e) => {
+          const target = e.target as HTMLElement;
+          if (!target.closest("[data-is-entry]")) {
+            e.preventDefault();
+            setEmptyCtxMenu({ x: e.clientX, y: e.clientY });
+          }
+        }}
+      >
         {/* Header */}
         <div style={ROW_COLS} className={clsx(ROW_GRID, "h-7 border-b border-border-subtle sticky top-0 bg-surface-0 shrink-0")}>
           {/* col 1: icon spacer */}
@@ -894,6 +932,19 @@ export function FileList() {
 
       {ctxMenu && (
         <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={buildMenuItems(ctxMenu.entry)} onClose={() => setCtxMenu(null)} />
+      )}
+
+      {emptyCtxMenu && (
+        <ContextMenu
+          x={emptyCtxMenu.x}
+          y={emptyCtxMenu.y}
+          onClose={() => setEmptyCtxMenu(null)}
+          items={[
+            { label: "New file", onClick: () => { setEmptyCtxMenu(null); setShowNewFile(true); setTimeout(() => newFileRef.current?.focus(), 50); } },
+            { label: "New folder", onClick: () => { setEmptyCtxMenu(null); setShowNewFolder(true); setTimeout(() => newFolderRef.current?.focus(), 50); } },
+            ...(clipboard ? [{ separator: true as const }, { label: "Paste", shortcut: "Ctrl+V", onClick: () => { setEmptyCtxMenu(null); handlePaste(); } }] : []),
+          ]}
+        />
       )}
     </>
   );

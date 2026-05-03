@@ -1,6 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
-import { FileImage, Film, Maximize2, Minimize2, Music, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, FileImage, Film, Maximize2, Minimize2, Music, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 
@@ -10,12 +10,30 @@ export const AUDIO_EXTS = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "opus"];
 
 
 export function MediaViewer() {
-  const { openedFile, closeFile } = useStore();
+  const { openedFile, closeFile, openFile, listEntries } = useStore();
   const [zoom, setZoom] = useState(1);
   const [fit, setFit] = useState(true);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0, px: 0, py: 0 });
+
+  // Siblings = images in same folder, in list order
+  const imageSiblings = listEntries.filter(
+    (e) => !e.is_dir && IMAGE_EXTS.includes(e.extension.toLowerCase())
+  );
+  const currentIdx = openedFile
+    ? imageSiblings.findIndex((e) => e.path === openedFile.path)
+    : -1;
+  const hasPrev = currentIdx > 0;
+  const hasNext = currentIdx >= 0 && currentIdx < imageSiblings.length - 1;
+
+  const goTo = useCallback((idx: number) => {
+    const e = imageSiblings[idx];
+    if (!e) return;
+    openFile({ id: e.id ?? -1, path: e.path, name: e.name, extension: e.extension,
+               size: e.size, created_at: 0, modified_at: e.modified_at, accessed_at: 0, tags: e.tags });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageSiblings, openFile]);
 
   useEffect(() => {
     setZoom(1);
@@ -25,11 +43,13 @@ export function MediaViewer() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeFile();
+      if (e.key === "Escape") { closeFile(); return; }
+      if (e.key === "ArrowLeft" && hasPrev) goTo(currentIdx - 1);
+      if (e.key === "ArrowRight" && hasNext) goTo(currentIdx + 1);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [closeFile]);
+  }, [closeFile, hasPrev, hasNext, currentIdx, goTo]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -118,7 +138,7 @@ export function MediaViewer() {
 
       {/* Media area */}
       <div
-        className="flex-1 overflow-hidden flex items-center justify-center bg-[#0f0f0f] relative"
+        className="flex-1 overflow-hidden flex items-center justify-center bg-[#0f0f0f] relative group/media"
         onWheel={isVideo || isAudio ? undefined : handleWheel}
         onMouseDown={isVideo || isAudio ? undefined : handleMouseDown}
         onMouseMove={isVideo || isAudio ? undefined : handleMouseMove}
@@ -126,6 +146,21 @@ export function MediaViewer() {
         onMouseLeave={isVideo || isAudio ? undefined : handleMouseUp}
         style={{ cursor: isVideo || isAudio ? "default" : fit ? "default" : "grab" }}
       >
+        {/* Prev / Next navigation buttons (images only) */}
+        {!isVideo && !isAudio && hasPrev && (
+          <button
+            onClick={(e) => { e.stopPropagation(); goTo(currentIdx - 1); }}
+            className="absolute left-2 z-10 w-8 h-8 flex items-center justify-center rounded-full bg-black/50 text-white opacity-0 group-hover/media:opacity-100 transition-opacity hover:bg-black/75"
+            title="Previous image (←)"
+          ><ChevronLeft size={18} /></button>
+        )}
+        {!isVideo && !isAudio && hasNext && (
+          <button
+            onClick={(e) => { e.stopPropagation(); goTo(currentIdx + 1); }}
+            className="absolute right-2 z-10 w-8 h-8 flex items-center justify-center rounded-full bg-black/50 text-white opacity-0 group-hover/media:opacity-100 transition-opacity hover:bg-black/75"
+            title="Next image (→)"
+          ><ChevronRight size={18} /></button>
+        )}
         {isAudio ? (
           <div className="flex flex-col items-center gap-6 px-8 w-full max-w-lg">
             <Music size={56} className="text-cyan-400 opacity-40" />
@@ -188,6 +223,9 @@ export function MediaViewer() {
       <div className="flex items-center gap-4 px-3 h-6 bg-surface-1 border-t border-border-subtle shrink-0">
         <span className="text-[10px] text-text-muted">{openedFile.name}</span>
         <div className="flex-1" />
+        {!isVideo && !isAudio && currentIdx >= 0 && imageSiblings.length > 1 && (
+          <span className="text-[10px] text-text-muted">{currentIdx + 1} / {imageSiblings.length}</span>
+        )}
         {!isVideo && !isAudio && !fit && (
           <span className="text-[10px] text-text-muted">{Math.round(zoom * 100)}%</span>
         )}

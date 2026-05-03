@@ -25,6 +25,7 @@ export function Toolbar() {
     setCurrentPath, currentPath, rootPaths,
     isWatching, selectFile, pushNav,
     showHidden, toggleShowHidden,
+    activeContextId,
   } = useStore();
 
   const searchRef = useRef<HTMLInputElement>(null);
@@ -44,7 +45,7 @@ export function Toolbar() {
     if (!q.trim()) {
       if (currentPath) {
         try {
-          const entries = await invoke<ListEntry[]>("list_directory", { path: currentPath });
+          const entries = await invoke<ListEntry[]>("list_directory", { path: currentPath, contextId: activeContextId ?? 0 });
           setListEntries(entries);
         } catch { /* ignore */ }
       }
@@ -105,7 +106,7 @@ export function Toolbar() {
     pushNav(path);
     setSearchQuery("");
     try {
-      const entries = await invoke<ListEntry[]>("list_directory", { path });
+      const entries = await invoke<ListEntry[]>("list_directory", { path, contextId: activeContextId ?? 0 });
       setListEntries(entries);
       selectFile(null);
     } catch (e) {
@@ -155,6 +156,9 @@ export function Toolbar() {
             type="text"
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") { handleSearch(""); searchRef.current?.blur(); }
+            }}
             placeholder="Search…"
             className="w-48 h-7 pl-8 pr-3 rounded bg-surface-3 border border-border text-[12px] text-text-primary placeholder-text-muted outline-none focus:border-accent focus:bg-surface-2 transition-colors"
           />

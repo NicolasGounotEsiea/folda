@@ -8,6 +8,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
   const {
     contexts, activeContextId,
     sharingMode, sharingCode, sharingPassword, sharingClients,
+    sharingWorkspaceName, sharingWorkspaceIcon,
     setSharingHosted, resetSharing,
     addSharingClient, removeSharingClient,
     folderTabs,
@@ -50,7 +51,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
         workspaceIcon: activeCtx.icon,
         watchedPaths,
       });
-      setSharingHosted(result.code, result.password);
+      setSharingHosted(result.code, result.password, activeCtx.name, activeCtx.icon, activeCtx.id);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -92,6 +93,11 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
               Hébergez votre workspace <strong className="text-text-primary">{activeCtx?.icon} {activeCtx?.name}</strong> en local.
               Les autres utilisateurs pourront se connecter avec le code et le mot de passe générés.
             </p>
+            {!activeCtx && (
+              <p className="text-[11px] text-yellow-400 bg-yellow-400/10 rounded px-3 py-2">
+                Sélectionnez un workspace avant de partager.
+              </p>
+            )}
             <p className="text-[11px] text-text-muted">
               Tant que cette session est active, vos invités voient les fichiers en temps réel.
               La session s'arrête quand vous cliquez sur « Arrêter ».
@@ -109,6 +115,14 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
           </>
         ) : (
           <>
+            <div className="flex items-center gap-2 px-3 py-2 bg-surface-2 rounded-lg border border-border">
+              <span className="text-[15px]">{sharingWorkspaceIcon ?? "📁"}</span>
+              <div className="flex flex-col min-w-0">
+                <span className="text-[12px] font-medium text-text-primary truncate">{sharingWorkspaceName ?? "Workspace"}</span>
+                <span className="text-[10px] text-text-muted">Partage en cours</span>
+              </div>
+              <span className="ml-auto w-2 h-2 rounded-full bg-green-400 shrink-0" />
+            </div>
             <p className="text-[12px] text-text-secondary">
               Partagez ces informations avec vos invités pour qu'ils puissent se connecter.
             </p>

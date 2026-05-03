@@ -43,7 +43,6 @@ function FolderTabMenu({
     return () => window.removeEventListener("mousedown", handler, true);
   }, [onClose]);
 
-  // Adjust position to stay inside viewport
   const menuW = 180;
   const left = Math.min(x, window.innerWidth - menuW - 8);
 
@@ -63,11 +62,8 @@ function FolderTabMenu({
               addFolderToContext(ctx.id, path);
               const newPaths = [...ctx.watched_paths, path];
               await invoke("update_context", {
-                id: ctx.id,
-                name: ctx.name,
-                icon: ctx.icon,
-                watchedPaths: newPaths,
-                lastPath: ctx.last_path,
+                id: ctx.id, name: ctx.name, icon: ctx.icon,
+                watchedPaths: newPaths, lastPath: ctx.last_path,
                 activeTagIds: ctx.pinned_tag_ids,
               }).catch(console.error);
               await invoke("watch_directory", { path }).catch(console.error);
@@ -125,11 +121,9 @@ function FileTabMenu({
                 const newFileTabs = [...(ctx.open_file_tabs ?? []), filePath];
                 await invoke("update_context", {
                   id: ctx.id, name: ctx.name, icon: ctx.icon,
-                  watchedPaths: ctx.watched_paths,
-                  lastPath: ctx.last_path,
+                  watchedPaths: ctx.watched_paths, lastPath: ctx.last_path,
                   activeTagIds: ctx.pinned_tag_ids,
-                  openTabs: ctx.open_tabs ?? [],
-                  openFileTabs: newFileTabs,
+                  openTabs: ctx.open_tabs ?? [], openFileTabs: newFileTabs,
                 }).catch(console.error);
               }
               onClose();
@@ -146,26 +140,97 @@ function FileTabMenu({
   );
 }
 
+// ─── Dirty-close confirmation dialog ─────────────────────────────────────────
+function DirtyCloseDialog({
+  fileName, onSave, onDiscard, onCancel,
+}: {
+  fileName: string;
+  onSave: () => void;
+  onDiscard: () => void;
+  onCancel: () => void;
+}) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+      if (e.key === "Enter") onSave();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onSave, onCancel]);
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50">
+      <div className="bg-surface-1 border border-border rounded-xl shadow-2xl w-80 p-5 flex flex-col gap-4">
+        <div>
+          <p className="text-[13px] font-semibold text-text-primary">Unsaved changes</p>
+          <p className="text-[12px] text-text-secondary mt-1">
+            Save changes to <strong className="text-text-primary">{fileName}</strong> before closing?
+          </p>
+        </div>
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            className="px-3 h-7 rounded text-[12px] text-text-secondary hover:bg-surface-3 transition-colors"
+          >Cancel</button>
+          <button
+            onClick={onDiscard}
+            className="px-3 h-7 rounded text-[12px] text-red-400 hover:bg-red-500/10 transition-colors"
+          >Discard</button>
+          <button
+            onClick={onSave}
+            className="px-3 h-7 rounded text-[12px] bg-accent text-white hover:bg-accent/80 transition-colors"
+          >Save & Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TabBar() {
   const {
     tabs, activeTabId, setActiveTab, closeTab, closeFile,
     folderTabs, activeFolderTabId, switchFolderTab, closeFolderTab,
-    setListEntries,
+    setListEntries, currentPath, openFolderTab, activeContextId,
   } = useStore();
 
   const isExplorerActive = activeTabId === null;
 
   const [folderTabMenu, setFolderTabMenu] = useState<{ x: number; y: number; path: string } | null>(null);
   const [fileTabMenu, setFileTabMenu] = useState<{ x: number; y: number; filePath: string } | null>(null);
+  const [dirtyClose, setDirtyClose] = useState<{ id: string; name: string; content: string | null } | null>(null);
+
+  // Check if a tab is dirty before closing; show dialog if so
+  const tryCloseTab = (id: string) => {
+    const tab = tabs.find((t) => t.id === id);
+    if (tab?.isDirty) {
+      setDirtyClose({ id, name: tab.file.name, content: tab.draftContent });
+    } else {
+      closeTab(id);
+    }
+  };
+
+  const tryCloseFile = () => {
+    if (activeTabId === null) return;
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (tab?.isDirty) {
+      setDirtyClose({ id: activeTabId, name: tab.file.name, content: tab.draftContent });
+    } else {
+      closeFile();
+    }
+  };
 
   const handleFolderTabClick = async (tabId: string) => {
     const tab = folderTabs.find((t) => t.id === tabId);
     const path = switchFolderTab(tabId);
     setActiveTab(null);
     try {
-      const cmd = tab?.isRemote ? "list_remote_dir" : "list_directory";
-      const entries = await invoke<ListEntry[]>(cmd, { path });
-      setListEntries(entries);
+      if (tab?.isRemote) {
+        const entries = await invoke<ListEntry[]>("list_remote_dir", { path });
+        setListEntries(entries);
+      } else {
+        const entries = await invoke<ListEntry[]>("list_directory", { path, contextId: activeContextId ?? 0 });
+        setListEntries(entries);
+      }
     } catch { /* folder may have moved */ }
   };
 
@@ -176,23 +241,33 @@ export function TabBar() {
     setActiveTab(null);
     if (path) {
       try {
-        // After closing, the new active tab might be local or remote
         const newActive = folderTabs.find((t) => t.path === path && t.id !== tabId);
-        const cmd = newActive?.isRemote ?? tab?.isRemote ? "list_remote_dir" : "list_directory";
-        const entries = await invoke<ListEntry[]>(cmd, { path });
-        setListEntries(entries);
+        if (newActive?.isRemote ?? tab?.isRemote) {
+          const entries = await invoke<ListEntry[]>("list_remote_dir", { path });
+          setListEntries(entries);
+        } else {
+          const entries = await invoke<ListEntry[]>("list_directory", { path, contextId: activeContextId ?? 0 });
+          setListEntries(entries);
+        }
       } catch { /* ignore */ }
     }
   };
 
-  // Ctrl+W → close active file tab; Ctrl+Tab → cycle all tabs
+  // Ctrl+W → dirty-aware close; Ctrl+Tab → cycle; Ctrl+T → new tab
   useEffect(() => {
     const allIds: Array<string | null> = [null, ...tabs.map((t) => t.id)];
 
     const handler = (e: KeyboardEvent) => {
+      const active = document.activeElement;
+      if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+
       if ((e.ctrlKey || e.metaKey) && e.key === "w") {
         e.preventDefault();
-        if (activeTabId !== null) closeFile();
+        if (activeTabId !== null) tryCloseFile();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "t") {
+        e.preventDefault();
+        if (currentPath) openFolderTab(currentPath);
       }
       if (e.ctrlKey && e.key === "Tab") {
         e.preventDefault();
@@ -204,7 +279,8 @@ export function TabBar() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [tabs, activeTabId, closeFile, setActiveTab]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs, activeTabId, currentPath]);
 
   return (
     <>
@@ -235,10 +311,12 @@ export function TabBar() {
               <div
                 key={tab.id}
                 onClick={() => handleFolderTabClick(tab.id)}
+                onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); handleCloseFolderTab(e as unknown as React.MouseEvent, tab.id); }}}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   setFolderTabMenu({ x: e.clientX, y: e.clientY + 4, path: tab.path });
                 }}
+                title={tab.path}
                 className={clsx(
                   "group flex items-center gap-1.5 px-3 h-full border-r border-border-subtle cursor-pointer shrink-0 max-w-[200px] relative select-none transition-colors",
                   isActive
@@ -278,10 +356,12 @@ export function TabBar() {
             <div
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
+              onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); tryCloseTab(tab.id); }}}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setFileTabMenu({ x: e.clientX, y: e.clientY + 4, filePath: tab.id });
               }}
+              title={tab.id}
               className={clsx(
                 "group flex items-center gap-1.5 px-3 h-full border-r border-border-subtle cursor-pointer shrink-0 max-w-[180px] relative select-none transition-colors",
                 isActive
@@ -302,7 +382,7 @@ export function TabBar() {
               )}
 
               <button
-                onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
+                onClick={(e) => { e.stopPropagation(); tryCloseTab(tab.id); }}
                 className={clsx(
                   "w-4 h-4 flex items-center justify-center rounded transition-all shrink-0",
                   "hover:bg-surface-4 hover:text-text-primary",
@@ -338,6 +418,22 @@ export function TabBar() {
           y={fileTabMenu.y}
           filePath={fileTabMenu.filePath}
           onClose={() => setFileTabMenu(null)}
+        />
+      )}
+
+      {/* Dirty-close confirmation */}
+      {dirtyClose && (
+        <DirtyCloseDialog
+          fileName={dirtyClose.name}
+          onCancel={() => setDirtyClose(null)}
+          onDiscard={() => { closeTab(dirtyClose.id); setDirtyClose(null); }}
+          onSave={async () => {
+            if (dirtyClose.content !== null) {
+              await invoke("write_file", { path: dirtyClose.id, content: dirtyClose.content }).catch(console.error);
+            }
+            closeTab(dirtyClose.id);
+            setDirtyClose(null);
+          }}
         />
       )}
     </>

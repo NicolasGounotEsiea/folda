@@ -67,6 +67,7 @@ export function EditorView() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ line: 1, col: 1 });
+  const [confirmClose, setConfirmClose] = useState(false);
   const contentRef = useRef(content);
   const originalRef = useRef(originalContent);
   contentRef.current = content;
@@ -184,13 +185,32 @@ export function EditorView() {
           {saving ? "Saving…" : "Save"}
         </button>
         <button
-          onClick={closeFile}
+          onClick={() => isDirty ? setConfirmClose(true) : closeFile()}
           className="w-6 h-6 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors shrink-0"
-          title="Close editor (Escape)"
+          title="Close editor"
         >
           <X size={13} />
         </button>
       </div>
+
+      {/* Dirty-close confirmation */}
+      {confirmClose && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50">
+          <div className="bg-surface-1 border border-border rounded-xl shadow-2xl w-80 p-5 flex flex-col gap-4">
+            <div>
+              <p className="text-[13px] font-semibold text-text-primary">Unsaved changes</p>
+              <p className="text-[12px] text-text-secondary mt-1">
+                Save changes to <strong className="text-text-primary">{openedFile.name}</strong> before closing?
+              </p>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setConfirmClose(false)} className="px-3 h-7 rounded text-[12px] text-text-secondary hover:bg-surface-3 transition-colors">Cancel</button>
+              <button onClick={() => { setConfirmClose(false); closeFile(); }} className="px-3 h-7 rounded text-[12px] text-red-400 hover:bg-red-500/10 transition-colors">Discard</button>
+              <button onClick={async () => { await handleSave(); setConfirmClose(false); closeFile(); }} className="px-3 h-7 rounded text-[12px] bg-accent text-white hover:bg-accent/80 transition-colors">Save & Close</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Error bar */}
       {error && (

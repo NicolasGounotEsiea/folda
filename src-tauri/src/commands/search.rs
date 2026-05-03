@@ -5,9 +5,10 @@ fn load_file_tags(
     file_id: i64,
 ) -> Vec<crate::models::Tag> {
     db.prepare(
-        "SELECT t.id, t.name, t.color, t.is_auto
+        "SELECT DISTINCT t.id, t.name, t.color, t.is_auto, ft.context_id
          FROM tags t JOIN file_tags ft ON ft.tag_id = t.id
-         WHERE ft.file_id = ?1",
+         WHERE ft.file_id = ?1 AND ft.context_id = 0
+         ORDER BY t.name",
     )
     .and_then(|mut s| {
         s.query_map([file_id], |row| {
@@ -16,6 +17,7 @@ fn load_file_tags(
                 name: row.get(1)?,
                 color: row.get(2)?,
                 is_auto: row.get::<_, i64>(3)? != 0,
+                context_id: row.get(4)?,
             })
         })
         .map(|iter| iter.filter_map(|r| r.ok()).collect())

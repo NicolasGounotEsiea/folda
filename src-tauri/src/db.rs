@@ -8,6 +8,14 @@ pub fn init(db_path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        rusqlite::params![table, column],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0
+}
+
 fn create_tables(conn: &Connection) -> Result<()> {
     // Idempotent migrations for columns added after initial schema
     let _ = conn.execute_batch(
@@ -19,6 +27,64 @@ fn create_tables(conn: &Connection) -> Result<()> {
     let _ = conn.execute_batch(
         "ALTER TABLE contexts ADD COLUMN open_file_tabs TEXT NOT NULL DEFAULT '[]';",
     );
+
+    // Migration: add context_id to pinned_items, change UNIQUE from path to (path, context_id)
+    if !has_column(conn, "pinned_items", "context_id") {
+        conn.execute_batch("
+            BEGIN;
+            CREATE TABLE pinned_items_new (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                path       TEXT    NOT NULL,
+                name       TEXT    NOT NULL,
+                is_dir     INTEGER NOT NULL DEFAULT 0,
+                context_id INTEGER NOT NULL DEFAULT 0,
+                added_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+                UNIQUE(path, context_id)
+            );
+            INSERT OR IGNORE INTO pinned_items_new (id, path, name, is_dir, added_at)
+                SELECT id, path, name, is_dir, added_at FROM pinned_items;
+            DROP TABLE pinned_items;
+            ALTER TABLE pinned_items_new RENAME TO pinned_items;
+            COMMIT;
+        ")?;
+    }
+
+    // Migration: add context_id to file_tags, change PK from (file_id, tag_id) to (file_id, tag_id, context_id)
+    if !has_column(conn, "file_tags", "context_id") {
+        conn.execute_batch("
+            BEGIN;
+            CREATE TABLE file_tags_new (
+                file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                tag_id     INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
+                context_id INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                PRIMARY KEY (file_id, tag_id, context_id)
+            );
+            INSERT OR IGNORE INTO file_tags_new (file_id, tag_id, created_at)
+                SELECT file_id, tag_id, created_at FROM file_tags;
+            DROP TABLE file_tags;
+            ALTER TABLE file_tags_new RENAME TO file_tags;
+            COMMIT;
+        ")?;
+    }
+
+    // Migration: add context_id to folder_tags, change PK
+    if !has_column(conn, "folder_tags", "context_id") {
+        conn.execute_batch("
+            BEGIN;
+            CREATE TABLE folder_tags_new (
+                folder_path TEXT    NOT NULL,
+                tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                context_id  INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (folder_path, tag_id, context_id)
+            );
+            INSERT OR IGNORE INTO folder_tags_new (folder_path, tag_id)
+                SELECT folder_path, tag_id FROM folder_tags;
+            DROP TABLE folder_tags;
+            ALTER TABLE folder_tags_new RENAME TO folder_tags;
+            COMMIT;
+        ")?;
+    }
 
     conn.execute_batch(
         "
@@ -47,8 +113,9 @@ fn create_tables(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS file_tags (
             file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
             tag_id     INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
+            context_id INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-            PRIMARY KEY (file_id, tag_id)
+            PRIMARY KEY (file_id, tag_id, context_id)
         );
 
         CREATE TABLE IF NOT EXISTS contexts (
@@ -90,17 +157,38 @@ fn create_tables(conn: &Connection) -> Result<()> {
             ON directories (name COLLATE NOCASE);
 
         CREATE TABLE IF NOT EXISTS pinned_items (
-            id       INTEGER PRIMARY KEY AUTOINCREMENT,
-            path     TEXT    UNIQUE NOT NULL,
-            name     TEXT    NOT NULL,
-            is_dir   INTEGER NOT NULL DEFAULT 0,
-            added_at INTEGER NOT NULL DEFAULT (unixepoch())
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            path       TEXT    NOT NULL,
+            name       TEXT    NOT NULL,
+            is_dir     INTEGER NOT NULL DEFAULT 0,
+            context_id INTEGER NOT NULL DEFAULT 0,
+            added_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+            UNIQUE(path, context_id)
         );
 
         CREATE TABLE IF NOT EXISTS folder_tags (
             folder_path TEXT    NOT NULL,
             tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-            PRIMARY KEY (folder_path, tag_id)
+            context_id  INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (folder_path, tag_id, context_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS tag_rules (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            tag_id     INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+            context_id INTEGER NOT NULL DEFAULT 0,
+            rule_type  TEXT    NOT NULL,
+            rule_value TEXT    NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS saved_views (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT    NOT NULL,
+            icon       TEXT    NOT NULL DEFAULT '🔖',
+            tag_ids    TEXT    NOT NULL DEFAULT '[]',
+            context_id INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch())
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(

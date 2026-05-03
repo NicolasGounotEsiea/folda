@@ -67,6 +67,44 @@ src-tauri/
 
 The host starts sharing from the sidebar — the app binds a WebSocket server on a random port and discovers its public IP via STUN (no relay server needed). Guests enter the `IP:PORT` code and an 8-character password. All file operations are routed through the WebSocket with per-path access control enforced server-side.
 
+## Roadmap
+
+Features planned to increase product value and justify purchase pricing.
+
+### Search & Discovery
+- [ ] **Full-text search inside files** — index file contents (text, code, PDF text layer) with instant results, like Everything + content search. The biggest gap vs. free alternatives.
+- [ ] **Search operators** — `tag:Code size:>1MB modified:7d`, regex, exclude patterns
+- [ ] **Global search palette** — Ctrl+Shift+F opens a full-screen search across all workspaces simultaneously
+
+### Cloud & Sync
+- [ ] **Workspace sync** — sync metadata, tags, and saved views across machines via an optional cloud backend (tags follow files across devices)
+- [ ] **Export / import workspace** — portable `.cwsp` bundle that preserves folder structure, tags, pinned items, and rules
+- [ ] **Conflict resolution UI** — when the same file is edited on two machines, show a diff and let the user pick
+
+### File History
+- [ ] **Snapshots** — lightweight file-level history without Git; restore any tracked file to a previous state
+- [ ] **Activity feed** — per-file timeline showing open, edit, delete, rename events with timestamps
+- [ ] **Trash with restore** — soft-delete files into a workspace trash before permanent deletion
+
+### Viewer & Editor Improvements
+- [ ] **Multi-page PDF preview** — scrollable render with page navigation, no external app needed
+- [ ] **Office file preview** — `.docx`, `.xlsx`, `.pptx` rendered without Microsoft Office
+- [ ] **Image tools** — rotation, crop, EXIF metadata panel, slideshow mode
+- [ ] **Hex viewer** — for binary files (`.exe`, `.dll`, etc.) instead of "cannot edit" screen
+- [ ] **Diff view** — compare two selected files side-by-side
+
+### UX & Polish
+- [ ] **Onboarding wizard** — guided first-run that creates a workspace, explains tags, shows keyboard shortcuts
+- [ ] **Keyboard shortcut panel** — `?` key opens a reference overlay
+- [ ] **Command palette improvements** — tag assignment, workspace switch, open recent files via Ctrl+K
+- [ ] **Customizable columns** — show/hide and reorder columns in list view (owner, permissions, custom metadata)
+- [ ] **Tab groups** — color-coded groups for folder tabs, saved as part of workspace state
+
+### Monetization & Distribution
+- [ ] **License key system** — offline activation with a server-validated license
+- [ ] **Auto-updater** — in-app update prompt via Tauri updater plugin
+- [ ] **Telemetry opt-in** — anonymous usage stats to guide feature prioritization
+
 ## License
 
 Private — all rights reserved.

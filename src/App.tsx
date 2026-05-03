@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useEffect, useMemo, useState } from "react";
+import { saveAndClose, isClosing } from "./utils/appClose";
 import { BulkRename } from "./components/BulkRename";
 import { CommandPalette } from "./components/CommandPalette";
 import { DocumentViewer, DOC_EXTS } from "./components/DocumentViewer";
@@ -59,11 +61,22 @@ export function App() {
         }
       }
 
-      if (!ctxs.length) return;
-      setContexts(ctxs); // sets rootPaths from active workspace
+      setContexts(ctxs); // sets activeContextId + rootPaths from DB-active workspace
+
+      const activeCtx = ctxs.find((c) => c.is_active) ?? null;
+      const ctxId = activeCtx?.id ?? 0;
+
+      if (!ctxs.length) {
+        // No workspaces — global mode: navigate to home directory
+        const homeDir = await invoke<string>("get_home_dir").catch(() => "C:\\Users");
+        setCurrentPath(homeDir);
+        pushNav(homeDir);
+        const entries = await invoke<ListEntry[]>("list_directory", { path: homeDir, contextId: 0 }).catch(() => [] as ListEntry[]);
+        setListEntries(entries);
+        return;
+      }
 
       // Restore active workspace's file tabs
-      const activeCtx = ctxs.find((c) => c.is_active) ?? ctxs[0];
       if (activeCtx?.open_file_tabs?.length) {
         setTabs(activeCtx.open_file_tabs.map(pathToTab));
       }
@@ -71,18 +84,27 @@ export function App() {
       // Find the best starting path: last_path of active context, or first folder
       const allPaths = ctxs.flatMap((c) => c.watched_paths);
       const lastPath = activeCtx?.last_path || allPaths[0];
-      if (!lastPath) return;
+
+      if (!lastPath) {
+        // Contexts exist but no path set — navigate to home
+        const homeDir = await invoke<string>("get_home_dir").catch(() => "C:\\Users");
+        setCurrentPath(homeDir);
+        pushNav(homeDir);
+        const entries = await invoke<ListEntry[]>("list_directory", { path: homeDir, contextId: ctxId }).catch(() => [] as ListEntry[]);
+        setListEntries(entries);
+        return;
+      }
 
       setCurrentPath(lastPath);
       pushNav(lastPath);
       try {
-        const entries = await invoke<ListEntry[]>("list_directory", { path: lastPath });
+        const entries = await invoke<ListEntry[]>("list_directory", { path: lastPath, contextId: ctxId });
         setListEntries(entries);
       } catch { /* folder may have moved */ }
 
       setIsScanning(true);
       try {
-        const files = await invoke<FileEntry[]>("get_files", { path: lastPath });
+        const files = await invoke<FileEntry[]>("get_files", { path: lastPath, contextId: ctxId });
         setFiles(files);
         const tags = await invoke<Tag[]>("get_tags");
         setTags(tags);
@@ -164,7 +186,37 @@ export function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [setCommandPaletteOpen]);
 
+  const [previewOpen, setPreviewOpen] = useState(true);
+
+  // Save workspace state on OS-level close (Alt+F4, taskbar right-click, etc.)
+  useEffect(() => {
+    const win = getCurrentWindow();
+    const p = win.onCloseRequested((event) => {
+      if (isClosing()) return; // already handling via saveAndClose()
+      event.preventDefault();
+      saveAndClose();
+    });
+    return () => { p.then((f) => f()); };
+  }, []);
+
   const selectedEntries = listEntries.filter((e) => selectedPaths.includes(e.path));
+
+  // Status bar data
+  const statusInfo = useMemo(() => {
+    if (!currentPath) return null;
+    const dirs = listEntries.filter((e) => e.is_dir).length;
+    const files = listEntries.filter((e) => !e.is_dir).length;
+    const total = listEntries.length;
+    const selFiles = selectedEntries.filter((e) => !e.is_dir);
+    const selSize = selFiles.reduce((acc, e) => acc + e.size, 0);
+    const formatSize = (b: number) => {
+      if (b < 1024) return `${b} B`;
+      if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+      if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
+      return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    };
+    return { total, dirs, files, selCount: selectedPaths.length, selSize, selFiles: selFiles.length, formatSize };
+  }, [listEntries, selectedEntries, selectedPaths.length, currentPath]);
 
   return (
     <div className="flex flex-col h-full bg-surface-0">
@@ -182,13 +234,45 @@ export function App() {
           })() : viewMode === "explorer" ? (
             <div className="flex flex-1 overflow-hidden">
               <FileList />
-              <PreviewPanel />
+              {previewOpen
+                ? <PreviewPanel onClose={() => setPreviewOpen(false)} />
+                : <button
+                    onClick={() => setPreviewOpen(true)}
+                    title="Open preview panel"
+                    className="flex items-center justify-center w-6 shrink-0 bg-surface-1 border-l border-border-subtle text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                  >
+                    <span className="text-[9px] [writing-mode:vertical-rl] tracking-widest uppercase select-none">Preview</span>
+                  </button>
+              }
             </div>
           ) : (
             <TimelineView />
           )}
         </div>
       </div>
+
+      {/* Global status bar */}
+      {statusInfo && viewMode === "explorer" && !openedFile && (
+        <div className="flex items-center gap-4 px-4 h-6 bg-surface-1 border-t border-border-subtle shrink-0 select-none">
+          {statusInfo.selCount > 0 ? (
+            <>
+              <span className="text-[10px] text-accent font-medium">
+                {statusInfo.selCount} selected
+              </span>
+              {statusInfo.selFiles > 0 && (
+                <span className="text-[10px] text-text-muted">{statusInfo.formatSize(statusInfo.selSize)}</span>
+              )}
+            </>
+          ) : (
+            <span className="text-[10px] text-text-muted">
+              {statusInfo.total} item{statusInfo.total !== 1 ? "s" : ""}
+              {statusInfo.dirs > 0 && statusInfo.files > 0 && (
+                <> · <span className="opacity-70">{statusInfo.dirs} folder{statusInfo.dirs !== 1 ? "s" : ""}, {statusInfo.files} file{statusInfo.files !== 1 ? "s" : ""}</span></>
+              )}
+            </span>
+          )}
+        </div>
+      )}
 
       {commandPaletteOpen && (
         <CommandPalette onClose={() => setCommandPaletteOpen(false)} />

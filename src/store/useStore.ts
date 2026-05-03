@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { FileEntry, ListEntry, Tag, Context, PinnedItem, ViewMode, LayoutMode } from "../types";
+import type { FileEntry, ListEntry, Tag, Context, PinnedItem, ViewMode, LayoutMode, SavedView, TagStat } from "../types";
 
 export type SelectedEntry =
   | { kind: "file"; entry: FileEntry }
@@ -58,6 +58,8 @@ interface AppStore {
   selectedFile: FileEntry | null;
   selectedEntry: SelectedEntry;
   tags: Tag[];
+  tagStats: TagStat[];
+  savedViews: SavedView[];
   contexts: Context[];
   activeContextId: number | null;
   viewMode: ViewMode;
@@ -107,12 +109,15 @@ interface AppStore {
   selectEntry: (entry: SelectedEntry) => void;
   updateFolderTags: (path: string, tags: Tag[]) => void;
   setTags: (tags: Tag[]) => void;
+  setTagStats: (stats: TagStat[]) => void;
+  setSavedViews: (views: SavedView[]) => void;
   setContexts: (contexts: Context[]) => void;
   setActiveContext: (id: number) => void;
   // Workspace folder management
   addFolderToContext: (contextId: number, path: string) => void;
   removeFolderFromContext: (contextId: number, path: string) => void;
   renameContext: (contextId: number, name: string) => void;
+  exitWorkspace: () => void;
   // Returns { paths, lastPath, tagIds } of the new workspace to load
   switchWorkspace: (contextId: number) => {
     paths: string[];
@@ -153,11 +158,14 @@ interface AppStore {
   sharingCode: string | null;
   sharingPassword: string | null;
   sharingClients: string[];
+  sharingContextId: number | null;
+  sharingWorkspaceName: string | null;
+  sharingWorkspaceIcon: string | null;
   remoteWorkspaceName: string | null;
   remoteRootPaths: string[];
   shareModalOpen: boolean;
   joinModalOpen: boolean;
-  setSharingHosted: (code: string, password: string) => void;
+  setSharingHosted: (code: string, password: string, workspaceName: string, workspaceIcon: string, contextId: number | null) => void;
   setSharingJoined: (workspaceName: string, rootPaths: string[]) => void;
   resetSharing: () => void;
   addSharingClient: (name: string) => void;
@@ -218,6 +226,8 @@ export const useStore = create<AppStore>((set, get) => ({
   selectedFile: null,
   selectedEntry: null,
   tags: [],
+  tagStats: [],
+  savedViews: [],
   contexts: [],
   activeContextId: null,
   viewMode: "explorer",
@@ -305,11 +315,13 @@ export const useStore = create<AppStore>((set, get) => ({
         : s.selectedEntry,
     })),
   setTags: (tags) => set({ tags }),
+  setTagStats: (tagStats) => set({ tagStats }),
+  setSavedViews: (savedViews) => set({ savedViews }),
   setContexts: (contexts) => set((s) => {
-    // Active workspace = the one marked is_active in DB, or the current activeContextId, or first
+    // Prefer DB-active context, then already-active in store, then null (global mode)
     const active = contexts.find((c) => c.is_active)
       ?? contexts.find((c) => c.id === s.activeContextId)
-      ?? contexts[0];
+      ?? null;
     return {
       contexts,
       activeContextId: active?.id ?? null,
@@ -317,6 +329,7 @@ export const useStore = create<AppStore>((set, get) => ({
     };
   }),
   setActiveContext: (id) => set({ activeContextId: id }),
+  exitWorkspace: () => set({ activeContextId: null, rootPaths: [], selectedTagIds: [] }),
 
   addFolderToContext: (contextId, path) =>
     set((s) => {
@@ -470,11 +483,25 @@ export const useStore = create<AppStore>((set, get) => ({
   closeFile: () =>
     set((s) => {
       if (!s.activeTabId) return {};
-      return closeTabLogic(s.tabs, s.activeTabId, s.activeTabId);
+      const result = closeTabLogic(s.tabs, s.activeTabId, s.activeTabId);
+      const contexts = s.activeContextId !== null
+        ? s.contexts.map((c) => c.id === s.activeContextId
+            ? { ...c, open_file_tabs: result.tabs.map((t) => t.id) }
+            : c)
+        : s.contexts;
+      return { ...result, contexts };
     }),
 
   closeTab: (id) =>
-    set((s) => closeTabLogic(s.tabs, s.activeTabId, id)),
+    set((s) => {
+      const result = closeTabLogic(s.tabs, s.activeTabId, id);
+      const contexts = s.activeContextId !== null
+        ? s.contexts.map((c) => c.id === s.activeContextId
+            ? { ...c, open_file_tabs: result.tabs.map((t) => t.id) }
+            : c)
+        : s.contexts;
+      return { ...result, contexts };
+    }),
 
   setActiveTab: (id) =>
     set((s) => ({
@@ -533,17 +560,20 @@ export const useStore = create<AppStore>((set, get) => ({
   sharingCode: null,
   sharingPassword: null,
   sharingClients: [],
+  sharingContextId: null,
+  sharingWorkspaceName: null,
+  sharingWorkspaceIcon: null,
   remoteWorkspaceName: null,
   remoteRootPaths: [],
   shareModalOpen: false,
   joinModalOpen: false,
 
-  setSharingHosted: (code, password) =>
-    set({ sharingMode: "hosting", sharingCode: code, sharingPassword: password, sharingClients: [] }),
+  setSharingHosted: (code, password, workspaceName, workspaceIcon, contextId) =>
+    set({ sharingMode: "hosting", sharingCode: code, sharingPassword: password, sharingClients: [], sharingContextId: contextId, sharingWorkspaceName: workspaceName, sharingWorkspaceIcon: workspaceIcon }),
   setSharingJoined: (workspaceName, rootPaths) =>
     set({ sharingMode: "joined", remoteWorkspaceName: workspaceName, remoteRootPaths: rootPaths }),
   resetSharing: () =>
-    set({ sharingMode: "idle", sharingCode: null, sharingPassword: null, sharingClients: [], remoteWorkspaceName: null, remoteRootPaths: [] }),
+    set({ sharingMode: "idle", sharingCode: null, sharingPassword: null, sharingClients: [], sharingContextId: null, sharingWorkspaceName: null, sharingWorkspaceIcon: null, remoteWorkspaceName: null, remoteRootPaths: [] }),
   addSharingClient: (name) =>
     set((s) => ({ sharingClients: s.sharingClients.includes(name) ? s.sharingClients : [...s.sharingClients, name] })),
   removeSharingClient: (name) =>

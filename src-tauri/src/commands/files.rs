@@ -11,20 +11,22 @@ use crate::{models::FileEntry, AppState};
 fn load_file_tags(
     db: &rusqlite::Connection,
     file_id: i64,
+    context_id: i64,
 ) -> rusqlite::Result<Vec<crate::models::Tag>> {
     let mut stmt = db.prepare(
-        "SELECT t.id, t.name, t.color, t.is_auto
-         FROM tags t
-         JOIN file_tags ft ON ft.tag_id = t.id
-         WHERE ft.file_id = ?1",
+        "SELECT DISTINCT t.id, t.name, t.color, t.is_auto, ft.context_id
+         FROM tags t JOIN file_tags ft ON ft.tag_id = t.id
+         WHERE ft.file_id = ?1 AND (ft.context_id = 0 OR ft.context_id = ?2)
+         ORDER BY ft.context_id ASC, t.name",
     )?;
     let tags = stmt
-        .query_map([file_id], |row| {
+        .query_map(rusqlite::params![file_id, context_id], |row| {
             Ok(crate::models::Tag {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 color: row.get(2)?,
                 is_auto: row.get::<_, i64>(3)? != 0,
+                context_id: row.get(4)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -34,19 +36,22 @@ fn load_file_tags(
 fn load_folder_tags(
     db: &rusqlite::Connection,
     folder_path: &str,
+    context_id: i64,
 ) -> rusqlite::Result<Vec<crate::models::Tag>> {
     let mut stmt = db.prepare(
-        "SELECT t.id, t.name, t.color, t.is_auto
+        "SELECT DISTINCT t.id, t.name, t.color, t.is_auto, ft.context_id
          FROM tags t JOIN folder_tags ft ON ft.tag_id = t.id
-         WHERE ft.folder_path = ?1",
+         WHERE ft.folder_path = ?1 AND (ft.context_id = 0 OR ft.context_id = ?2)
+         ORDER BY ft.context_id ASC, t.name",
     )?;
     let tags = stmt
-        .query_map([folder_path], |row| {
+        .query_map(rusqlite::params![folder_path, context_id], |row| {
             Ok(crate::models::Tag {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 color: row.get(2)?,
                 is_auto: row.get::<_, i64>(3)? != 0,
+                context_id: row.get(4)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -135,13 +140,13 @@ fn should_skip(path: &std::path::Path) -> bool {
 }
 
 /// Loads all files under `path` with their tags in a single JOIN query.
-fn load_files_with_tags(db: &rusqlite::Connection, path: &str) -> Result<Vec<FileEntry>, String> {
+fn load_files_with_tags(db: &rusqlite::Connection, path: &str, context_id: i64) -> Result<Vec<FileEntry>, String> {
     let mut stmt = db.prepare(
         "SELECT f.id, f.path, f.name, f.extension, f.size,
                 f.created_at, f.modified_at, f.accessed_at,
-                t.id, t.name, t.color, t.is_auto
+                t.id, t.name, t.color, t.is_auto, ft.context_id
          FROM files f
-         LEFT JOIN file_tags ft ON ft.file_id = f.id
+         LEFT JOIN file_tags ft ON ft.file_id = f.id AND (ft.context_id = 0 OR ft.context_id = ?2)
          LEFT JOIN tags t ON t.id = ft.tag_id
          WHERE f.path LIKE ?1 || '%'
          ORDER BY f.modified_at DESC, f.id",
@@ -149,7 +154,7 @@ fn load_files_with_tags(db: &rusqlite::Connection, path: &str) -> Result<Vec<Fil
 
     let mut file_map: indexmap::IndexMap<i64, FileEntry> = indexmap::IndexMap::new();
 
-    let rows = stmt.query_map([path], |row| {
+    let rows = stmt.query_map(rusqlite::params![path, context_id], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -163,12 +168,13 @@ fn load_files_with_tags(db: &rusqlite::Connection, path: &str) -> Result<Vec<Fil
             row.get::<_, Option<String>>(9)?,
             row.get::<_, Option<String>>(10)?,
             row.get::<_, Option<i64>>(11)?,
+            row.get::<_, Option<i64>>(12)?,
         ))
     }).map_err(|e| e.to_string())?;
 
     for row in rows.filter_map(|r| r.ok()) {
         let (id, path, name, ext, size, created, modified, accessed,
-             tag_id, tag_name, tag_color, tag_is_auto) = row;
+             tag_id, tag_name, tag_color, tag_is_auto, tag_context_id) = row;
 
         let entry = file_map.entry(id).or_insert_with(|| FileEntry {
             id, path, name, extension: ext, size,
@@ -181,6 +187,7 @@ fn load_files_with_tags(db: &rusqlite::Connection, path: &str) -> Result<Vec<Fil
         {
             entry.tags.push(crate::models::Tag {
                 id: tid, name: tname, color: tcolor, is_auto: tis_auto != 0,
+                context_id: tag_context_id.unwrap_or(0),
             });
         }
     }
@@ -267,7 +274,7 @@ pub fn scan_directory(
             if let Some((tag_name, tag_color)) = auto_tag_for_ext(&f.extension) {
                 if let Ok(tag_id) = ensure_auto_tag(&db, tag_name, tag_color) {
                     let _ = db.execute(
-                        "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?1, ?2)",
+                        "INSERT OR IGNORE INTO file_tags (file_id, tag_id, context_id) VALUES (?1, ?2, 0)",
                         rusqlite::params![id, tag_id],
                     );
                 }
@@ -291,7 +298,7 @@ pub fn scan_directory(
     }
 
     // Phase 3: single JOIN query — no per-file queries
-    load_files_with_tags(&db, &path)
+    load_files_with_tags(&db, &path, 0)
 }
 
 fn handle_fs_event(
@@ -378,20 +385,59 @@ pub fn watch_directory(
 }
 
 #[tauri::command]
-pub fn get_files(path: String, state: tauri::State<AppState>) -> Result<Vec<FileEntry>, String> {
+pub fn get_files(
+    path: String,
+    context_id: Option<i64>,
+    state: tauri::State<AppState>,
+) -> Result<Vec<FileEntry>, String> {
+    let context_id = context_id.unwrap_or(0);
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    load_files_with_tags(&db, &path)
+    load_files_with_tags(&db, &path, context_id)
 }
 
 #[tauri::command]
 pub fn list_directory(
     path: String,
+    context_id: Option<i64>,
     state: tauri::State<AppState>,
 ) -> Result<Vec<crate::models::ListEntry>, String> {
+    let context_id = context_id.unwrap_or(0);
     use crate::models::ListEntry;
 
     let read = std::fs::read_dir(&path).map_err(|e| e.to_string())?;
     let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    // Load tag rules and their tag details once, before iterating entries
+    let rules: Vec<(i64, String, String)> = db
+        .prepare("SELECT tag_id, rule_type, rule_value FROM tag_rules WHERE context_id = 0 OR context_id = ?1")
+        .and_then(|mut s| {
+            s.query_map(rusqlite::params![context_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+
+    let rule_tags: std::collections::HashMap<i64, crate::models::Tag> = {
+        let mut map = std::collections::HashMap::new();
+        for (tag_id, _, _) in &rules {
+            if map.contains_key(tag_id) { continue; }
+            if let Ok(tag) = db.query_row(
+                "SELECT id, name, color, is_auto FROM tags WHERE id = ?1",
+                [tag_id],
+                |row| Ok(crate::models::Tag {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    color: row.get(2)?,
+                    is_auto: row.get::<_, i64>(3)? != 0,
+                    context_id: 0,
+                }),
+            ) {
+                map.insert(*tag_id, tag);
+            }
+        }
+        map
+    };
 
     let mut result: Vec<ListEntry> = read
         .filter_map(|e| e.ok())
@@ -406,21 +452,57 @@ pub fn list_directory(
                 .unwrap_or(0);
 
             if file_type.is_dir() {
-                let folder_tags = load_folder_tags(&db, &entry_path).unwrap_or_default();
+                let child_count = std::fs::read_dir(&entry_path)
+                    .map(|it| it.count())
+                    .unwrap_or(0) as i64;
+                let folder_tags = load_folder_tags(&db, &entry_path, context_id).unwrap_or_default();
                 Some(ListEntry {
                     is_dir: true, name, path: entry_path,
-                    size: 0, modified_at, extension: String::new(),
+                    size: child_count, modified_at, extension: String::new(),
                     id: None, tags: folder_tags,
                 })
             } else {
                 let extension = std::path::Path::new(&entry_path)
                     .extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
                 let size = meta.len() as i64;
-                let (id, tags) = db
+                let (id, mut tags) = db
                     .query_row("SELECT id FROM files WHERE path = ?1", [&entry_path], |r| r.get::<_, i64>(0))
                     .ok()
-                    .map(|id| (Some(id), load_file_tags(&db, id).unwrap_or_default()))
+                    .map(|id| (Some(id), load_file_tags(&db, id, context_id).unwrap_or_default()))
                     .unwrap_or((None, vec![]));
+
+                // Apply tag rules inline
+                if !rules.is_empty() {
+                    let name_lower = name.to_lowercase();
+                    let ext_lower = extension.to_lowercase();
+                    let path_lower = entry_path.to_lowercase();
+                    for (tag_id, rule_type, rule_value) in &rules {
+                        let val_lower = rule_value.to_lowercase();
+                        let matches = match rule_type.as_str() {
+                            "ext"           => ext_lower == val_lower,
+                            "name_contains" => name_lower.contains(val_lower.as_str()),
+                            "name_starts"   => name_lower.starts_with(val_lower.as_str()),
+                            "path_contains" => path_lower.contains(val_lower.as_str()),
+                            "size_gt"       => rule_value.parse::<i64>().map(|v| size > v).unwrap_or(false),
+                            "size_lt"       => rule_value.parse::<i64>().map(|v| size < v).unwrap_or(false),
+                            _ => false,
+                        };
+                        if matches {
+                            if let Some(fid) = id {
+                                let _ = db.execute(
+                                    "INSERT OR IGNORE INTO file_tags (file_id, tag_id, context_id) VALUES (?1, ?2, ?3)",
+                                    rusqlite::params![fid, tag_id, context_id],
+                                );
+                            }
+                            if !tags.iter().any(|t| t.id == *tag_id) {
+                                if let Some(tag) = rule_tags.get(tag_id) {
+                                    tags.push(tag.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Some(ListEntry { is_dir: false, name, path: entry_path, size, modified_at, extension, id, tags })
             }
         })
@@ -437,10 +519,12 @@ pub fn list_directory(
 #[tauri::command]
 pub fn get_file_tags(
     file_id: i64,
+    context_id: Option<i64>,
     state: tauri::State<AppState>,
 ) -> Result<Vec<crate::models::Tag>, String> {
+    let context_id = context_id.unwrap_or(0);
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    load_file_tags(&db, file_id).map_err(|e| e.to_string())
+    load_file_tags(&db, file_id, context_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -487,4 +571,11 @@ pub fn read_file_full(path: String) -> Result<String, String> {
 #[tauri::command]
 pub fn write_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_home_dir() -> String {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| "C:\\Users".to_string())
 }

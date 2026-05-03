@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
 import hljs from "highlight.js/lib/core";
+import { useEffect, useRef } from "react";
 import bash from "highlight.js/lib/languages/bash";
 import cpp from "highlight.js/lib/languages/cpp";
 import css from "highlight.js/lib/languages/css";
@@ -13,8 +14,8 @@ import rust from "highlight.js/lib/languages/rust";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
-import { Calendar, Clock, File, Folder, HardDrive, Tag, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Calendar, Clock, File, Folder, HardDrive, PanelRightClose, Tag, X } from "lucide-react";
+import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStore } from "../store/useStore";
@@ -132,9 +133,40 @@ function FolderStatsView({ path }: { path: string }) {
   );
 }
 
+// ─── Resize hook ─────────────────────────────────────────────────────────────
+function useResizable(defaultWidth: number, min = 200, max = 560) {
+  const [width, setWidth] = useState(defaultWidth);
+  const dragRef = useRef<{ startX: number; startW: number } | null>(null);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragRef.current) return;
+      const delta = dragRef.current.startX - e.clientX;
+      setWidth(Math.max(min, Math.min(max, dragRef.current.startW + delta)));
+    };
+    const onUp = () => { dragRef.current = null; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, [min, max]);
+
+  const onDragStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startW: width };
+  };
+
+  return { width, onDragStart };
+}
+
 // ─── Folder preview ───────────────────────────────────────────────────────────
-function FolderPreview({ folder }: { folder: ListEntry }) {
-  const { tags, updateFolderTags } = useStore();
+function FolderPreview({ folder, onClose, width, onDragStart }: {
+  folder: ListEntry;
+  onClose: () => void;
+  width: number;
+  onDragStart: (e: React.MouseEvent) => void;
+}) {
+  const { tags, updateFolderTags, activeContextId } = useStore();
+  const ctxId = activeContextId ?? 0;
   const [tagInput, setTagInput] = useState("");
   const [showTagInput, setShowTagInput] = useState(false);
   const [itemCount, setItemCount] = useState<number | null>(null);
@@ -156,8 +188,8 @@ function FolderPreview({ folder }: { folder: ListEntry }) {
       const tagId = existing
         ? existing.id
         : await invoke<number>("create_tag", { name: tagName.trim() });
-      await invoke("add_tag_to_folder", { path: folder.path, tagId });
-      const updated = await invoke<TagType[]>("get_folder_tags", { path: folder.path });
+      await invoke("add_tag_to_folder", { path: folder.path, tagId, contextId: ctxId });
+      const updated = await invoke<TagType[]>("get_folder_tags", { path: folder.path, contextId: ctxId });
       setFolderTags(updated);
       updateFolderTags(folder.path, updated);
       setTagInput(""); setShowTagInput(false);
@@ -166,17 +198,29 @@ function FolderPreview({ folder }: { folder: ListEntry }) {
 
   const handleRemoveTag = async (tagId: number) => {
     try {
-      await invoke("remove_tag_from_folder", { path: folder.path, tagId });
-      const updated = await invoke<TagType[]>("get_folder_tags", { path: folder.path });
+      await invoke("remove_tag_from_folder", { path: folder.path, tagId, contextId: ctxId });
+      const updated = await invoke<TagType[]>("get_folder_tags", { path: folder.path, contextId: ctxId });
       setFolderTags(updated);
       updateFolderTags(folder.path, updated);
     } catch (e) { console.error(e); }
   };
 
   return (
-    <div className="w-[280px] bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden">
-      <div className="h-20 bg-surface-0 flex flex-col items-center justify-center border-b border-border-subtle shrink-0 gap-1">
+    <div style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden relative">
+      {/* Resize handle */}
+      <div
+        onMouseDown={onDragStart}
+        className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-accent/40 transition-colors z-10"
+      />
+      <div className="h-20 bg-surface-0 flex flex-col items-center justify-center border-b border-border-subtle shrink-0 gap-1 relative">
         <Folder size={28} className="text-yellow-400 opacity-80" />
+        <button
+          onClick={onClose}
+          title="Close panel"
+          className="absolute top-2 right-2 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors"
+        >
+          <PanelRightClose size={12} />
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
@@ -257,12 +301,14 @@ function CodePreview({ code, ext }: { code: string; ext: string }) {
 }
 
 // ─── Main PreviewPanel ────────────────────────────────────────────────────────
-export function PreviewPanel() {
-  const { selectedFile, selectedEntry, tags, updateFileTags } = useStore();
+export function PreviewPanel({ onClose }: { onClose: () => void }) {
+  const { selectedFile, selectedEntry, tags, updateFileTags, activeContextId } = useStore();
+  const ctxId = activeContextId ?? 0;
   const [tagInput, setTagInput] = useState("");
   const [showTagInput, setShowTagInput] = useState(false);
   const [textPreview, setTextPreview] = useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
+  const { width, onDragStart } = useResizable(280);
 
   useEffect(() => {
     setTextPreview(null);
@@ -276,11 +322,17 @@ export function PreviewPanel() {
       .finally(() => setLoadingPreview(false));
   }, [selectedFile?.id]);
 
-  if (selectedEntry?.kind === "folder") return <FolderPreview folder={selectedEntry.entry} />;
+  if (selectedEntry?.kind === "folder") return (
+    <FolderPreview folder={selectedEntry.entry} onClose={onClose} width={width} onDragStart={onDragStart} />
+  );
 
   if (!selectedFile) {
     return (
-      <div className="w-[280px] bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col items-center justify-center gap-2 text-text-muted">
+      <div style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col items-center justify-center gap-2 text-text-muted relative">
+        <div onMouseDown={onDragStart} className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-accent/40 transition-colors" />
+        <button onClick={onClose} title="Close panel" className="absolute top-2 right-2 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors">
+          <PanelRightClose size={12} />
+        </button>
         <File size={28} className="opacity-20" />
         <span className="text-[12px]">Select a file to preview</span>
       </div>
@@ -294,8 +346,8 @@ export function PreviewPanel() {
       const tagId = existing
         ? existing.id
         : await invoke<number>("create_tag", { name: tagName.trim() });
-      await invoke("add_tag_to_file", { fileId: selectedFile.id, tagId });
-      const updated = await invoke<TagType[]>("get_file_tags", { fileId: selectedFile.id });
+      await invoke("add_tag_to_file", { fileId: selectedFile.id, tagId, contextId: ctxId });
+      const updated = await invoke<TagType[]>("get_file_tags", { fileId: selectedFile.id, contextId: ctxId });
       updateFileTags(selectedFile.id, updated);
       setTagInput(""); setShowTagInput(false);
     } catch (e) { console.error(e); }
@@ -303,8 +355,8 @@ export function PreviewPanel() {
 
   const handleRemoveTag = async (tagId: number) => {
     try {
-      await invoke("remove_tag_from_file", { fileId: selectedFile.id, tagId });
-      const updated = await invoke<TagType[]>("get_file_tags", { fileId: selectedFile.id });
+      await invoke("remove_tag_from_file", { fileId: selectedFile.id, tagId, contextId: ctxId });
+      const updated = await invoke<TagType[]>("get_file_tags", { fileId: selectedFile.id, contextId: ctxId });
       updateFileTags(selectedFile.id, updated);
     } catch (e) { console.error(e); }
   };
@@ -315,7 +367,13 @@ export function PreviewPanel() {
   const isCode = ext in EXT_LANG;
 
   return (
-    <div className="w-[280px] bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden">
+    <div style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden relative">
+      {/* Resize handle */}
+      <div onMouseDown={onDragStart} className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-accent/40 transition-colors z-10" />
+      {/* Close button */}
+      <button onClick={onClose} title="Close panel" className="absolute top-2 right-2 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors z-10">
+        <PanelRightClose size={12} />
+      </button>
 
       {/* Content preview */}
       {isImage ? (
@@ -399,10 +457,19 @@ export function PreviewPanel() {
           <div className="flex flex-wrap gap-1.5">
             {selectedFile.tags.length === 0 && <span className="text-[11px] text-text-muted">No tags</span>}
             {selectedFile.tags.map((tag) => (
-              <span key={tag.id}
+              <span key={`${tag.id}-${tag.context_id}`}
                 className={clsx("group flex items-center gap-1 px-2 py-0.5 rounded text-[11px]", tag.is_auto && "opacity-70")}
                 style={{ background: tag.color + "22", color: tag.color }}>
                 {tag.name}
+                {!tag.is_auto && tag.context_id !== 0 && (
+                  <button
+                    onClick={() => invoke("promote_file_tag_to_global", { fileId: selectedFile.id, tagId: tag.id })
+                      .then(() => invoke<TagType[]>("get_file_tags", { fileId: selectedFile.id, contextId: ctxId }))
+                      .then(updateFileTags.bind(null, selectedFile.id))
+                      .catch(console.error)}
+                    title="Promote to global"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity text-[9px]">↑</button>
+                )}
                 {!tag.is_auto && (
                   <button onClick={() => handleRemoveTag(tag.id)}
                     className="opacity-0 group-hover:opacity-100 transition-opacity"><X size={9} /></button>

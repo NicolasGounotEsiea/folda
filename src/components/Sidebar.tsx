@@ -2,14 +2,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { clsx } from "clsx";
 import {
-  Check, ChevronDown, ChevronRight, ChevronUp,
-  File, Folder, FolderPlus, Hash, LogIn, Plus, Share2, Tag, Trash2, Users, X,
+  Bookmark, BookmarkPlus, Check, ChevronDown, ChevronRight, ChevronUp,
+  File, Folder, FolderPlus, Hash, LogIn, Plus, Share2, Tag, Trash2, Users, X, Zap,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
-import type { Context, FileEntry, ListEntry, PinnedItem, Tag as TagType } from "../types";
+import type { Context, FileEntry, ListEntry, PinnedItem, SavedView, Tag as TagType } from "../types";
 import { JoinModal } from "./JoinModal";
 import { ShareModal } from "./ShareModal";
+import { TagRulesModal } from "./TagRulesModal";
+
+const COLOR_PALETTE = [
+  "#6366f1","#ec4899","#f59e0b","#10b981","#3b82f6",
+  "#8b5cf6","#ef4444","#14b8a6","#f43f5e","#84cc16",
+  "#06b6d4","#a855f7","#fb923c","#64748b","#fbbf24",
+];
 
 function folderName(path: string) {
   return path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
@@ -88,11 +95,13 @@ function IconPicker({ selected, onSelect }: { selected: string; onSelect: (icon:
 
 // ─── Workspace dropdown ───────────────────────────────────────────────────────
 function WorkspaceSwitcher({
-  contexts, activeId, onSwitch, onCreate, onDelete, onEdit,
+  contexts, activeId, sharingContextId, onSwitch, onExitWorkspace, onCreate, onDelete, onEdit,
 }: {
   contexts: Context[];
   activeId: number | null;
+  sharingContextId: number | null;
   onSwitch: (ctx: Context) => void;
+  onExitWorkspace: () => void;
   onCreate: (name: string, icon: string) => void;
   onDelete: (id: number) => void;
   onEdit: (id: number, name: string, icon: string) => void;
@@ -155,9 +164,9 @@ function WorkspaceSwitcher({
         onClick={() => { setOpen((v) => !v); setCreating(false); setEditingId(null); }}
         className="w-full flex items-center gap-2 px-3 h-9 transition-colors select-none bg-surface-2 hover:bg-surface-3 border-b border-border-subtle"
       >
-        <span className="text-[14px] shrink-0">{active?.icon ?? "📁"}</span>
+        <span className="text-[14px] shrink-0">{active?.icon ?? "🌍"}</span>
         <span className="flex-1 text-[12px] font-medium text-text-primary truncate text-left">
-          {active?.name ?? "No workspace"}
+          {active?.name ?? "Global"}
         </span>
         <ChevronUp size={11} className={clsx("text-text-muted transition-transform shrink-0", open && "rotate-180")} />
       </button>
@@ -165,6 +174,19 @@ function WorkspaceSwitcher({
       {/* Dropdown */}
       {open && (
         <div className="absolute top-full left-0 right-0 z-50 bg-surface-2 border border-border rounded-b-lg shadow-2xl py-1 overflow-hidden">
+          {/* Global mode entry */}
+          <button
+            onClick={() => { if (activeId !== null) { onExitWorkspace(); setOpen(false); } }}
+            className={clsx(
+              "w-full flex items-center gap-2 px-3 h-8 text-left transition-colors",
+              activeId === null ? "text-text-primary bg-accent/10" : "text-text-secondary hover:bg-surface-3"
+            )}
+          >
+            <span className="text-[13px] shrink-0">🌍</span>
+            <span className="flex-1 text-[12px] truncate">Global (no workspace)</span>
+            {activeId === null && <Check size={11} className="text-accent shrink-0" />}
+          </button>
+          <div className="h-px bg-border-subtle mx-2 my-1" />
           {contexts.map((ctx) => (
             <div key={ctx.id}>
               {editingId === ctx.id ? (
@@ -199,8 +221,11 @@ function WorkspaceSwitcher({
                 >
                   <span className="text-[13px] shrink-0">{ctx.icon}</span>
                   <span className="flex-1 text-[12px] truncate">{ctx.name}</span>
+                  {sharingContextId === ctx.id && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" title="Shared" />
+                  )}
                   {ctx.id === activeId
-                    ? <Check size={11} className="text-accent shrink-0" />
+                    ? <Check size={11} className="text-accent shrink-0 ml-0.5" />
                     : null}
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
                     <span onClick={(e) => startEdit(ctx, e)}
@@ -298,19 +323,26 @@ function SectionHeader({ label, action }: { label: string; action?: React.ReactN
 // ─── Main Sidebar ─────────────────────────────────────────────────────────────
 export function Sidebar() {
   const {
-    tags, setTags, selectedTagIds, toggleTagFilter, clearTagFilters,
+    tags, setTags, tagStats, setTagStats, savedViews, setSavedViews,
+    selectedTagIds, toggleTagFilter, clearTagFilters,
     currentPath, setCurrentPath, setListEntries,
     setFiles, setTags: _setTags, setIsScanning, selectFile, pushNav,
-    contexts, setContexts, activeContextId,
+    contexts, setContexts, activeContextId, exitWorkspace,
     addFolderToContext, removeFolderFromContext, switchWorkspace,
     pinnedItems, setPinnedItems, removePinnedItem,
     folderTabs, tabs,
-    sharingMode, sharingClients, shareModalOpen, joinModalOpen,
-    setShareModalOpen, setJoinModalOpen,
+    sharingMode, sharingClients, sharingContextId, sharingWorkspaceName, sharingWorkspaceIcon, remoteWorkspaceName,
+    shareModalOpen, joinModalOpen, setShareModalOpen, setJoinModalOpen,
   } = useStore();
 
   const [showNewTag, setShowNewTag] = useState(false);
   const [newTagName, setNewTagName] = useState("");
+  const [showRulesModal, setShowRulesModal] = useState(false);
+  const [editingTagId, setEditingTagId] = useState<number | null>(null);
+  const [editTagName, setEditTagName] = useState("");
+  const [editTagColor, setEditTagColor] = useState("");
+  const [savingViewName, setSavingViewName] = useState("");
+  const [showSaveView, setShowSaveView] = useState(false);
 
   const activeCtx = contexts.find((c) => c.id === activeContextId) ?? null;
 
@@ -318,21 +350,40 @@ export function Sidebar() {
   useEffect(() => {
     Promise.all([
       invoke<Context[]>("get_contexts"),
-      invoke<PinnedItem[]>("get_pinned_items"),
       invoke<TagType[]>("get_tags"),
-    ]).then(([ctxs, pins, tagList]) => {
+    ]).then(([ctxs, tagList]) => {
       setContexts(ctxs);
-      setPinnedItems(pins);
       setTags(tagList);
     }).catch(console.error);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Reload stats + saved views when workspace changes
+  useEffect(() => {
+    const ctxId = activeContextId ?? 0;
+    Promise.all([
+      invoke("get_tag_stats"),
+      invoke<SavedView[]>("get_saved_views", { contextId: ctxId }),
+    ]).then(([stats, views]) => {
+      setTagStats(stats as Parameters<typeof setTagStats>[0]);
+      setSavedViews(views);
+    }).catch(console.error);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeContextId]);
+
+  // Reload pins whenever active workspace changes
+  useEffect(() => {
+    invoke<PinnedItem[]>("get_pinned_items", { contextId: activeContextId ?? 0 })
+      .then(setPinnedItems)
+      .catch(console.error);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeContextId]);
+
   const navigateTo = async (path: string) => {
     setCurrentPath(path);
     pushNav(path);
     try {
-      const entries = await invoke<ListEntry[]>("list_directory", { path });
+      const entries = await invoke<ListEntry[]>("list_directory", { path, contextId: activeContextId ?? 0 });
       setListEntries(entries);
       selectFile(null);
     } catch (e) { console.error(e); }
@@ -364,7 +415,7 @@ export function Sidebar() {
     if (target) {
       pushNav(target);
       try {
-        const entries = await invoke<ListEntry[]>("list_directory", { path: target });
+        const entries = await invoke<ListEntry[]>("list_directory", { path: target, contextId: ctx.id });
         setListEntries(entries);
         selectFile(null);
       } catch { /* folder may have moved */ }
@@ -409,6 +460,14 @@ export function Sidebar() {
       const updated = await invoke<Context[]>("get_contexts");
       setContexts(updated);
     } catch (e) { console.error(e); }
+  };
+
+  // ── Browse to any folder (global mode) ───────────────────────────────────
+  const handleBrowse = async () => {
+    let selected: string | string[] | null;
+    try { selected = await open({ directory: true, multiple: false }); } catch { return; }
+    if (!selected || typeof selected !== "string") return;
+    navigateTo(selected);
   };
 
   // ── Add folder to active workspace ────────────────────────────────────────
@@ -466,16 +525,81 @@ export function Sidebar() {
     if (!newTagName.trim()) return;
     try {
       await invoke("create_tag", { name: newTagName.trim() });
-      const updated = await invoke<TagType[]>("get_tags");
+      const [updated, stats] = await Promise.all([
+        invoke<TagType[]>("get_tags"),
+        invoke("get_tag_stats"),
+      ]);
       setTags(updated);
+      setTagStats(stats as Parameters<typeof setTagStats>[0]);
       setNewTagName(""); setShowNewTag(false);
     } catch (e) { console.error(e); }
   };
 
+  const startEditTag = (tag: TagType) => {
+    setEditingTagId(tag.id);
+    setEditTagName(tag.name);
+    setEditTagColor(tag.color);
+  };
+
+  const handleSaveTag = async () => {
+    if (!editingTagId || !editTagName.trim()) return;
+    try {
+      await invoke("update_tag", { id: editingTagId, name: editTagName.trim(), color: editTagColor });
+      const updated = await invoke<TagType[]>("get_tags");
+      setTags(updated);
+    } catch (e) { console.error(e); }
+    setEditingTagId(null);
+  };
+
+  const handleDeleteTag = async (id: number) => {
+    setEditingTagId(null);
+    try {
+      await invoke("delete_tag", { id });
+      const [updated, stats] = await Promise.all([
+        invoke<TagType[]>("get_tags"),
+        invoke("get_tag_stats"),
+      ]);
+      setTags(updated);
+      setTagStats(stats as Parameters<typeof setTagStats>[0]);
+    } catch (e) { console.error(e); }
+  };
+
+  // ── Saved views ───────────────────────────────────────────────────────────
+  const handleSaveView = async () => {
+    if (!savingViewName.trim() || selectedTagIds.length === 0) return;
+    try {
+      await invoke("create_saved_view", {
+        name: savingViewName.trim(),
+        icon: "🔖",
+        tagIds: selectedTagIds,
+        contextId: activeContextId ?? 0,
+      });
+      const views = await invoke<SavedView[]>("get_saved_views", { contextId: activeContextId ?? 0 });
+      setSavedViews(views);
+      setSavingViewName(""); setShowSaveView(false);
+    } catch (e) { console.error(e); }
+  };
+
+  const handleDeleteView = async (id: number) => {
+    try {
+      await invoke("delete_saved_view", { id });
+      setSavedViews(savedViews.filter((v) => v.id !== id));
+    } catch (e) { console.error(e); }
+  };
+
   // ── Pinned ────────────────────────────────────────────────────────────────
-  const handleUnpin = async (path: string) => {
-    await invoke("unpin_item", { path }).catch(console.error);
+  const handleUnpin = async (path: string, contextId: number) => {
+    await invoke("unpin_item", { path, contextId }).catch(console.error);
     removePinnedItem(path);
+    // Refresh to reflect any remaining pin in other scope
+    const updated = await invoke<PinnedItem[]>("get_pinned_items", { contextId: activeContextId ?? 0 }).catch(() => pinnedItems);
+    setPinnedItems(updated);
+  };
+
+  const handlePromotePin = async (path: string) => {
+    await invoke("promote_pin_to_global", { path }).catch(console.error);
+    const updated = await invoke<PinnedItem[]>("get_pinned_items", { contextId: activeContextId ?? 0 }).catch(() => pinnedItems);
+    setPinnedItems(updated);
   };
 
   return (
@@ -486,7 +610,9 @@ export function Sidebar() {
       <WorkspaceSwitcher
         contexts={contexts}
         activeId={activeContextId}
+        sharingContextId={sharingContextId}
         onSwitch={handleSwitch}
+        onExitWorkspace={exitWorkspace}
         onCreate={handleCreate}
         onDelete={handleDelete}
         onEdit={handleEdit}
@@ -506,7 +632,22 @@ export function Sidebar() {
           } />
 
           {!activeCtx ? (
-            <p className="text-[11px] text-text-muted text-center py-3">No workspace selected</p>
+            <div className="flex flex-col gap-1">
+              <button
+                onClick={handleBrowse}
+                className="w-full flex items-center gap-2 px-2 h-7 rounded border border-dashed border-border text-text-muted hover:border-accent hover:text-accent text-[11px] transition-colors"
+              >
+                <FolderPlus size={11} /> Browse a folder…
+              </button>
+              {currentPath && (
+                <div className="mt-0.5">
+                  <FolderNode
+                    path={currentPath} name={folderName(currentPath)} depth={0}
+                    currentPath={currentPath} onNavigate={navigateTo}
+                  />
+                </div>
+              )}
+            </div>
           ) : activeCtx.watched_paths.length === 0 ? (
             <button onClick={handleAddFolder}
               className="w-full flex items-center gap-2 px-2 h-7 rounded border border-dashed border-border text-text-muted hover:border-accent hover:text-accent text-[11px] transition-colors">
@@ -532,30 +673,67 @@ export function Sidebar() {
         </div>
 
         {/* ── Pinned ── */}
-        {pinnedItems.length > 0 && (
-          <>
-            <div className="h-px bg-border-subtle mx-3" />
-            <div className="px-3 py-2">
-              <SectionHeader label="Pinned" />
-              <div className="flex flex-col gap-0.5">
-                {pinnedItems.map((item) => (
-                  <PinnedRow key={item.path} item={item} currentPath={currentPath}
-                    onNavigate={navigateTo} onUnpin={() => handleUnpin(item.path)} />
-                ))}
+        {pinnedItems.length > 0 && (() => {
+          const workspacePins = pinnedItems.filter((p) => p.context_id !== 0);
+          const globalPins = pinnedItems.filter((p) => p.context_id === 0);
+          return (
+            <>
+              <div className="h-px bg-border-subtle mx-3" />
+              <div className="px-3 py-2">
+                {/* Workspace pins */}
+                {workspacePins.length > 0 && (
+                  <>
+                    <SectionHeader label="Pinned (workspace)" />
+                    <div className="flex flex-col gap-0.5 mb-2">
+                      {workspacePins.map((item) => (
+                        <div key={item.path} className="group/pin flex items-center gap-1">
+                          <div className="flex-1 min-w-0">
+                            <PinnedRow item={item} currentPath={currentPath}
+                              onNavigate={navigateTo} onUnpin={() => handleUnpin(item.path, item.context_id)} />
+                          </div>
+                          <button
+                            onClick={() => handlePromotePin(item.path)}
+                            title="Promote to global"
+                            className="opacity-0 group-hover/pin:opacity-100 shrink-0 text-[9px] text-accent hover:text-text-primary transition-all px-1"
+                          >↑</button>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+                {/* Global pins */}
+                {globalPins.length > 0 && (
+                  <>
+                    <SectionHeader label={workspacePins.length > 0 ? "Pinned (global)" : "Pinned"} />
+                    <div className="flex flex-col gap-0.5">
+                      {globalPins.map((item) => (
+                        <PinnedRow key={item.path} item={item} currentPath={currentPath}
+                          onNavigate={navigateTo} onUnpin={() => handleUnpin(item.path, 0)} />
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
-            </div>
-          </>
-        )}
+            </>
+          );
+        })()}
 
         {/* ── Tags ── */}
         <div className="h-px bg-border-subtle mx-3" />
         <div className="px-3 py-2 pb-4">
           <SectionHeader label="Tags" action={
-            <button onClick={() => setShowNewTag((v) => !v)}
-              className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors">
-              <Plus size={11} />
-            </button>
+            <div className="flex items-center gap-0.5">
+              <button onClick={() => setShowRulesModal(true)} title="Tag rules"
+                className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-accent hover:bg-surface-3 transition-colors">
+                <Zap size={11} />
+              </button>
+              <button onClick={() => setShowNewTag((v) => !v)} title="New tag"
+                className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors">
+                <Plus size={11} />
+              </button>
+            </div>
           } />
+
           {showNewTag && (
             <input autoFocus type="text" value={newTagName}
               onChange={(e) => setNewTagName(e.target.value)}
@@ -563,36 +741,172 @@ export function Sidebar() {
               placeholder="Tag name…"
               className="w-full h-6 px-2 mt-1 mb-2 rounded bg-surface-3 border border-border text-[11px] text-text-primary placeholder-text-muted outline-none focus:border-accent" />
           )}
+
+          {/* Saved views */}
+          {savedViews.length > 0 && (
+            <div className="mb-1.5 flex flex-col gap-0.5">
+              {savedViews.map((view) => (
+                <div key={view.id} className="group flex items-center">
+                  <button
+                    onClick={() => {
+                      clearTagFilters();
+                      view.tag_ids.forEach((id) => toggleTagFilter(id));
+                    }}
+                    className={clsx(
+                      "flex-1 flex items-center gap-1.5 px-2 h-6 rounded text-[12px] transition-colors truncate",
+                      JSON.stringify(view.tag_ids.sort()) === JSON.stringify([...selectedTagIds].sort())
+                        ? "text-text-primary bg-accent/10"
+                        : "text-text-secondary hover:bg-surface-3"
+                    )}
+                  >
+                    <Bookmark size={10} className="shrink-0 text-text-muted" />
+                    <span className="truncate">{view.name}</span>
+                  </button>
+                  <button
+                    onClick={() => handleDeleteView(view.id)}
+                    className="opacity-0 group-hover:opacity-100 w-4 h-4 flex items-center justify-center rounded text-text-muted hover:text-red-400 transition-all shrink-0 mr-0.5">
+                    <X size={9} />
+                  </button>
+                </div>
+              ))}
+              <div className="h-px bg-border-subtle my-0.5" />
+            </div>
+          )}
+
+          {/* All files */}
           <button onClick={clearTagFilters}
             className={clsx("w-full flex items-center gap-2 px-2 h-6 rounded text-[12px] transition-colors",
               selectedTagIds.length === 0 ? "text-text-primary bg-surface-3" : "text-text-secondary hover:bg-surface-3")}>
             <Hash size={12} className="text-text-muted" /> All files
           </button>
-          <div className="mt-1 flex flex-col gap-0.5">
-            {tags.map((tag) => (
-              <button key={tag.id} onClick={() => toggleTagFilter(tag.id)}
-                className={clsx("w-full flex items-center gap-2 px-2 h-6 rounded text-[12px] transition-colors",
-                  selectedTagIds.includes(tag.id) ? "text-text-primary bg-surface-3" : "text-text-secondary hover:bg-surface-3")}>
-                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: tag.color }} />
-                <span className="truncate">{tag.name}</span>
-              </button>
-            ))}
+
+          {/* Tag list */}
+          <div className="mt-0.5 flex flex-col gap-0.5">
+            {tags.map((tag) => {
+              const count = tagStats.find((s) => s.tag_id === tag.id)?.count ?? 0;
+              const isSelected = selectedTagIds.includes(tag.id);
+              const isEditing = editingTagId === tag.id;
+
+              if (isEditing) {
+                return (
+                  <div key={tag.id} className="rounded-lg bg-surface-2 border border-accent/40 p-2 flex flex-col gap-2">
+                    {/* Name input */}
+                    <input
+                      autoFocus
+                      value={editTagName}
+                      onChange={(e) => setEditTagName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleSaveTag(); if (e.key === "Escape") setEditingTagId(null); }}
+                      className="w-full h-6 px-2 rounded bg-surface-3 border border-border text-[11px] text-text-primary outline-none focus:border-accent"
+                    />
+                    {/* Color palette */}
+                    <div className="grid grid-cols-5 gap-1">
+                      {COLOR_PALETTE.map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => setEditTagColor(c)}
+                          className={clsx(
+                            "w-full aspect-square rounded-full transition-transform hover:scale-110",
+                            editTagColor === c && "ring-2 ring-offset-1 ring-offset-surface-2 ring-white/70"
+                          )}
+                          style={{ background: c }}
+                        />
+                      ))}
+                    </div>
+                    {/* Actions */}
+                    <div className="flex items-center justify-between">
+                      <button
+                        onClick={() => handleDeleteTag(tag.id)}
+                        className="text-[11px] text-red-400 hover:text-red-300 transition-colors flex items-center gap-1"
+                      >
+                        <Trash2 size={10} /> Delete
+                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setEditingTagId(null)}
+                          className="h-5 px-2 rounded text-[11px] text-text-muted hover:bg-surface-3 transition-colors"
+                        >Cancel</button>
+                        <button
+                          onClick={handleSaveTag}
+                          disabled={!editTagName.trim()}
+                          className="h-5 px-2 rounded bg-accent text-white text-[11px] disabled:opacity-30 hover:bg-accent/80 transition-colors"
+                        >Save</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div key={tag.id} className="group flex items-center gap-1">
+                  <button
+                    onClick={() => toggleTagFilter(tag.id)}
+                    className={clsx(
+                      "flex-1 flex items-center gap-2 px-2 h-6 rounded text-[12px] transition-colors min-w-0",
+                      isSelected ? "text-text-primary bg-surface-3" : "text-text-secondary hover:bg-surface-3"
+                    )}>
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: tag.color }} />
+                    <span className="truncate flex-1 text-left">{tag.name}</span>
+                    {count > 0 && (
+                      <span className="text-[10px] text-text-muted shrink-0">{count}</span>
+                    )}
+                  </button>
+                  {!tag.is_auto && (
+                    <button
+                      onClick={() => startEditTag(tag)}
+                      title="Edit tag"
+                      className="opacity-0 group-hover:opacity-100 w-4 h-4 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-all shrink-0">
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
+
           {tags.length === 0 && (
             <div className="mt-2 flex flex-col items-center gap-1 text-center">
               <Tag size={18} className="text-text-muted opacity-30" />
               <span className="text-[10px] text-text-muted">No tags yet</span>
             </div>
           )}
+
+          {/* Save current filter as view */}
+          {selectedTagIds.length > 0 && (
+            <div className="mt-2">
+              {showSaveView ? (
+                <div className="flex items-center gap-1">
+                  <input autoFocus value={savingViewName}
+                    onChange={(e) => setSavingViewName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleSaveView(); if (e.key === "Escape") setShowSaveView(false); }}
+                    placeholder="View name…"
+                    className="flex-1 h-6 px-2 rounded bg-surface-3 border border-accent text-[11px] text-text-primary placeholder-text-muted outline-none" />
+                  <button onClick={handleSaveView} disabled={!savingViewName.trim()}
+                    className="h-6 px-2 rounded bg-accent text-white text-[11px] disabled:opacity-30 hover:bg-accent/80 transition-colors">Save</button>
+                </div>
+              ) : (
+                <button onClick={() => setShowSaveView(true)}
+                  className="w-full flex items-center gap-1.5 px-2 h-6 rounded text-[11px] text-text-muted hover:text-accent hover:bg-surface-3 transition-colors border border-dashed border-border">
+                  <BookmarkPlus size={10} /> Save filter as view
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
+
+      {showRulesModal && <TagRulesModal onClose={() => setShowRulesModal(false)} />}
 
       {/* ── Sharing ── */}
       <div className="shrink-0 border-t border-border-subtle px-3 py-2 flex flex-col gap-1">
         {sharingMode === "joined" ? (
           <div className="flex items-center gap-1.5 px-2 h-6 rounded bg-accent/10 text-accent text-[11px]">
             <Users size={11} className="shrink-0" />
-            <span className="truncate flex-1">Connecté en tant qu'invité</span>
+            <span className="truncate flex-1">
+              {remoteWorkspaceName ? `↔ ${remoteWorkspaceName}` : "Connecté en tant qu'invité"}
+            </span>
             <button
               onClick={() => setJoinModalOpen(true)}
               className="text-text-muted hover:text-text-primary transition-colors"
@@ -608,7 +922,9 @@ export function Sidebar() {
           >
             <Share2 size={11} className="shrink-0" />
             <span className="flex-1 text-left truncate">
-              Partage actif
+              {sharingWorkspaceIcon && sharingWorkspaceName
+                ? `${sharingWorkspaceIcon} ${sharingWorkspaceName}`
+                : "Partage actif"}
               {sharingClients.length > 0 && ` · ${sharingClients.length} invité${sharingClients.length > 1 ? "s" : ""}`}
             </span>
           </button>
