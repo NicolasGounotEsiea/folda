@@ -337,6 +337,7 @@ export function Sidebar() {
 
   const [showNewTag, setShowNewTag] = useState(false);
   const [newTagName, setNewTagName] = useState("");
+  const [newTagColor, setNewTagColor] = useState(COLOR_PALETTE[0]);
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [editingTagId, setEditingTagId] = useState<number | null>(null);
   const [editTagName, setEditTagName] = useState("");
@@ -524,14 +525,14 @@ export function Sidebar() {
   const handleCreateTag = async () => {
     if (!newTagName.trim()) return;
     try {
-      await invoke("create_tag", { name: newTagName.trim() });
+      await invoke("create_tag", { name: newTagName.trim(), color: newTagColor });
       const [updated, stats] = await Promise.all([
         invoke<TagType[]>("get_tags"),
         invoke("get_tag_stats"),
       ]);
       setTags(updated);
       setTagStats(stats as Parameters<typeof setTagStats>[0]);
-      setNewTagName(""); setShowNewTag(false);
+      setNewTagName(""); setNewTagColor(COLOR_PALETTE[0]); setShowNewTag(false);
     } catch (e) { console.error(e); }
   };
 
@@ -735,11 +736,23 @@ export function Sidebar() {
           } />
 
           {showNewTag && (
-            <input autoFocus type="text" value={newTagName}
-              onChange={(e) => setNewTagName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleCreateTag(); if (e.key === "Escape") setShowNewTag(false); }}
-              placeholder="Tag name…"
-              className="w-full h-6 px-2 mt-1 mb-2 rounded bg-surface-3 border border-border text-[11px] text-text-primary placeholder-text-muted outline-none focus:border-accent" />
+            <div className="mt-1 mb-2 p-2 rounded-lg bg-surface-2 border border-border flex flex-col gap-1.5">
+              <input
+                autoFocus type="text" value={newTagName}
+                onChange={(e) => setNewTagName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleCreateTag(); if (e.key === "Escape") { setShowNewTag(false); setNewTagName(""); } }}
+                placeholder="Tag name…"
+                className="w-full h-6 px-2 rounded bg-surface-3 border border-border text-[11px] text-text-primary placeholder-text-muted outline-none focus:border-accent"
+              />
+              <div className="grid grid-cols-5 gap-1">
+                {COLOR_PALETTE.map((c) => (
+                  <button key={c} onClick={() => setNewTagColor(c)}
+                    className={clsx("w-full aspect-square rounded-full transition-transform hover:scale-110",
+                      newTagColor === c && "ring-2 ring-offset-1 ring-offset-surface-2 ring-white/70")}
+                    style={{ background: c }} />
+                ))}
+              </div>
+            </div>
           )}
 
           {/* Saved views */}
