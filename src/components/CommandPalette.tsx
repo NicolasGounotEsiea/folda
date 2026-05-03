@@ -1,0 +1,257 @@
+import { invoke } from "@tauri-apps/api/core";
+import { clsx } from "clsx";
+import {
+  Clock, File, Folder, Hash,
+  LayoutGrid, List, Search, X,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useStore } from "../store/useStore";
+import type { FileEntry, ListEntry } from "../types";
+
+interface Command {
+  id: string;
+  label: string;
+  description?: string;
+  icon: React.ReactNode;
+  group: string;
+  action: () => void;
+}
+
+function score(text: string, query: string): number {
+  if (!query) return 1;
+  const t = text.toLowerCase();
+  const q = query.toLowerCase();
+  if (t === q) return 100;
+  if (t.startsWith(q)) return 80;
+  if (t.includes(q)) return 60;
+  // fuzzy: all query chars appear in order
+  let qi = 0;
+  for (let i = 0; i < t.length && qi < q.length; i++) {
+    if (t[i] === q[qi]) qi++;
+  }
+  return qi === q.length ? 20 : 0;
+}
+
+export function CommandPalette({ onClose }: { onClose: () => void }) {
+  const {
+    rootPaths, setCurrentPath, setListEntries, pushNav, selectFile,
+    setViewMode, setLayoutMode, viewMode, layoutMode, toggleShowHidden, showHidden,
+    pinnedItems,
+  } = useStore();
+
+  const [query, setQuery] = useState("");
+  const [activeIdx, setActiveIdx] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const navigateTo = async (path: string) => {
+    setCurrentPath(path);
+    pushNav(path);
+    setViewMode("explorer");
+    try {
+      const entries = await invoke<ListEntry[]>("list_directory", { path });
+      setListEntries(entries);
+      selectFile(null);
+    } catch { /* ignore */ }
+    onClose();
+  };
+
+  // ── Static commands ────────────────────────────────────────────────────────
+  const staticCommands = useMemo<Command[]>(() => {
+    const cmds: Command[] = [
+      {
+        id: "view:explorer", label: "Switch to Explorer", group: "View",
+        icon: <List size={13} />, description: "Show file explorer",
+        action: () => { setViewMode("explorer"); onClose(); },
+      },
+      {
+        id: "view:timeline", label: "Switch to Timeline", group: "View",
+        icon: <Clock size={13} />, description: "Show recent activity",
+        action: () => { setViewMode("timeline"); onClose(); },
+      },
+      {
+        id: "layout:list", label: "List layout", group: "View",
+        icon: <List size={13} />,
+        action: () => { setLayoutMode("list"); onClose(); },
+      },
+      {
+        id: "layout:grid", label: "Grid layout", group: "View",
+        icon: <LayoutGrid size={13} />,
+        action: () => { setLayoutMode("grid"); onClose(); },
+      },
+      {
+        id: "hidden:toggle", label: showHidden ? "Hide hidden files" : "Show hidden files", group: "View",
+        icon: <Hash size={13} />,
+        action: () => { toggleShowHidden(); onClose(); },
+      },
+    ];
+
+    // Root paths as navigation commands
+    rootPaths.forEach((p) => {
+      const name = p.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? p;
+      cmds.push({
+        id: `nav:root:${p}`, label: name, description: p, group: "Folders",
+        icon: <Folder size={13} className="text-yellow-400" />,
+        action: () => navigateTo(p),
+      });
+    });
+
+    // Pinned items
+    pinnedItems.forEach((item) => {
+      cmds.push({
+        id: `pinned:${item.path}`, label: item.name, description: item.path, group: "Pinned",
+        icon: item.is_dir
+          ? <Folder size={13} className="text-yellow-400" />
+          : <File size={13} className="text-text-muted" />,
+        action: () => navigateTo(item.path),
+      });
+    });
+
+    return cmds;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rootPaths, pinnedItems, showHidden, viewMode, layoutMode]);
+
+  // ── File search results ────────────────────────────────────────────────────
+  const [searchResults, setSearchResults] = useState<Command[]>([]);
+  useEffect(() => {
+    if (query.length < 2) { setSearchResults([]); return; }
+    const timer = setTimeout(async () => {
+      try {
+        const results = await invoke<FileEntry[]>("search_files", { query });
+        setSearchResults(results.slice(0, 8).map((f) => ({
+          id: `file:${f.path}`, label: f.name, description: f.path, group: "Files",
+          icon: <File size={13} className="text-text-muted" />,
+          action: async () => {
+            const parent = f.path.replace(/\\/g, "/").split("/").slice(0, -1).join("\\");
+            await navigateTo(parent);
+          },
+        })));
+      } catch { setSearchResults([]); }
+    }, 150);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  // ── Filtered + scored commands ─────────────────────────────────────────────
+  const allCommands = useMemo(() => {
+    return [...staticCommands, ...searchResults];
+  }, [staticCommands, searchResults]);
+
+  const filtered = useMemo(() => {
+    if (!query) return allCommands;
+    return allCommands
+      .map((c) => ({ ...c, _score: Math.max(score(c.label, query), score(c.description ?? "", query)) }))
+      .filter((c) => c._score > 0)
+      .sort((a, b) => b._score - a._score);
+  }, [allCommands, query]);
+
+  useEffect(() => { setActiveIdx(0); }, [filtered.length]);
+
+  // ── Scroll active item into view ───────────────────────────────────────────
+  useEffect(() => {
+    const el = listRef.current?.querySelector(`[data-idx="${activeIdx}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [activeIdx]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setActiveIdx((i) => Math.min(i + 1, filtered.length - 1)); }
+    if (e.key === "ArrowUp") { e.preventDefault(); setActiveIdx((i) => Math.max(i - 1, 0)); }
+    if (e.key === "Enter" && filtered[activeIdx]) { filtered[activeIdx].action(); }
+    if (e.key === "Escape") onClose();
+  };
+
+  // Group items for display
+  const groups = useMemo(() => {
+    const map = new Map<string, Command[]>();
+    filtered.forEach((c) => {
+      if (!map.has(c.group)) map.set(c.group, []);
+      map.get(c.group)!.push(c);
+    });
+    return map;
+  }, [filtered]);
+
+  let globalIdx = 0;
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-start justify-center pt-[12vh] bg-black/50"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-[560px] max-h-[60vh] bg-surface-2 border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden">
+
+        {/* Search input */}
+        <div className="flex items-center gap-2 px-4 h-12 border-b border-border-subtle shrink-0">
+          <Search size={14} className="text-text-muted shrink-0" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Search files, folders, actions…"
+            className="flex-1 bg-transparent text-[13px] text-text-primary placeholder-text-muted outline-none"
+          />
+          {query && (
+            <button onClick={() => setQuery("")} className="text-text-muted hover:text-text-secondary transition-colors">
+              <X size={12} />
+            </button>
+          )}
+          <kbd className="text-[10px] text-text-muted bg-surface-3 px-1.5 py-0.5 rounded border border-border">Esc</kbd>
+        </div>
+
+        {/* Results */}
+        <div ref={listRef} className="flex-1 overflow-y-auto py-1">
+          {filtered.length === 0 && (
+            <div className="flex flex-col items-center justify-center gap-2 py-8 text-text-muted">
+              <Search size={20} className="opacity-20" />
+              <span className="text-[12px]">No results</span>
+            </div>
+          )}
+          {Array.from(groups.entries()).map(([group, items]) => (
+            <div key={group}>
+              <div className="px-4 py-1 text-[10px] text-text-muted uppercase tracking-widest font-semibold">
+                {group}
+              </div>
+              {items.map((cmd) => {
+                const idx = globalIdx++;
+                const isActive = idx === activeIdx;
+                return (
+                  <button
+                    key={cmd.id}
+                    data-idx={idx}
+                    onClick={cmd.action}
+                    onMouseEnter={() => setActiveIdx(idx)}
+                    className={clsx(
+                      "w-full flex items-center gap-3 px-4 h-9 text-left transition-colors",
+                      isActive ? "bg-accent/10 text-text-primary" : "text-text-secondary hover:bg-surface-3"
+                    )}
+                  >
+                    <span className="shrink-0 text-text-muted">{cmd.icon}</span>
+                    <span className="flex-1 min-w-0">
+                      <span className="text-[12px] truncate block">{cmd.label}</span>
+                      {cmd.description && (
+                        <span className="text-[10px] text-text-muted truncate block">{cmd.description}</span>
+                      )}
+                    </span>
+                    {isActive && (
+                      <kbd className="text-[10px] text-text-muted bg-surface-3 px-1.5 py-0.5 rounded border border-border shrink-0">↵</kbd>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+
+        {/* Footer hint */}
+        <div className="flex items-center gap-4 px-4 py-2 border-t border-border-subtle shrink-0">
+          {[["↑↓", "navigate"], ["↵", "select"], ["Esc", "close"]].map(([key, label]) => (
+            <span key={key} className="flex items-center gap-1 text-[10px] text-text-muted">
+              <kbd className="bg-surface-3 px-1 py-0.5 rounded border border-border">{key}</kbd>
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}

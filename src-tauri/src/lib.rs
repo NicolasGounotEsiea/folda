@@ -1,0 +1,85 @@
+use std::sync::{Arc, Mutex};
+use tauri::Manager;
+
+mod commands;
+mod db;
+pub mod models;
+pub mod sharing;
+
+pub struct AppState {
+    pub db: Arc<Mutex<rusqlite::Connection>>,
+    pub sharing: tokio::sync::Mutex<sharing::SharingState>,
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let data_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&data_dir)?;
+            let db_path = data_dir.join("contextual.db");
+            let conn = db::init(&db_path).expect("Failed to initialize database");
+            app.manage(AppState {
+                db: Arc::new(Mutex::new(conn)),
+                sharing: tokio::sync::Mutex::new(sharing::SharingState::Idle),
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::files::scan_directory,
+            commands::files::list_directory,
+            commands::files::get_files,
+            commands::files::get_file_tags,
+            commands::files::get_file_preview,
+            commands::files::read_file_full,
+            commands::files::write_file,
+            commands::files::watch_directory,
+            commands::folders::create_directory,
+            commands::folders::get_folder_tags,
+            commands::folders::add_tag_to_folder,
+            commands::folders::remove_tag_from_folder,
+            commands::tags::get_tags,
+            commands::tags::create_tag,
+            commands::tags::add_tag_to_file,
+            commands::tags::remove_tag_from_file,
+            commands::search::search_files,
+            commands::search::search_folders,
+            commands::fs_ops::rename_path,
+            commands::fs_ops::delete_path,
+            commands::fs_ops::copy_path,
+            commands::fs_ops::move_path,
+            commands::fs_ops::create_file,
+            commands::fs_ops::duplicate_file,
+            commands::fs_ops::open_with_default,
+            commands::fs_ops::reveal_in_explorer,
+            commands::context::get_last_path,
+            commands::context::get_watched_paths,
+            commands::context::get_contexts,
+            commands::context::create_context,
+            commands::context::set_active_context,
+            commands::context::update_context,
+            commands::context::delete_context,
+            commands::context::get_timeline,
+            commands::pinned::get_pinned_items,
+            commands::pinned::pin_item,
+            commands::pinned::unpin_item,
+            commands::stats::get_folder_stats,
+            // Sharing
+            commands::sharing::start_sharing,
+            commands::sharing::stop_sharing,
+            commands::sharing::join_shared_workspace,
+            commands::sharing::leave_shared_workspace,
+            commands::sharing::get_sharing_status,
+            commands::sharing::list_remote_dir,
+            commands::sharing::read_remote_file,
+            commands::sharing::write_remote_file,
+            commands::sharing::delete_remote_path,
+            commands::sharing::rename_remote_path,
+            commands::sharing::create_remote_file,
+            commands::sharing::create_remote_dir,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
