@@ -1,13 +1,23 @@
 # Contextual Workspace
 
+[![CI](https://github.com/NicolasGounotEsiea/folda/actions/workflows/ci.yml/badge.svg)](https://github.com/NicolasGounotEsiea/folda/actions/workflows/ci.yml)
+[![Release](https://github.com/NicolasGounotEsiea/folda/actions/workflows/release.yml/badge.svg)](https://github.com/NicolasGounotEsiea/folda/releases)
+[![License: Proprietary](https://img.shields.io/badge/license-proprietary-red.svg)](#license)
+
 A local-first file manager for Windows built with Tauri 2 + React + Rust.
+
+## Download
+
+Grab the latest installer from the [Releases](https://github.com/NicolasGounotEsiea/folda/releases) page.  
+Two formats are available: **NSIS `.exe`** (recommended) and **MSI `.msi`**.
 
 ## Features
 
 - **Multi-workspace** — organize folders into named workspaces with icons, tags, and pinned paths
 - **File explorer** — multi-tab browsing, context menus, bulk rename, drag & drop
 - **Editor** — syntax-highlighted editor (CodeMirror) for text, code, Markdown, and DOCX preview
-- **Tags** — tag files and folders, filter by tag inside a workspace
+- **Tags** — tag files and folders, filter by tag inside a workspace; save filter combinations as views
+- **Tag rules** — auto-tag files by extension, name, path, or size; rules apply automatically on every folder navigation
 - **Search** — full-text search across workspace paths
 - **Shared workspaces** — host your workspace over a local or remote network; guests can browse, edit, create, and delete files in real time. Supports copy/paste and drag & drop across local and remote tabs.
 - **Frameless window** — custom titlebar with native window controls

@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    name: Build & publish release (Windows)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Build Tauri app
+        run: npm run tauri build
+
+      - name: Collect artifacts
+        id: artifacts
+        shell: pwsh
+        run: |
+          $msi  = Get-ChildItem src-tauri/target/release/bundle/msi/*.msi  | Select-Object -First 1
+          $nsis = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          echo "MSI=$($msi.FullName)"   >> $env:GITHUB_OUTPUT
+          echo "NSIS=$($nsis.FullName)" >> $env:GITHUB_OUTPUT
+          echo "MSI_NAME=$($msi.Name)"   >> $env:GITHUB_OUTPUT
+          echo "NSIS_NAME=$($nsis.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Contextual Workspace ${{ github.ref_name }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            ${{ steps.artifacts.outputs.MSI }}
+            ${{ steps.artifacts.outputs.NSIS }}

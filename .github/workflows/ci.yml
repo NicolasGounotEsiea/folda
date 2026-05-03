@@ -3,11 +3,14 @@ name: CI
 on:
   push:
     branches: [main]
+    # Don't double-run on release tags — the release workflow handles those
+    tags-ignore:
+      - "v*"
   pull_request:
     branches: [main]
 
 jobs:
-  # ── Type-check & lint ─────────────────────────────────────────────────────
+  # ── Type-check ────────────────────────────────────────────────────────────
   frontend:
     name: Frontend (tsc)
     runs-on: ubuntu-latest
@@ -40,15 +43,14 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - run: cargo check
-      - run: cargo clippy -- -D warnings
+      - run: cargo check --locked
+      - run: cargo clippy --locked -- -D warnings
 
-  # ── Production build ──────────────────────────────────────────────────────
+  # ── Production build (main only, saves CI minutes on PRs) ─────────────────
   build:
     name: Build installer (Windows)
     runs-on: windows-latest
     needs: [frontend, rust]
-    # Only run on pushes to main, not on every PR to save minutes
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
@@ -69,7 +71,7 @@ jobs:
       - name: Build Tauri app
         run: npm run tauri build
 
-      - name: Upload installer
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: installer-windows
