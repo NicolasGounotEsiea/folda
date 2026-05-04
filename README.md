@@ -88,7 +88,7 @@ Features planned to increase product value and justify purchase pricing.
 
 ### Cloud & Sync
 - [ ] **Workspace sync** — sync metadata, tags, and saved views across machines via an optional cloud backend (tags follow files across devices)
-- [ ] **Owners rules** - possibility to choose for the owner if other users can see/update/create/delete files 
+- [ ] **Owners rules / permissions** - possibility to choose for the owner if other users can see/update/create/delete files 
 - [ ] **Export / import workspace** — portable `.cwsp` bundle that preserves folder structure, tags, pinned items, and rules
 - [ ] **Conflict resolution UI** — when the same file is edited on two machines, show a diff and let the user pick
 
