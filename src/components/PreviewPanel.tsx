@@ -20,6 +20,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStore } from "../store/useStore";
 import type { FolderStats, ListEntry, Tag as TagType } from "../types";
+import { useTranslation } from "../utils/i18n";
 
 interface ActivityEntry {
   id: number;
@@ -53,14 +54,16 @@ function FileActivityTab({ filePath }: { filePath: string }) {
     created: "text-emerald-400", deleted: "text-red-400", renamed: "text-purple-400", moved: "text-purple-400",
   };
 
+  const tActivity = useTranslation();
+
   if (loading) return (
-    <div className="p-3 text-[10px] text-text-muted animate-pulse">Loading…</div>
+    <div className="p-3 text-[10px] text-text-muted animate-pulse">{tActivity.loading}</div>
   );
 
   if (entries.length === 0) return (
     <div className="flex flex-col items-center justify-center py-8 gap-2 text-text-muted">
       <History size={18} className="opacity-30" />
-      <span className="text-[10px]">No activity recorded</span>
+      <span className="text-[10px]">{tActivity.noActivity}</span>
     </div>
   );
 
@@ -233,6 +236,7 @@ function FolderPreview({ folder, onClose, width, onDragStart }: {
   onDragStart: (e: React.MouseEvent) => void;
 }) {
   const { tags, updateFolderTags, activeContextId } = useStore();
+  const tFolder = useTranslation();
   const ctxId = activeContextId ?? 0;
   const [tagInput, setTagInput] = useState("");
   const [showTagInput, setShowTagInput] = useState(false);
@@ -300,21 +304,21 @@ function FolderPreview({ folder, onClose, width, onDragStart }: {
           {itemCount !== null && (
             <Row icon={<Folder size={12} />} label="Items" value={`${itemCount}`} />
           )}
-          <Row icon={<Clock size={12} />} label="Modified" value={formatDate(folder.modified_at)} />
+          <Row icon={<Clock size={12} />} label={tFolder.modified} value={formatDate(folder.modified_at)} />
         </div>
 
         <div>
-          <p className="text-[9px] text-text-muted uppercase tracking-widest font-semibold mb-2">Statistics</p>
+          <p className="text-[9px] text-text-muted uppercase tracking-widest font-semibold mb-2">{tFolder.statistics}</p>
           <FolderStatsView path={folder.path} />
         </div>
 
         <div>
           <div className="flex items-center justify-between mb-2">
             <span className="text-[10px] text-text-muted uppercase tracking-widest font-semibold flex items-center gap-1">
-              <Tag size={10} /> Tags
+              <Tag size={10} /> {tFolder.tags}
             </span>
             <button onClick={() => setShowTagInput((v) => !v)}
-              className="text-[10px] text-accent hover:text-accent-glow transition-colors">+ Add</button>
+              className="text-[10px] text-accent hover:text-accent-glow transition-colors">{tFolder.addTag}</button>
           </div>
           {showTagInput && (
             <>
@@ -329,7 +333,7 @@ function FolderPreview({ folder, onClose, width, onDragStart }: {
             </>
           )}
           <div className="flex flex-wrap gap-1.5">
-            {folderTags.length === 0 && <span className="text-[11px] text-text-muted">No tags</span>}
+            {folderTags.length === 0 && <span className="text-[11px] text-text-muted">{tFolder.noTags}</span>}
             {folderTags.map((tag) => (
               <span key={tag.id} className="group flex items-center gap-1 px-2 py-0.5 rounded text-[11px]"
                 style={{ background: tag.color + "22", color: tag.color }}>
@@ -370,6 +374,7 @@ function CodePreview({ code, ext }: { code: string; ext: string }) {
 // ─── Main PreviewPanel ────────────────────────────────────────────────────────
 export function PreviewPanel({ onClose }: { onClose: () => void }) {
   const { selectedFile, selectedEntry, tags, updateFileTags, activeContextId } = useStore();
+  const t = useTranslation();
   const ctxId = activeContextId ?? 0;
   const [tagInput, setTagInput] = useState("");
   const [showTagInput, setShowTagInput] = useState(false);
@@ -455,7 +460,7 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
               : "border-transparent text-text-muted hover:text-text-secondary"
           )}
         >
-          <Info size={10} /> Info
+          <Info size={10} /> {t.info}
         </button>
         <button
           onClick={() => setActiveTab("history")}
@@ -466,7 +471,7 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
               : "border-transparent text-text-muted hover:text-text-secondary"
           )}
         >
-          <History size={10} /> History
+          <History size={10} /> {t.history}
         </button>
       </div>
 
@@ -531,18 +536,18 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
           </div>
 
           <div className="flex flex-col gap-2">
-            <Row icon={<HardDrive size={12} />} label="Size" value={formatSize(selectedFile.size)} />
-            <Row icon={<Calendar size={12} />} label="Created" value={formatDate(selectedFile.created_at)} />
-            <Row icon={<Clock size={12} />} label="Modified" value={formatDate(selectedFile.modified_at)} />
+            <Row icon={<HardDrive size={12} />} label={t.size} value={formatSize(selectedFile.size)} />
+            <Row icon={<Calendar size={12} />} label={t.created} value={formatDate(selectedFile.created_at)} />
+            <Row icon={<Clock size={12} />} label={t.modified} value={formatDate(selectedFile.modified_at)} />
           </div>
 
           <div>
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] text-text-muted uppercase tracking-widest font-semibold flex items-center gap-1">
-                <Tag size={10} /> Tags
+                <Tag size={10} /> {t.tags}
               </span>
               <button onClick={() => setShowTagInput((v) => !v)}
-                className="text-[10px] text-accent hover:text-accent-glow transition-colors">+ Add</button>
+                className="text-[10px] text-accent hover:text-accent-glow transition-colors">{t.addTag}</button>
             </div>
             {showTagInput && (
               <>
@@ -557,7 +562,7 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
               </>
             )}
             <div className="flex flex-wrap gap-1.5">
-              {selectedFile.tags.length === 0 && <span className="text-[11px] text-text-muted">No tags</span>}
+              {selectedFile.tags.length === 0 && <span className="text-[11px] text-text-muted">{t.noTags}</span>}
               {selectedFile.tags.map((tag) => (
                 <span key={`${tag.id}-${tag.context_id}`}
                   className={clsx("group flex items-center gap-1 px-2 py-0.5 rounded text-[11px]", tag.is_auto && "opacity-70")}

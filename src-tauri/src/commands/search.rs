@@ -103,6 +103,7 @@ pub fn search_folders(
                 is_dir: true,
                 path: row.get(0)?,
                 name: row.get(1)?,
+                created_at: 0,
                 modified_at: row.get(2)?,
                 size: 0,
                 extension: String::new(),

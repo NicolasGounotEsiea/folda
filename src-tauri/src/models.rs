@@ -6,6 +6,7 @@ pub struct ListEntry {
     pub name: String,
     pub path: String,
     pub size: i64,
+    pub created_at: i64,
     pub modified_at: i64,
     pub extension: String,
     pub id: Option<i64>,

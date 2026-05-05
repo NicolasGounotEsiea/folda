@@ -39,7 +39,7 @@ export function App() {
     selectedPaths, listEntries,
     setContexts, setTabs,
     sharingMode, addSharingClient, removeSharingClient, resetSharing,
-    updateSettings,
+    updateSettings, setShowHidden,
   } = useStore();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -71,6 +71,7 @@ export function App() {
       const loadedSettings = deserializeSettings(rawSettings);
       updateSettings(loadedSettings);
       applySettings(loadedSettings);
+      if (loadedSettings.showHiddenDefault) setShowHidden(true);
 
       setContexts(ctxs); // sets activeContextId + rootPaths from DB-active workspace
 
@@ -203,9 +204,9 @@ export function App() {
   useEffect(() => {
     const win = getCurrentWindow();
     const p = win.onCloseRequested((event) => {
-      if (isClosing()) return; // already handling via saveAndClose()
+      if (isClosing()) return; // already saving, destroy() pending
       event.preventDefault();
-      saveAndClose();
+      saveAndClose(); // saves state then destroy()s — no second CloseRequested
     });
     return () => { p.then((f) => f()); };
   }, []);

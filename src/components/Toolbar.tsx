@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { useStore } from "../store/useStore";
 import type { FileEntry, ListEntry } from "../types";
 import { clsx } from "clsx";
+import { useTranslation } from "../utils/i18n";
 
 type SearchType = "all" | "files" | "folders";
 
@@ -28,6 +29,7 @@ export function Toolbar({ onOpenSettings }: { onOpenSettings: () => void }) {
     activeContextId,
   } = useStore();
 
+  const t = useTranslation();
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -57,7 +59,7 @@ export function Toolbar({ onOpenSettings }: { onOpenSettings: () => void }) {
           ? invoke<FileEntry[]>("search_files", { query: q }).then((files) =>
               files.map((f): ListEntry => ({
                 is_dir: false, name: f.name, path: f.path, size: f.size,
-                modified_at: f.modified_at, extension: f.extension, id: f.id, tags: f.tags,
+                created_at: f.created_at, modified_at: f.modified_at, extension: f.extension, id: f.id, tags: f.tags,
               }))
             )
           : Promise.resolve([] as ListEntry[]),
@@ -144,7 +146,7 @@ export function Toolbar({ onOpenSettings }: { onOpenSettings: () => void }) {
       {isWatching && (
         <span className="flex items-center gap-1 text-[10px] text-emerald-500 shrink-0">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          watching
+          {t.watching}
         </span>
       )}
 
@@ -159,7 +161,7 @@ export function Toolbar({ onOpenSettings }: { onOpenSettings: () => void }) {
             onKeyDown={(e) => {
               if (e.key === "Escape") { handleSearch(""); searchRef.current?.blur(); }
             }}
-            placeholder="Search…"
+            placeholder={t.search}
             className="w-48 h-7 pl-8 pr-3 rounded bg-surface-3 border border-border text-[12px] text-text-primary placeholder-text-muted outline-none focus:border-accent focus:bg-surface-2 transition-colors"
           />
         </div>

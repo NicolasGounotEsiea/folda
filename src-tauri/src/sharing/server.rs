@@ -404,7 +404,7 @@ fn list_dir_sync(path: &str) -> Result<Vec<ListEntry>, String> {
             if file_type.is_dir() {
                 Some(ListEntry {
                     is_dir: true, name, path: entry_path,
-                    size: 0, modified_at, extension: String::new(),
+                    size: 0, created_at: 0, modified_at, extension: String::new(),
                     id: None, tags: vec![],
                 })
             } else {
@@ -415,7 +415,7 @@ fn list_dir_sync(path: &str) -> Result<Vec<ListEntry>, String> {
                     .to_string();
                 Some(ListEntry {
                     is_dir: false, name, path: entry_path,
-                    size: meta.len() as i64, modified_at, extension,
+                    size: meta.len() as i64, created_at: 0, modified_at, extension,
                     id: None, tags: vec![],
                 })
             }

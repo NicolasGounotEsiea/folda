@@ -19,7 +19,7 @@ export async function saveAndClose() {
       openFileTabs: s.tabs.map((t) => t.id),
     }).catch(console.error);
   }
-  getCurrentWindow().close().catch(console.error);
+  getCurrentWindow().destroy().catch(console.error);
 }
 
 export function isClosing() {

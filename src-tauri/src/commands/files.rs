@@ -58,7 +58,7 @@ fn load_folder_tags(
     Ok(tags)
 }
 
-fn auto_tag_for_ext(ext: &str) -> Option<(&'static str, &'static str)> {
+pub fn auto_tag_for_ext(ext: &str) -> Option<(&'static str, &'static str)> {
     match ext.to_lowercase().as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" | "bmp" | "tiff" | "avif" | "heic" => {
             Some(("Images", "#ec4899"))
@@ -83,7 +83,7 @@ fn auto_tag_for_ext(ext: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
-fn ensure_auto_tag(db: &rusqlite::Connection, name: &str, color: &str) -> rusqlite::Result<i64> {
+pub fn ensure_auto_tag(db: &rusqlite::Connection, name: &str, color: &str) -> rusqlite::Result<i64> {
     db.execute(
         "INSERT OR IGNORE INTO tags (name, color, is_auto) VALUES (?1, ?2, 1)",
         rusqlite::params![name, color],
@@ -336,6 +336,23 @@ fn handle_fs_event(
                         &db, &path_str, &name, ext,
                         meta.len() as i64, timestamp, timestamp, timestamp,
                     );
+                    // Apply auto-tag on creation (path_str matches list_directory's format)
+                    if action == "created" {
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if let Some((tag_name, tag_color)) = auto_tag_for_ext(ext) {
+                            if let Ok(tag_id) = ensure_auto_tag(&db, tag_name, tag_color) {
+                                if let Ok(fid) = db.query_row(
+                                    "SELECT id FROM files WHERE path = ?1", [&path_str],
+                                    |r| r.get::<_, i64>(0)
+                                ) {
+                                    let _ = db.execute(
+                                        "INSERT OR IGNORE INTO file_tags (file_id, tag_id, context_id) VALUES (?1, ?2, 0)",
+                                        rusqlite::params![fid, tag_id],
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 db.query_row("SELECT id FROM files WHERE path = ?1", [&path_str], |r| r.get(0)).ok()
             } else {
@@ -447,9 +464,11 @@ pub fn list_directory(
             let file_type = entry.file_type().ok()?;
             let meta = entry.metadata().ok()?;
             let entry_path = entry.path().to_string_lossy().to_string();
-            let modified_at = meta.modified().ok()
-                .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
-                .unwrap_or(0);
+            let ts_secs = |t: std::io::Result<std::time::SystemTime>| {
+                t.ok().map(|s| s.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64).unwrap_or(0)
+            };
+            let created_at  = ts_secs(meta.created());
+            let modified_at = ts_secs(meta.modified());
 
             if file_type.is_dir() {
                 let child_count = std::fs::read_dir(&entry_path)
@@ -458,7 +477,7 @@ pub fn list_directory(
                 let folder_tags = load_folder_tags(&db, &entry_path, context_id).unwrap_or_default();
                 Some(ListEntry {
                     is_dir: true, name, path: entry_path,
-                    size: child_count, modified_at, extension: String::new(),
+                    size: child_count, created_at, modified_at, extension: String::new(),
                     id: None, tags: folder_tags,
                 })
             } else {
@@ -503,7 +522,7 @@ pub fn list_directory(
                     }
                 }
 
-                Some(ListEntry { is_dir: false, name, path: entry_path, size, modified_at, extension, id, tags })
+                Some(ListEntry { is_dir: false, name, path: entry_path, size, created_at, modified_at, extension, id, tags })
             }
         })
         .collect();

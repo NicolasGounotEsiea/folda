@@ -9,6 +9,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { useStore } from "../store/useStore";
 import type { FileEntry, ListEntry } from "../types";
+import { useTranslation } from "../utils/i18n";
 
 // ─── Cross-transfer helpers ───────────────────────────────────────────────────
 
@@ -61,7 +62,7 @@ async function uploadRemoteEntry(entry: TransferEntry, remoteDestDir: string): P
 function toFileEntry(e: ListEntry): FileEntry {
   return {
     id: e.id ?? -1, path: e.path, name: e.name, extension: e.extension,
-    size: e.size, created_at: 0, modified_at: e.modified_at, accessed_at: 0, tags: e.tags,
+    size: e.size, created_at: e.created_at, modified_at: e.modified_at, accessed_at: 0, tags: e.tags,
   };
 }
 
@@ -242,6 +243,8 @@ export function FileList() {
     folderTabs, activeFolderTabId,
     activeContextId,
   } = useStore();
+
+  const t = useTranslation();
 
   // Per-tab remote: check the ACTIVE folder tab, not global sharing mode
   const activeTab = folderTabs.find((t) => t.id === activeFolderTabId);
@@ -650,10 +653,14 @@ export function FileList() {
   const handleCreateFile = async () => {
     const name = newFileName.trim();
     if (!name || !currentPath) return;
-    const newPath = currentPath.replace(/\\/g, "/").replace(/\/$/, "") + "/" + name;
     try {
-      if (isCurrentTabRemote) await invoke("create_remote_file", { path: newPath });
-      else await invoke("create_file", { path: newPath });
+      if (isCurrentTabRemote) {
+        const newPath = currentPath.replace(/\\/g, "/").replace(/\/$/, "") + "/" + name;
+        await invoke("create_remote_file", { path: newPath });
+      } else {
+        // Pass dir + name separately so Rust builds the path with OS-native separators
+        await invoke("create_file", { dir: currentPath, name });
+      }
       await refreshList();
     } catch (e) { console.error(e); }
     setNewFileName(""); setShowNewFile(false);
@@ -838,11 +845,11 @@ export function FileList() {
           {/* col 1: icon spacer */}
           <span />
           {/* col 2: name */}
-          <SortHeader col="name" label="Name" sortBy={sortBy} sortDir={sortDir} onSort={setSortBy} />
+          <SortHeader col="name" label={t.name} sortBy={sortBy} sortDir={sortDir} onSort={setSortBy} />
           {/* col 3: size */}
-          <SortHeader col="size" label="Size" width="w-full justify-end" sortBy={sortBy} sortDir={sortDir} onSort={setSortBy} />
+          <SortHeader col="size" label={t.size} width="w-full justify-end" sortBy={sortBy} sortDir={sortDir} onSort={setSortBy} />
           {/* col 4: modified */}
-          <SortHeader col="modified" label="Modified" width="w-full justify-end" sortBy={sortBy} sortDir={sortDir} onSort={setSortBy} />
+          <SortHeader col="modified" label={t.modified} width="w-full justify-end" sortBy={sortBy} sortDir={sortDir} onSort={setSortBy} />
           {/* col 5: actions */}
           <div className="flex items-center gap-0.5 justify-end">
             {currentPath && (<>

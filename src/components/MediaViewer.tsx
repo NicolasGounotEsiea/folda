@@ -31,7 +31,7 @@ export function MediaViewer() {
     const e = imageSiblings[idx];
     if (!e) return;
     openFile({ id: e.id ?? -1, path: e.path, name: e.name, extension: e.extension,
-               size: e.size, created_at: 0, modified_at: e.modified_at, accessed_at: 0, tags: e.tags });
+               size: e.size, created_at: e.created_at, modified_at: e.modified_at, accessed_at: 0, tags: e.tags });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageSiblings, openFile]);
 

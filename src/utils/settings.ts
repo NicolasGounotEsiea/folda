@@ -2,6 +2,7 @@ export interface AppSettings {
   theme: "dark" | "light";
   accentColor: string;
   uiScale: 90 | 100 | 110;
+  showHiddenDefault: boolean;
   dateFormat: "relative" | "absolute";
   defaultSort: "name" | "size" | "modified" | "type";
   defaultSortDir: "asc" | "desc";
@@ -20,6 +21,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   accentColor: "#6366f1",
   uiScale: 100,
+  showHiddenDefault: false,
   dateFormat: "relative",
   defaultSort: "name",
   defaultSortDir: "asc",
@@ -92,6 +94,7 @@ export function deserializeSettings(raw: Record<string, string>): AppSettings {
     theme:             (raw.theme as AppSettings["theme"])               ?? d.theme,
     accentColor:       raw.accentColor                                   ?? d.accentColor,
     uiScale:           (Number(raw.uiScale)  as AppSettings["uiScale"]) ?? d.uiScale,
+    showHiddenDefault: raw.showHiddenDefault !== undefined ? raw.showHiddenDefault === "true" : d.showHiddenDefault,
     dateFormat:        (raw.dateFormat as AppSettings["dateFormat"])     ?? d.dateFormat,
     defaultSort:       (raw.defaultSort as AppSettings["defaultSort"])   ?? d.defaultSort,
     defaultSortDir:    (raw.defaultSortDir as AppSettings["defaultSortDir"]) ?? d.defaultSortDir,

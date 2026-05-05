@@ -66,6 +66,7 @@ export interface ListEntry {
   name: string;
   path: string;
   size: number;
+  created_at: number;
   modified_at: number;
   extension: string;
   id: number | null;

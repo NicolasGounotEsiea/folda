@@ -1,5 +1,7 @@
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 use crate::AppState;
+use crate::commands::files::{auto_tag_for_ext, ensure_auto_tag};
 
 fn log_activity(db: &rusqlite::Connection, file_path: &str, file_name: &str, action: &str) {
     let norm = file_path.replace('\\', "/");
@@ -113,16 +115,48 @@ pub fn move_path(
 }
 
 #[tauri::command]
-pub fn create_file(path: String, state: tauri::State<AppState>) -> Result<(), String> {
-    if let Some(parent) = Path::new(&path).parent() {
+pub fn create_file(dir: String, name: String, state: tauri::State<AppState>) -> Result<String, String> {
+    // Build path entirely in Rust — guaranteed OS-native separators, no frontend conversion needed
+    let full_path = Path::new(&dir).join(&name);
+    if let Some(parent) = full_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    std::fs::File::create(&path).map(|_| ()).map_err(|e| e.to_string())?;
+    std::fs::File::create(&full_path).map_err(|e| e.to_string())?;
+
+    let path_str = full_path.to_string_lossy().to_string();
+    let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
     if let Ok(db) = state.db.lock() {
-        let name = Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or("");
-        log_activity(&db, &path, name, "created");
+        let ts_secs = |t: std::io::Result<std::time::SystemTime>| {
+            t.ok().map(|s| s.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64).unwrap_or(0)
+        };
+        let (created_at, modified_at, accessed_at) = std::fs::metadata(&full_path)
+            .map(|m| (ts_secs(m.created()), ts_secs(m.modified()), ts_secs(m.accessed())))
+            .unwrap_or((0, 0, 0));
+
+        let file_id: Option<i64> = db.execute(
+            "INSERT INTO files (path, name, extension, size, created_at, modified_at, accessed_at)
+             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)
+             ON CONFLICT(path) DO UPDATE SET
+               name=excluded.name, extension=excluded.extension,
+               modified_at=excluded.modified_at, accessed_at=excluded.accessed_at",
+            rusqlite::params![path_str, name, ext, created_at, modified_at, accessed_at],
+        ).ok().and_then(|_| {
+            db.query_row("SELECT id FROM files WHERE path = ?1", [&path_str], |r| r.get(0)).ok()
+        });
+
+        if let (Some(file_id), Some((tag_name, tag_color))) = (file_id, auto_tag_for_ext(ext)) {
+            if let Ok(tag_id) = ensure_auto_tag(&db, tag_name, tag_color) {
+                let _ = db.execute(
+                    "INSERT OR IGNORE INTO file_tags (file_id, tag_id, context_id) VALUES (?1, ?2, 0)",
+                    rusqlite::params![file_id, tag_id],
+                );
+            }
+        }
+
+        log_activity(&db, &path_str, &name, "created");
     }
-    Ok(())
+    Ok(path_str) // return actual path so frontend can use it if needed
 }
 
 #[tauri::command]

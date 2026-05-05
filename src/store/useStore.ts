@@ -139,6 +139,7 @@ interface AppStore {
   addRemoteFolderTabs: (rootPaths: string[]) => void;
   setSortBy: (col: "name" | "size" | "modified" | "type") => void;
   toggleShowHidden: () => void;
+  setShowHidden: (v: boolean) => void;
 
   openFile: (file: FileEntry) => void;         // open or focus tab
   closeFile: () => void;                        // close active tab
@@ -474,6 +475,7 @@ export const useStore = create<AppStore>((set, get) => ({
       sortDir: s.sortBy === col ? (s.sortDir === "asc" ? "desc" : "asc") : "asc",
     })),
   toggleShowHidden: () => set((s) => ({ showHidden: !s.showHidden })),
+  setShowHidden: (v) => set({ showHidden: v }),
 
   openFile: (file) =>
     set((s) => {

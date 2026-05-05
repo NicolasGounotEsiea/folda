@@ -106,20 +106,20 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <button
+    <div
+      role="switch"
+      aria-checked={checked}
       onClick={() => onChange(!checked)}
       className={clsx(
-        "w-9 h-5 rounded-full relative transition-colors",
+        "w-9 h-5 rounded-full relative transition-colors shrink-0 cursor-pointer",
         checked ? "bg-accent" : "bg-surface-4"
       )}
     >
       <span
-        className={clsx(
-          "absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform",
-          checked ? "translate-x-[18px]" : "translate-x-0.5"
-        )}
+        className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform"
+        style={{ transform: checked ? "translateX(18px)" : "translateX(2px)" }}
       />
-    </button>
+    </div>
   );
 }
 
@@ -152,7 +152,7 @@ function SegmentedControl<T extends string | number>({
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function SettingsModal({ onClose }: { onClose: () => void }) {
-  const { settings, updateSettings } = useStore();
+  const { settings, updateSettings, setShowHidden } = useStore();
   const [section, setSection] = useState<Section>("appearance");
   const [saveFlash, setSaveFlash] = useState(false);
   const [purgeMsg, setPurgeMsg] = useState<string | null>(null);
@@ -294,8 +294,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               <div>
                 <Row label={t.explorer.hidden}>
                   <Toggle
-                    checked={settings.activityTracking /* reuse showHiddenDefault */}
-                    onChange={(v) => patch({ activityTracking: v })}
+                    checked={settings.showHiddenDefault}
+                    onChange={(v) => { patch({ showHiddenDefault: v }); setShowHidden(v); }}
                   />
                 </Row>
 
@@ -462,7 +462,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                   </div>
                   <div className="ml-auto">
                     <span className="text-[11px] text-text-muted bg-surface-3 px-2 py-1 rounded">
-                      {t.about.version} 0.1.0
+                      {t.about.version} 0.1.2
                     </span>
                   </div>
                 </div>
