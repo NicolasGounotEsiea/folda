@@ -10,7 +10,7 @@ export const AUDIO_EXTS = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "opus"];
 
 
 export function MediaViewer() {
-  const { openedFile, closeFile, openFile, listEntries } = useStore();
+  const { openedFile, closeFile, navigateFile, listEntries } = useStore();
   const [zoom, setZoom] = useState(1);
   const [fit, setFit] = useState(true);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -30,10 +30,10 @@ export function MediaViewer() {
   const goTo = useCallback((idx: number) => {
     const e = imageSiblings[idx];
     if (!e) return;
-    openFile({ id: e.id ?? -1, path: e.path, name: e.name, extension: e.extension,
-               size: e.size, created_at: e.created_at, modified_at: e.modified_at, accessed_at: 0, tags: e.tags });
+    navigateFile({ id: e.id ?? -1, path: e.path, name: e.name, extension: e.extension,
+                   size: e.size, created_at: e.created_at, modified_at: e.modified_at, accessed_at: 0, tags: e.tags });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageSiblings, openFile]);
+  }, [imageSiblings, navigateFile]);
 
   useEffect(() => {
     setZoom(1);

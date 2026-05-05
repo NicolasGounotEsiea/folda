@@ -76,3 +76,75 @@ body,
 .drag-region { -webkit-app-region: drag; }
 .no-drag     { -webkit-app-region: no-drag; }
 input, button, select { -webkit-app-region: no-drag; }
+
+/* ── Spreadsheet table ───────────────────────────────────────────────────── */
+.spreadsheet-table {
+  width: max-content;
+  min-width: 100%;
+  white-space: nowrap;
+}
+.spreadsheet-col-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-surface-3);
+  color: var(--color-text-muted);
+  font-weight: 500;
+  font-size: 10px;
+  text-align: center;
+  padding: 3px 8px;
+  border-right: 1px solid var(--color-border);
+  border-bottom: 2px solid var(--color-border);
+  min-width: 80px;
+  user-select: none;
+}
+.spreadsheet-row-num {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--color-surface-3);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  text-align: right;
+  padding: 2px 6px;
+  border-right: 2px solid var(--color-border);
+  min-width: 40px;
+  user-select: none;
+}
+/* Corner cell */
+thead .spreadsheet-row-num {
+  z-index: 3;
+  border-bottom: 2px solid var(--color-border);
+}
+.spreadsheet-cell {
+  padding: 2px 8px;
+  border-right: 1px solid var(--color-border-subtle);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 18px; /* keeps rows at exactly ROW_HEIGHT=22px with 2+2 padding */
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+.csv-editable-cell {
+  cursor: text;
+  outline: none;
+  white-space: pre;
+  overflow: visible;
+  max-width: none;
+  text-overflow: clip;
+}
+.csv-editable-cell:hover {
+  background: var(--color-surface-4);
+}
+.csv-editable-cell:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+  background: var(--color-surface-2);
+  z-index: 1;
+  position: relative;
+  white-space: pre;
+  min-width: 60px;
+}

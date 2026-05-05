@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
 import {
-  Code, File, FileImage, FileText, Film, Folder, Music, Network, X,
+  ChevronLeft, ChevronRight, Code, File, FileImage, FileText, Film, Folder, Music, Network, X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import type { ListEntry } from "../types";
 
@@ -199,6 +199,31 @@ export function TabBar() {
   const [fileTabMenu, setFileTabMenu] = useState<{ x: number; y: number; filePath: string } | null>(null);
   const [dirtyClose, setDirtyClose] = useState<{ id: string; name: string; content: string | null } | null>(null);
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const updateScrollState = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 0);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  };
+
+  useLayoutEffect(() => {
+    updateScrollState();
+    const ro = new ResizeObserver(updateScrollState);
+    if (scrollRef.current) ro.observe(scrollRef.current);
+    return () => ro.disconnect();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs, folderTabs]);
+
+  const scrollTabs = (dir: -1 | 1) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * 160, behavior: "smooth" });
+  };
+
   // Check if a tab is dirty before closing; show dialog if so
   const tryCloseTab = (id: string) => {
     const tab = tabs.find((t) => t.id === id);
@@ -284,10 +309,38 @@ export function TabBar() {
 
   return (
     <>
-      <div
-        className="flex items-end bg-surface-1 border-b border-border-subtle overflow-x-auto shrink-0 h-9 min-h-[36px]"
-        style={{ scrollbarWidth: "none" }}
-      >
+      <div className="flex items-end bg-surface-1 border-b border-border-subtle shrink-0 h-9 min-h-[36px] relative">
+        {/* Left scroll button */}
+        {canScrollLeft && (
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => scrollTabs(-1)}
+            className="absolute left-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-surface-1 hover:bg-surface-2 text-text-muted hover:text-text-primary border-r border-border-subtle transition-colors shrink-0"
+          >
+            <ChevronLeft size={12} />
+          </button>
+        )}
+        {/* Right scroll button */}
+        {canScrollRight && (
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => scrollTabs(1)}
+            className="absolute right-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-surface-1 hover:bg-surface-2 text-text-muted hover:text-text-primary border-l border-border-subtle transition-colors shrink-0"
+          >
+            <ChevronRight size={12} />
+          </button>
+        )}
+        <div
+          ref={scrollRef}
+          onScroll={updateScrollState}
+          onWheel={(e) => {
+            e.preventDefault();
+            scrollRef.current!.scrollBy({ left: e.deltaY, behavior: "auto" });
+            updateScrollState();
+          }}
+          className="flex items-end h-full w-full overflow-x-auto"
+          style={{ scrollbarWidth: "none" }}
+        >
         {/* Folder tabs */}
         {folderTabs.length === 0 ? (
           <div
@@ -399,6 +452,7 @@ export function TabBar() {
         })}
 
         <div className="flex-1 min-w-4 h-full" />
+        </div>{/* end scroll inner div */}
       </div>
 
       {/* Folder tab context menu */}

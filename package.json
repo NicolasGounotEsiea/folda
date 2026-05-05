@@ -27,10 +27,12 @@
     "docx-preview": "^0.3.7",
     "highlight.js": "^11.11.1",
     "lucide-react": "^0.469.0",
+    "pdfjs-dist": "^5.7.284",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "xlsx": "^0.18.5",
     "zustand": "^5.0.3"
   },
   "devDependencies": {

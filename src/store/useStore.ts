@@ -142,6 +142,7 @@ interface AppStore {
   setShowHidden: (v: boolean) => void;
 
   openFile: (file: FileEntry) => void;         // open or focus tab
+  navigateFile: (file: FileEntry) => void;      // replace openedFile in current tab (gallery nav)
   closeFile: () => void;                        // close active tab
   closeTab: (id: string) => void;
   setActiveTab: (id: string | null) => void;   // null = explorer tab
@@ -485,6 +486,15 @@ export const useStore = create<AppStore>((set, get) => ({
       }
       const newTabs = [...s.tabs, { id, file, isDirty: false, draftContent: null, originalContent: null }];
       return { tabs: newTabs, activeTabId: id, openedFile: file };
+    }),
+
+  navigateFile: (file) =>
+    set((s) => {
+      if (s.activeTabId === null) return {};
+      const tabs = s.tabs.map((t) =>
+        t.id === s.activeTabId ? { ...t, id: file.path, file } : t
+      );
+      return { tabs, activeTabId: file.path, openedFile: file };
     }),
 
   closeFile: () =>

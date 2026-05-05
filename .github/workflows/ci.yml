@@ -43,8 +43,8 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - run: cargo check --locked
-      - run: cargo clippy --locked -- -D warnings
+      - run: cargo check
+      - run: cargo clippy -- -D warnings
 
   # ── Production build (main only, saves CI minutes on PRs) ─────────────────
   build:

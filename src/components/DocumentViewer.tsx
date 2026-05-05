@@ -1,65 +1,107 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { renderAsync } from "docx-preview";
-import { Ban, FileText, X } from "lucide-react";
+import { Ban, ExternalLink, FileText, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
+import { PdfViewer } from "./PdfViewer";
+import { SpreadsheetViewer } from "./SpreadsheetViewer";
 
-export const DOC_EXTS = ["pdf", "doc", "docx", "odt", "rtf"];
+export const DOC_EXTS = [
+  "pdf",
+  "doc", "docx", "odt", "rtf",
+  "xlsx", "xls", "csv", "ods",
+  "pptx", "ppt",
+];
 
 const TYPE_LABELS: Record<string, string> = {
-  pdf: "PDF", doc: "Word", docx: "Word", odt: "OpenDocument", rtf: "Rich Text",
+  pdf: "PDF",
+  doc: "Word", docx: "Word", odt: "OpenDocument", rtf: "Rich Text",
+  xlsx: "Excel", xls: "Excel", csv: "CSV", ods: "Calc",
+  pptx: "PowerPoint", ppt: "PowerPoint",
 };
 
-export function DocumentViewer() {
-  const { openedFile, closeFile } = useStore();
+const SPREADSHEET_EXTS = new Set(["xlsx", "xls", "csv", "ods"]);
+const PRESENTATION_EXTS = new Set(["pptx", "ppt"]);
+const DOCX_EXTS = new Set(["docx", "doc"]);
+
+// ── DOCX inline viewer ────────────────────────────────────────────────────────
+function DocxViewer({ path }: { path: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const ext = openedFile?.extension.toLowerCase() ?? "";
-  const isDocx = ext === "docx" || ext === "doc";
-  const isPdf = ext === "pdf";
-
   useEffect(() => {
-    if (!openedFile || !isDocx || !containerRef.current) return;
+    if (!containerRef.current) return;
     setLoading(true);
     setError(null);
 
-    const url = convertFileSrc(openedFile.path);
-    fetch(url)
+    let cancelled = false;
+    fetch(convertFileSrc(path))
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.arrayBuffer();
       })
       .then((buf) => {
-        if (!containerRef.current) return;
+        if (cancelled || !containerRef.current) return;
         containerRef.current.innerHTML = "";
         return renderAsync(buf, containerRef.current, undefined, {
-          inWrapper: false,
-          ignoreWidth: false,
-          ignoreHeight: false,
-          ignoreFonts: false,
-          breakPages: true,
-          useBase64URL: true,
+          inWrapper: false, ignoreWidth: false, ignoreHeight: false,
+          ignoreFonts: false, breakPages: true, useBase64URL: true,
         });
       })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openedFile?.path]);
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [path]);
+
+  return (
+    <div className="flex-1 overflow-y-auto bg-white relative">
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white text-gray-400 text-[12px] animate-pulse z-10">
+          Chargement…
+        </div>
+      )}
+      {error && <div className="p-4 text-red-500 text-[12px]">{error}</div>}
+      <div ref={containerRef} className="p-8" style={{ fontFamily: "serif" }} />
+    </div>
+  );
+}
+
+// ── "Not supported" fallback ──────────────────────────────────────────────────
+function UnsupportedView({ label }: { label: string }) {
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
+      <Ban size={28} className="opacity-20" />
+      <span className="text-[12px]">Aperçu non disponible pour ce format</span>
+      <span className="text-[10px] opacity-50">{label}</span>
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+export function DocumentViewer() {
+  const { openedFile, closeFile } = useStore();
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const ext = openedFile?.extension.toLowerCase() ?? "";
+  const typeLabel = TYPE_LABELS[ext] ?? ext.toUpperCase();
+
+  const isPdf = ext === "pdf";
+  const isDocx = DOCX_EXTS.has(ext);
+  const isSpreadsheet = SPREADSHEET_EXTS.has(ext);
+  const isPresentation = PRESENTATION_EXTS.has(ext);
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeFile();
-    };
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") closeFile(); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [closeFile]);
 
   if (!openedFile) return null;
 
-  const typeLabel = TYPE_LABELS[ext] ?? ext.toUpperCase();
-  const url = convertFileSrc(openedFile.path);
+  const openWithDefault = () =>
+    invoke("open_with_default", { path: openedFile.path }).catch(console.error);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-surface-0">
@@ -72,6 +114,17 @@ export function DocumentViewer() {
         <span className="text-[10px] text-text-muted bg-surface-3 px-1.5 py-0.5 rounded shrink-0">
           {typeLabel}
         </span>
+
+        {/* Open with system app */}
+        <button
+          onClick={openWithDefault}
+          title="Ouvrir avec l'application par défaut"
+          className="flex items-center gap-1 px-2 h-6 text-[11px] rounded border border-border text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors shrink-0"
+        >
+          <ExternalLink size={11} />
+          Ouvrir avec…
+        </button>
+
         <button
           onClick={closeFile}
           className="w-6 h-6 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors shrink-0"
@@ -82,36 +135,23 @@ export function DocumentViewer() {
       </div>
 
       {/* Content */}
-      {isPdf ? (
-        <iframe
-          key={openedFile.path}
-          src={url}
-          className="flex-1 w-full"
-          style={{ border: "none" }}
-          title={openedFile.name}
+      {isPdf && <PdfViewer key={openedFile.path} path={openedFile.path} />}
+
+      {isDocx && <DocxViewer key={openedFile.path} path={openedFile.path} />}
+
+      {isSpreadsheet && (
+        <SpreadsheetViewer
+          key={openedFile.path + reloadKey}
+          path={openedFile.path}
+          ext={ext}
+          onSaved={() => setReloadKey((k) => k + 1)}
         />
-      ) : isDocx ? (
-        <div className="flex-1 overflow-y-auto bg-white relative">
-          {loading && (
-            <div className="absolute inset-0 flex items-center justify-center bg-white text-gray-500 text-[12px] animate-pulse z-10">
-              Chargement…
-            </div>
-          )}
-          {error && (
-            <div className="p-4 text-red-500 text-[12px]">{error}</div>
-          )}
-          <div
-            ref={containerRef}
-            className="p-6"
-            style={{ fontFamily: "serif", minHeight: "100%" }}
-          />
-        </div>
-      ) : (
-        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
-          <Ban size={28} className="opacity-20" />
-          <span className="text-[12px]">Aperçu non disponible pour ce format</span>
-          <span className="text-[10px] opacity-50">{typeLabel}</span>
-        </div>
+      )}
+
+      {isPresentation && <UnsupportedView label={typeLabel} />}
+
+      {!isPdf && !isDocx && !isSpreadsheet && !isPresentation && (
+        <UnsupportedView label={typeLabel} />
       )}
     </div>
   );

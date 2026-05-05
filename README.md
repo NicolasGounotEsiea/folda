@@ -120,7 +120,7 @@ Features planned to increase product value and justify purchase pricing.
 
 ### Cloud & Sync
 - [ ] **Workspace sync** — sync metadata, tags, and saved views across machines via an optional cloud backend (tags follow files across devices)
-- [ ] **Owners rules / permissions** - possibility to choose for the owner if other users can see/update/create/delete files 
+- [ ] **Owners rules / permissions** — possibility to choose for the owner if other users can see/update/create/delete files
 - [ ] **Export / import workspace** — portable `.cwsp` bundle that preserves folder structure, tags, pinned items, and rules
 - [ ] **Conflict resolution UI** — when the same file is edited on two machines, show a diff and let the user pick
 
@@ -128,16 +128,22 @@ Features planned to increase product value and justify purchase pricing.
 - [x] **Snapshots** — lightweight file-level history without Git; restore any tracked file to a previous state
 - [x] **Snapshot diff view** — click any snapshot to see a line-by-line diff against the current file
 - [x] **Activity feed** — per-file timeline showing open, edit, delete, rename events with timestamps
+- [ ] **Snapshots for binary formats** — extend snapshot support to images, spreadsheets, and office documents (restore without diff)
 - [ ] **Trash with restore** — soft-delete files into a workspace trash before permanent deletion
 
 ### Viewer & Editor Improvements
-- [ ] **Multi-page PDF preview** — scrollable render with page navigation, no external app needed
-- [ ] **Office file preview** — `.docx`, `.xlsx`, `.pptx` rendered without Microsoft Office
+- [x] **Multi-page PDF preview** — scrollable canvas render with page navigation and zoom, no external app needed
+- [x] **Office file preview** — `.docx` rendered inline; `.xlsx`, `.xls`, `.ods`, `.csv` rendered as a spreadsheet table
+- [x] **CSV inline editor** — edit cells directly in the table view (no raw text), Tab/Enter navigation, one-click save
+- [x] **Virtual scrolling for large files** — spreadsheet viewer renders only visible rows; supports up to 50 000 rows without lag
+- [ ] **Spreadsheet / CSV snapshots** — extend the snapshot panel to CSV and Excel files
 - [ ] **Image tools** — rotation, crop, EXIF metadata panel, slideshow mode
 - [ ] **Hex viewer** — for binary files (`.exe`, `.dll`, etc.) instead of "cannot edit" screen
 - [ ] **Diff view** — compare two selected files side-by-side
 
 ### UX & Polish
+- [x] **Tab bar scroll** — mouse-wheel scroll and chevron buttons when tabs overflow the bar
+- [x] **Image gallery navigation** — arrow keys cycle through images in the current tab without opening new tabs
 - [ ] **Onboarding wizard** — guided first-run that creates a workspace, explains tags, shows keyboard shortcuts
 - [ ] **Keyboard shortcut panel** — `?` key opens a reference overlay
 - [ ] **Command palette improvements** — tag assignment, workspace switch, open recent files via Ctrl+K
