@@ -40,6 +40,7 @@ pub async fn start_sharing(
     workspace_name: String,
     workspace_icon: String,
     watched_paths: Vec<String>,
+    context_id: Option<i64>,
 ) -> Result<SessionInfo, String> {
     {
         let guard = state.sharing.lock().await;
@@ -62,6 +63,7 @@ pub async fn start_sharing(
         watched_paths,
         db,
         app,
+        context_id.unwrap_or(0),
     )
     .await?;
 

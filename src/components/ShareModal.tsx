@@ -1,8 +1,177 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Check, Copy, Share2, Users, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Plus, Share2, Shield, Trash2, Users, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
+
+interface SharePermission {
+  id: number;
+  context_id: number;
+  path: string;
+  can_list: boolean;
+  can_read: boolean;
+  can_create: boolean;
+  can_update: boolean;
+  can_delete: boolean;
+}
+
+const PERM_LABELS: { key: keyof Omit<SharePermission, "id" | "context_id" | "path">; label: string }[] = [
+  { key: "can_list",   label: "List" },
+  { key: "can_read",   label: "Read" },
+  { key: "can_create", label: "Create" },
+  { key: "can_update", label: "Edit" },
+  { key: "can_delete", label: "Delete" },
+];
+
+function PermissionsPanel({ contextId }: { contextId: number }) {
+  const [rules, setRules] = useState<SharePermission[]>([]);
+  const [newPath, setNewPath] = useState("");
+  const [addingPath, setAddingPath] = useState(false);
+
+  const load = () =>
+    invoke<SharePermission[]>("get_share_permissions", { contextId })
+      .then(setRules)
+      .catch(() => {});
+
+  useEffect(() => { load(); }, [contextId]);
+
+  const getDefault = () => rules.find((r) => r.path === "");
+  const getOverrides = () => rules.filter((r) => r.path !== "");
+
+  const toggle = async (rule: SharePermission, key: keyof Omit<SharePermission, "id" | "context_id" | "path">) => {
+    const updated = { ...rule, [key]: !rule[key] };
+    await invoke("set_share_permission", {
+      contextId,
+      path: rule.path,
+      canList: updated.can_list,
+      canRead: updated.can_read,
+      canCreate: updated.can_create,
+      canUpdate: updated.can_update,
+      canDelete: updated.can_delete,
+    }).catch(() => {});
+    load();
+  };
+
+  const ensureDefault = async () => {
+    if (!getDefault()) {
+      await invoke("set_share_permission", {
+        contextId, path: "",
+        canList: true, canRead: true, canCreate: true, canUpdate: true, canDelete: true,
+      }).catch(() => {});
+      load();
+    }
+  };
+  useEffect(() => { ensureDefault(); }, [contextId]);
+
+  const addOverride = async () => {
+    if (!newPath.trim()) return;
+    await invoke("set_share_permission", {
+      contextId, path: newPath.trim(),
+      canList: true, canRead: true, canCreate: false, canUpdate: false, canDelete: false,
+    }).catch(() => {});
+    setNewPath(""); setAddingPath(false);
+    load();
+  };
+
+  const deleteRule = async (id: number) => {
+    await invoke("delete_share_permission", { id }).catch(() => {});
+    load();
+  };
+
+  const defaultRule = getDefault();
+  const overrides = getOverrides();
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Workspace default */}
+      <div>
+        <p className="text-[10px] text-text-muted uppercase tracking-widest mb-1.5">Workspace default</p>
+        {defaultRule ? (
+          <div className="flex flex-wrap gap-1.5">
+            {PERM_LABELS.map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => toggle(defaultRule, key)}
+                className={`px-2.5 py-1 rounded text-[10px] border transition-colors ${
+                  defaultRule[key]
+                    ? "bg-accent/15 border-accent/30 text-accent"
+                    : "bg-surface-3 border-border text-text-muted"
+                }`}
+              >
+                {defaultRule[key] ? "✓" : "✗"} {label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="text-[10px] text-text-muted animate-pulse">Loading…</div>
+        )}
+      </div>
+
+      {/* Per-path overrides */}
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <p className="text-[10px] text-text-muted uppercase tracking-widest">Path overrides</p>
+          <button
+            onClick={() => setAddingPath((v) => !v)}
+            className="flex items-center gap-0.5 text-[10px] text-accent hover:text-accent-glow transition-colors"
+          >
+            <Plus size={10} /> Add
+          </button>
+        </div>
+        {addingPath && (
+          <div className="flex items-center gap-1 mb-2">
+            <input
+              autoFocus
+              type="text"
+              value={newPath}
+              onChange={(e) => setNewPath(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") addOverride(); if (e.key === "Escape") setAddingPath(false); }}
+              placeholder="C:\path\to\folder or file"
+              className="flex-1 h-6 px-2 rounded bg-surface-3 border border-border text-[10px] text-text-primary placeholder-text-muted outline-none focus:border-accent"
+            />
+            <button onClick={addOverride} className="h-6 px-2 rounded bg-accent text-white text-[10px] hover:bg-accent/80 transition-colors">Add</button>
+          </div>
+        )}
+        {overrides.length === 0 ? (
+          <p className="text-[10px] text-text-muted italic">No overrides — workspace default applies everywhere.</p>
+        ) : (
+          <div className="flex flex-col gap-2 max-h-40 overflow-y-auto">
+            {overrides.map((rule) => (
+              <div key={rule.id} className="bg-surface-2 rounded p-2 flex flex-col gap-1.5">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10px] text-text-secondary font-mono truncate flex-1" title={rule.path}>
+                    {rule.path}
+                  </span>
+                  <button
+                    onClick={() => deleteRule(rule.id)}
+                    className="w-4 h-4 flex items-center justify-center rounded text-text-muted hover:text-red-400 transition-colors shrink-0"
+                  >
+                    <Trash2 size={9} />
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {PERM_LABELS.map(({ key, label }) => (
+                    <button
+                      key={key}
+                      onClick={() => toggle(rule, key)}
+                      className={`px-2 py-0.5 rounded text-[9px] border transition-colors ${
+                        rule[key]
+                          ? "bg-accent/15 border-accent/30 text-accent"
+                          : "bg-surface-3 border-border text-text-muted line-through"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function ShareModal({ onClose }: { onClose: () => void }) {
   const {
@@ -19,6 +188,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [codeCopied, setCodeCopied] = useState(false);
   const [pwCopied, setPwCopied] = useState(false);
+  const [permOpen, setPermOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   // Dismiss on outside click
@@ -47,6 +217,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
         : folderTabs.map((t) => t.path);
 
       const result = await invoke<{ code: string; password: string }>("start_sharing", {
+        contextId: activeCtx.id,
         workspaceName: activeCtx.name,
         workspaceIcon: activeCtx.icon,
         watchedPaths,
@@ -181,6 +352,25 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
                 </div>
               )}
             </div>
+
+            {/* Permissions */}
+            {activeCtx && (
+              <div className="border border-border-subtle rounded-lg overflow-hidden">
+                <button
+                  onClick={() => setPermOpen((v) => !v)}
+                  className="flex items-center gap-2 w-full px-3 py-2 text-[11px] text-text-secondary hover:bg-surface-2 transition-colors"
+                >
+                  <Shield size={11} className="text-accent shrink-0" />
+                  <span className="flex-1 text-left">Permissions invités</span>
+                  {permOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                </button>
+                {permOpen && (
+                  <div className="px-3 pb-3 pt-1 border-t border-border-subtle bg-surface-0">
+                    <PermissionsPanel contextId={activeCtx.id} />
+                  </div>
+                )}
+              </div>
+            )}
 
             <button
               onClick={handleStop}

@@ -14,12 +14,79 @@ import rust from "highlight.js/lib/languages/rust";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
-import { Calendar, Clock, File, Folder, HardDrive, PanelRightClose, Tag, X } from "lucide-react";
+import { Calendar, Clock, File, Folder, HardDrive, History, Info, PanelRightClose, Tag, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStore } from "../store/useStore";
 import type { FolderStats, ListEntry, Tag as TagType } from "../types";
+
+interface ActivityEntry {
+  id: number;
+  file_id: number | null;
+  file_path: string;
+  file_name: string;
+  action: string;
+  timestamp: number;
+  app_name: string | null;
+}
+
+function FileActivityTab({ filePath }: { filePath: string }) {
+  const [entries, setEntries] = useState<ActivityEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    invoke<ActivityEntry[]>("get_file_activity", { filePath, limit: 100 })
+      .then(setEntries)
+      .catch(() => setEntries([]))
+      .finally(() => setLoading(false));
+  }, [filePath]);
+
+  const ACTION_LABELS: Record<string, string> = {
+    opened: "Opened", edited: "Edited", saved: "Saved",
+    created: "Created", deleted: "Deleted", renamed: "Renamed", moved: "Moved",
+  };
+
+  const ACTION_COLORS: Record<string, string> = {
+    opened: "text-blue-400", edited: "text-amber-400", saved: "text-emerald-400",
+    created: "text-emerald-400", deleted: "text-red-400", renamed: "text-purple-400", moved: "text-purple-400",
+  };
+
+  if (loading) return (
+    <div className="p-3 text-[10px] text-text-muted animate-pulse">Loading…</div>
+  );
+
+  if (entries.length === 0) return (
+    <div className="flex flex-col items-center justify-center py-8 gap-2 text-text-muted">
+      <History size={18} className="opacity-30" />
+      <span className="text-[10px]">No activity recorded</span>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col">
+      {entries.map((e) => (
+        <div key={e.id} className="flex flex-col gap-0.5 px-3 py-2 border-b border-border-subtle hover:bg-surface-2 transition-colors">
+          <div className="flex items-center justify-between gap-1">
+            <span className={clsx("text-[10px] font-medium", ACTION_COLORS[e.action] ?? "text-text-secondary")}>
+              {ACTION_LABELS[e.action] ?? e.action}
+            </span>
+            {e.app_name && (
+              <span className="text-[9px] text-text-muted truncate max-w-[80px]">{e.app_name}</span>
+            )}
+          </div>
+          <span className="text-[9px] text-text-muted">
+            {new Date(e.timestamp * 1000).toLocaleString(undefined, {
+              month: "short", day: "numeric",
+              hour: "2-digit", minute: "2-digit",
+            })}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 hljs.registerLanguage("javascript", javascript);
 hljs.registerLanguage("typescript", typescript);
@@ -308,12 +375,14 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
   const [showTagInput, setShowTagInput] = useState(false);
   const [textPreview, setTextPreview] = useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
+  const [activeTab, setActiveTab] = useState<"info" | "history">("info");
   const { width, onDragStart } = useResizable(280);
 
   useEffect(() => {
     setTextPreview(null);
     setShowTagInput(false);
     setTagInput("");
+    setActiveTab("info");
     if (!selectedFile) return;
     setLoadingPreview(true);
     invoke<string | null>("get_file_preview", { path: selectedFile.path })
@@ -375,110 +444,144 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
         <PanelRightClose size={12} />
       </button>
 
-      {/* Content preview */}
-      {isImage ? (
-        <div className="h-44 bg-surface-0 flex items-center justify-center border-b border-border-subtle overflow-hidden shrink-0">
-          <img src={convertFileSrc(selectedFile.path)} alt={selectedFile.name}
-            className="max-w-full max-h-full object-contain"
-            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-        </div>
-      ) : isMarkdown && textPreview !== null ? (
-        <div className="h-56 bg-surface-0 border-b border-border-subtle overflow-y-auto shrink-0 relative">
-          <div className="p-3 prose prose-invert prose-xs max-w-none
-            [&>h1]:text-[13px] [&>h1]:font-semibold [&>h1]:text-text-primary [&>h1]:mb-1 [&>h1]:mt-0
-            [&>h2]:text-[12px] [&>h2]:font-semibold [&>h2]:text-text-primary [&>h2]:mb-1 [&>h2]:mt-2
-            [&>h3]:text-[11px] [&>h3]:font-semibold [&>h3]:text-text-secondary [&>h3]:mb-1 [&>h3]:mt-2
-            [&>p]:text-[11px] [&>p]:text-text-secondary [&>p]:my-1 [&>p]:leading-relaxed
-            [&>ul]:text-[11px] [&>ul]:text-text-secondary [&>ul]:my-1 [&>ul]:pl-4
-            [&>ol]:text-[11px] [&>ol]:text-text-secondary [&>ol]:my-1 [&>ol]:pl-4
-            [&_li]:my-0.5
-            [&>blockquote]:border-l-2 [&>blockquote]:border-accent [&>blockquote]:pl-2 [&>blockquote]:text-text-muted [&>blockquote]:italic
-            [&_code]:text-[10px] [&_code]:font-mono [&_code]:bg-surface-3 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-accent-glow
-            [&>pre]:bg-surface-3 [&>pre]:p-2 [&>pre]:rounded [&>pre]:overflow-x-auto
-            [&_pre_code]:bg-transparent [&_pre_code]:p-0
-            [&>table]:text-[10px] [&>table]:w-full [&_th]:text-text-muted [&_th]:text-left [&_th]:pb-1 [&_td]:py-0.5 [&_tr]:border-b [&_tr]:border-border-subtle
-            [&_a]:text-accent [&_a]:no-underline [&_a:hover]:underline
-            [&_strong]:text-text-primary [&_em]:text-text-secondary
-            [&_hr]:border-border">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{textPreview}</ReactMarkdown>
-          </div>
-          <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-surface-0 to-transparent pointer-events-none" />
-        </div>
-      ) : isCode && textPreview !== null ? (
-        <CodePreview code={textPreview} ext={ext} />
-      ) : textPreview !== null ? (
-        <div className="h-44 bg-surface-0 border-b border-border-subtle overflow-hidden shrink-0 relative">
-          <pre className="p-3 text-[10px] font-mono text-text-muted leading-relaxed overflow-hidden h-full">
-            {textPreview.slice(0, 800)}
-          </pre>
-          <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-surface-0 to-transparent pointer-events-none" />
-        </div>
-      ) : (
-        <div className="h-20 bg-surface-0 flex items-center justify-center border-b border-border-subtle shrink-0">
-          {loadingPreview
-            ? <span className="text-[10px] text-text-muted animate-pulse">Loading…</span>
-            : <span className="text-3xl font-mono text-text-muted opacity-30 uppercase">{ext || "?"}</span>
-          }
-        </div>
-      )}
-
-      <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
-        <div>
-          <h3 className="text-[13px] font-medium text-text-primary break-all leading-snug">{selectedFile.name}</h3>
-          <p className="text-[10px] text-text-muted mt-0.5 break-all leading-relaxed">{selectedFile.path}</p>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <Row icon={<HardDrive size={12} />} label="Size" value={formatSize(selectedFile.size)} />
-          <Row icon={<Calendar size={12} />} label="Created" value={formatDate(selectedFile.created_at)} />
-          <Row icon={<Clock size={12} />} label="Modified" value={formatDate(selectedFile.modified_at)} />
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] text-text-muted uppercase tracking-widest font-semibold flex items-center gap-1">
-              <Tag size={10} /> Tags
-            </span>
-            <button onClick={() => setShowTagInput((v) => !v)}
-              className="text-[10px] text-accent hover:text-accent-glow transition-colors">+ Add</button>
-          </div>
-          {showTagInput && (
-            <>
-              <input autoFocus type="text" value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleAddTag(tagInput); if (e.key === "Escape") setShowTagInput(false); }}
-                placeholder="Tag name…" list="tags-datalist"
-                className="w-full h-6 px-2 mb-2 rounded bg-surface-3 border border-border text-[11px] text-text-primary placeholder-text-muted outline-none focus:border-accent" />
-              <datalist id="tags-datalist">
-                {tags.map((t) => <option key={t.id} value={t.name} />)}
-              </datalist>
-            </>
+      {/* Tab bar */}
+      <div className="flex items-center border-b border-border-subtle shrink-0 bg-surface-1 mt-0">
+        <button
+          onClick={() => setActiveTab("info")}
+          className={clsx(
+            "flex items-center gap-1 px-3 h-7 text-[10px] transition-colors border-b-2",
+            activeTab === "info"
+              ? "border-accent text-accent"
+              : "border-transparent text-text-muted hover:text-text-secondary"
           )}
-          <div className="flex flex-wrap gap-1.5">
-            {selectedFile.tags.length === 0 && <span className="text-[11px] text-text-muted">No tags</span>}
-            {selectedFile.tags.map((tag) => (
-              <span key={`${tag.id}-${tag.context_id}`}
-                className={clsx("group flex items-center gap-1 px-2 py-0.5 rounded text-[11px]", tag.is_auto && "opacity-70")}
-                style={{ background: tag.color + "22", color: tag.color }}>
-                {tag.name}
-                {!tag.is_auto && tag.context_id !== 0 && (
-                  <button
-                    onClick={() => invoke("promote_file_tag_to_global", { fileId: selectedFile.id, tagId: tag.id })
-                      .then(() => invoke<TagType[]>("get_file_tags", { fileId: selectedFile.id, contextId: ctxId }))
-                      .then(updateFileTags.bind(null, selectedFile.id))
-                      .catch(console.error)}
-                    title="Promote to global"
-                    className="opacity-0 group-hover:opacity-100 transition-opacity text-[9px]">↑</button>
-                )}
-                {!tag.is_auto && (
-                  <button onClick={() => handleRemoveTag(tag.id)}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity"><X size={9} /></button>
-                )}
+        >
+          <Info size={10} /> Info
+        </button>
+        <button
+          onClick={() => setActiveTab("history")}
+          className={clsx(
+            "flex items-center gap-1 px-3 h-7 text-[10px] transition-colors border-b-2",
+            activeTab === "history"
+              ? "border-accent text-accent"
+              : "border-transparent text-text-muted hover:text-text-secondary"
+          )}
+        >
+          <History size={10} /> History
+        </button>
+      </div>
+
+      {activeTab === "history" ? (
+        <div className="flex-1 overflow-y-auto">
+          <FileActivityTab filePath={selectedFile.path} />
+        </div>
+      ) : null}
+
+      {/* Info tab */}
+      {activeTab === "info" && (<>
+        {isImage ? (
+          <div className="h-44 bg-surface-0 flex items-center justify-center border-b border-border-subtle overflow-hidden shrink-0">
+            <img src={convertFileSrc(selectedFile.path)} alt={selectedFile.name}
+              className="max-w-full max-h-full object-contain"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+          </div>
+        ) : isMarkdown && textPreview !== null ? (
+          <div className="h-56 bg-surface-0 border-b border-border-subtle overflow-y-auto shrink-0 relative">
+            <div className="p-3 prose prose-invert prose-xs max-w-none
+              [&>h1]:text-[13px] [&>h1]:font-semibold [&>h1]:text-text-primary [&>h1]:mb-1 [&>h1]:mt-0
+              [&>h2]:text-[12px] [&>h2]:font-semibold [&>h2]:text-text-primary [&>h2]:mb-1 [&>h2]:mt-2
+              [&>h3]:text-[11px] [&>h3]:font-semibold [&>h3]:text-text-secondary [&>h3]:mb-1 [&>h3]:mt-2
+              [&>p]:text-[11px] [&>p]:text-text-secondary [&>p]:my-1 [&>p]:leading-relaxed
+              [&>ul]:text-[11px] [&>ul]:text-text-secondary [&>ul]:my-1 [&>ul]:pl-4
+              [&>ol]:text-[11px] [&>ol]:text-text-secondary [&>ol]:my-1 [&>ol]:pl-4
+              [&_li]:my-0.5
+              [&>blockquote]:border-l-2 [&>blockquote]:border-accent [&>blockquote]:pl-2 [&>blockquote]:text-text-muted [&>blockquote]:italic
+              [&_code]:text-[10px] [&_code]:font-mono [&_code]:bg-surface-3 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-accent-glow
+              [&>pre]:bg-surface-3 [&>pre]:p-2 [&>pre]:rounded [&>pre]:overflow-x-auto
+              [&_pre_code]:bg-transparent [&_pre_code]:p-0
+              [&>table]:text-[10px] [&>table]:w-full [&_th]:text-text-muted [&_th]:text-left [&_th]:pb-1 [&_td]:py-0.5 [&_tr]:border-b [&_tr]:border-border-subtle
+              [&_a]:text-accent [&_a]:no-underline [&_a:hover]:underline
+              [&_strong]:text-text-primary [&_em]:text-text-secondary
+              [&_hr]:border-border">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{textPreview}</ReactMarkdown>
+            </div>
+            <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-surface-0 to-transparent pointer-events-none" />
+          </div>
+        ) : isCode && textPreview !== null ? (
+          <CodePreview code={textPreview} ext={ext} />
+        ) : textPreview !== null ? (
+          <div className="h-44 bg-surface-0 border-b border-border-subtle overflow-hidden shrink-0 relative">
+            <pre className="p-3 text-[10px] font-mono text-text-muted leading-relaxed overflow-hidden h-full">
+              {textPreview.slice(0, 800)}
+            </pre>
+            <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-surface-0 to-transparent pointer-events-none" />
+          </div>
+        ) : (
+          <div className="h-20 bg-surface-0 flex items-center justify-center border-b border-border-subtle shrink-0">
+            {loadingPreview
+              ? <span className="text-[10px] text-text-muted animate-pulse">Loading…</span>
+              : <span className="text-3xl font-mono text-text-muted opacity-30 uppercase">{ext || "?"}</span>
+            }
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+          <div>
+            <h3 className="text-[13px] font-medium text-text-primary break-all leading-snug">{selectedFile.name}</h3>
+            <p className="text-[10px] text-text-muted mt-0.5 break-all leading-relaxed">{selectedFile.path}</p>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Row icon={<HardDrive size={12} />} label="Size" value={formatSize(selectedFile.size)} />
+            <Row icon={<Calendar size={12} />} label="Created" value={formatDate(selectedFile.created_at)} />
+            <Row icon={<Clock size={12} />} label="Modified" value={formatDate(selectedFile.modified_at)} />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] text-text-muted uppercase tracking-widest font-semibold flex items-center gap-1">
+                <Tag size={10} /> Tags
               </span>
-            ))}
+              <button onClick={() => setShowTagInput((v) => !v)}
+                className="text-[10px] text-accent hover:text-accent-glow transition-colors">+ Add</button>
+            </div>
+            {showTagInput && (
+              <>
+                <input autoFocus type="text" value={tagInput}
+                  onChange={(e) => setTagInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddTag(tagInput); if (e.key === "Escape") setShowTagInput(false); }}
+                  placeholder="Tag name…" list="tags-datalist"
+                  className="w-full h-6 px-2 mb-2 rounded bg-surface-3 border border-border text-[11px] text-text-primary placeholder-text-muted outline-none focus:border-accent" />
+                <datalist id="tags-datalist">
+                  {tags.map((t) => <option key={t.id} value={t.name} />)}
+                </datalist>
+              </>
+            )}
+            <div className="flex flex-wrap gap-1.5">
+              {selectedFile.tags.length === 0 && <span className="text-[11px] text-text-muted">No tags</span>}
+              {selectedFile.tags.map((tag) => (
+                <span key={`${tag.id}-${tag.context_id}`}
+                  className={clsx("group flex items-center gap-1 px-2 py-0.5 rounded text-[11px]", tag.is_auto && "opacity-70")}
+                  style={{ background: tag.color + "22", color: tag.color }}>
+                  {tag.name}
+                  {!tag.is_auto && tag.context_id !== 0 && (
+                    <button
+                      onClick={() => invoke("promote_file_tag_to_global", { fileId: selectedFile.id, tagId: tag.id })
+                        .then(() => invoke<TagType[]>("get_file_tags", { fileId: selectedFile.id, contextId: ctxId }))
+                        .then(updateFileTags.bind(null, selectedFile.id))
+                        .catch(console.error)}
+                      title="Promote to global"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[9px]">↑</button>
+                  )}
+                  {!tag.is_auto && (
+                    <button onClick={() => handleRemoveTag(tag.id)}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity"><X size={9} /></button>
+                  )}
+                </span>
+              ))}
+            </div>
           </div>
         </div>
-      </div>
+      </>)}
     </div>
   );
 }

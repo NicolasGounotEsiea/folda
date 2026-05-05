@@ -16,10 +16,12 @@ Two formats are available: **NSIS `.exe`** (recommended) and **MSI `.msi`**.
 - **Multi-workspace** — organize folders into named workspaces with icons, tags, and pinned paths
 - **File explorer** — multi-tab browsing, context menus, bulk rename, drag & drop
 - **Editor** — syntax-highlighted editor (CodeMirror) for text, code, Markdown, and DOCX preview
+- **Snapshots** — lightweight per-file version history stored in SQLite; auto mode (snapshot on every save) or manual mode; configurable max count (2–50); click any snapshot to open a diff view showing exactly what changed (added/removed lines highlighted), with one-click restore
+- **Activity feed** — per-file history tab in the preview panel showing open, edit, rename, and delete events with timestamps
 - **Tags** — tag files and folders, filter by tag inside a workspace; save filter combinations as views
 - **Tag rules** — auto-tag files by extension, name, path, or size; rules apply automatically on every folder navigation
 - **Search** — full-text search across workspace paths
-- **Shared workspaces** — host your workspace over a local or remote network; guests can browse, edit, create, and delete files in real time. Supports copy/paste and drag & drop across local and remote tabs.
+- **Shared workspaces** — host your workspace over a local or remote network; guests can browse, edit, create, and delete files in real time; granular per-path permissions (list, read, create, edit, delete) configurable per workspace; supports copy/paste and drag & drop across local and remote tabs
 - **Frameless window** — custom titlebar with native window controls
 
 ## Tech stack
@@ -62,20 +64,50 @@ The installer is output to `src-tauri/target/release/bundle/`.
 src/                  React frontend
   components/         UI components
   store/useStore.ts   Zustand global state
+  utils/settings.ts   App settings (theme, accent, editor, snapshots…)
   types/              Shared TypeScript types
   views/              Page-level views
 src-tauri/
   src/
     commands/         Tauri commands exposed to the frontend
+      snapshots.rs    Snapshot CRUD (create, list, restore, delete, diff)
+      permissions.rs  Share permission CRUD (per-workspace, per-path)
+      context.rs      Workspace + activity feed commands
     sharing/          P2P workspace sharing (WebSocket server + client)
     db.rs             SQLite schema + migrations
     models.rs         Rust data models
     lib.rs            App entry point + command registration
 ```
 
+## Snapshots
+
+Open any file in the editor, then click the **clock icon** (History) in the top-right of the editor header.
+
+| Setting | Default | Range |
+|---|---|---|
+| Mode | Auto (on every save) | Auto / Manual |
+| Max snapshots per file | 10 | 2 – 50 |
+| Max file size tracked | 1 MB | — |
+
+Clicking a snapshot in the panel opens a **diff modal**: removed lines (present in snapshot, gone today) are shown in red; added lines (new since that snapshot) in green. Unchanged sections are collapsed. Restore is available directly from the modal.
+
 ## Shared workspaces
 
 The host starts sharing from the sidebar — the app binds a WebSocket server on a random port and discovers its public IP via STUN (no relay server needed). Guests enter the `IP:PORT` code and an 8-character password. All file operations are routed through the WebSocket with per-path access control enforced server-side.
+
+### Guest permissions
+
+While hosting, expand **Permissions invités** in the Share modal to configure what guests can do:
+
+| Permission | Covers |
+|---|---|
+| List | Browse directory contents |
+| Read | Open and read files |
+| Create | Create new files and folders |
+| Edit | Save changes to existing files, rename |
+| Delete | Delete files and folders |
+
+A workspace-wide default applies everywhere. Add path overrides to grant narrower or broader access to specific folders or files (longest-prefix match wins).
 
 ## Roadmap
 
@@ -92,8 +124,9 @@ Features planned to increase product value and justify purchase pricing.
 - [ ] **Conflict resolution UI** — when the same file is edited on two machines, show a diff and let the user pick
 
 ### File History
-- [ ] **Snapshots** — lightweight file-level history without Git; restore any tracked file to a previous state
-- [ ] **Activity feed** — per-file timeline showing open, edit, delete, rename events with timestamps
+- [x] **Snapshots** — lightweight file-level history without Git; restore any tracked file to a previous state
+- [x] **Snapshot diff view** — click any snapshot to see a line-by-line diff against the current file
+- [x] **Activity feed** — per-file timeline showing open, edit, delete, rename events with timestamps
 - [ ] **Trash with restore** — soft-delete files into a workspace trash before permanent deletion
 
 ### Viewer & Editor Improvements

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { FileEntry, ListEntry, Tag, Context, PinnedItem, ViewMode, LayoutMode, SavedView, TagStat } from "../types";
+import { type AppSettings, DEFAULT_SETTINGS, applySettings } from "../utils/settings";
 
 export type SelectedEntry =
   | { kind: "file"; entry: FileEntry }
@@ -152,6 +153,10 @@ interface AppStore {
   updateFileTags: (fileId: number, tags: Tag[]) => void;
   removeFile: (path: string) => void;
   markFileModified: (path: string, timestamp: number) => void;
+
+  // Settings
+  settings: AppSettings;
+  updateSettings: (patch: Partial<AppSettings>) => void;
 
   // Sharing
   sharingMode: "idle" | "hosting" | "joined";
@@ -554,6 +559,15 @@ export const useStore = create<AppStore>((set, get) => ({
         e.path === path ? { ...e, modified_at: timestamp } : e
       ),
     })),
+
+  // Settings state
+  settings: DEFAULT_SETTINGS,
+  updateSettings: (patch) =>
+    set((s) => {
+      const next = { ...s.settings, ...patch };
+      applySettings(next);
+      return { settings: next };
+    }),
 
   // Sharing state
   sharingMode: "idle",

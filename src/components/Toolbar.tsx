@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search } from "lucide-react";
+import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search, Settings } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useStore } from "../store/useStore";
 import type { FileEntry, ListEntry } from "../types";
@@ -15,7 +15,7 @@ function useDebounce(fn: (...args: unknown[]) => void, delay: number) {
   };
 }
 
-export function Toolbar() {
+export function Toolbar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const {
     searchQuery, setSearchQuery,
     searchType, setSearchType,
@@ -219,6 +219,16 @@ export function Toolbar() {
             layoutMode === "grid" ? "text-text-primary bg-surface-4" : "text-text-muted hover:text-text-secondary hover:bg-surface-3")}
         ><LayoutGrid size={13} /></button>
       </div>
+
+      <div className="w-px h-5 bg-border mx-1" />
+
+      <button
+        onClick={onOpenSettings}
+        title="Settings"
+        className="w-7 h-7 flex items-center justify-center rounded text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
+      >
+        <Settings size={13} />
+      </button>
     </div>
   );
 }

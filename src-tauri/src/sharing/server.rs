@@ -22,6 +22,7 @@ pub async fn start_server(
     root_paths: Vec<String>,
     db: Arc<Mutex<rusqlite::Connection>>,
     app: tauri::AppHandle,
+    context_id: i64,
 ) -> Result<HostHandle, String> {
     let listener = TcpListener::bind("0.0.0.0:0")
         .await
@@ -38,6 +39,7 @@ pub async fn start_server(
     let wn = Arc::new(workspace_name);
     let wi = Arc::new(workspace_icon);
     let rp = Arc::new(root_paths);
+    let ctx_id = context_id;
 
     tokio::spawn(async move {
         loop {
@@ -56,6 +58,7 @@ pub async fn start_server(
                                 event_tx: event_tx_srv.clone(),
                                 clients: clients_srv.clone(),
                                 app: app.clone(),
+                                context_id: ctx_id,
                             };
                             let _ = addr_str;
                             tokio::spawn(async move {
@@ -89,13 +92,14 @@ struct ClientCtx {
     event_tx: broadcast::Sender<HostMsg>,
     clients: Arc<Mutex<Vec<String>>>,
     app: tauri::AppHandle,
+    context_id: i64,
 }
 
 async fn handle_client(
     stream: tokio::net::TcpStream,
     ctx: ClientCtx,
 ) -> anyhow::Result<()> {
-    let ClientCtx { password, workspace_name, workspace_icon, root_paths, db, event_tx, clients, app } = ctx;
+    let ClientCtx { password, workspace_name, workspace_icon, root_paths, db, event_tx, clients, app, context_id } = ctx;
     use tauri::Emitter;
 
     let ws = tokio_tungstenite::accept_async(stream).await?;
@@ -141,7 +145,7 @@ async fn handle_client(
                             Ok(guest_msg) => {
                                 let rp = root_paths.clone();
                                 let db2 = db.clone();
-                                let response = handle_cmd(guest_msg, rp, db2).await;
+                                let response = handle_cmd(guest_msg, rp, db2, context_id).await;
                                 let out = serde_json::to_string(&response)?;
                                 if sink.send(Message::Text(out)).await.is_err() { break; }
                             }
@@ -171,10 +175,78 @@ fn path_allowed(path: &str, roots: &[String]) -> bool {
     roots.iter().any(|r| norm.starts_with(&r.replace('\\', "/")))
 }
 
+/// Permission flags resolved for a given path via longest-prefix match.
+#[derive(Clone, Copy)]
+struct Perms {
+    can_list:   bool,
+    can_read:   bool,
+    can_create: bool,
+    can_update: bool,
+    can_delete: bool,
+}
+
+impl Perms {
+    fn allow_all() -> Self {
+        Self { can_list: true, can_read: true, can_create: true, can_update: true, can_delete: true }
+    }
+}
+
+/// Resolve the effective permission set for a path within a given context.
+/// Uses longest-prefix match: workspace default (empty path) < folder < file.
+fn resolve_perms(db: &rusqlite::Connection, context_id: i64, path: &str) -> Perms {
+    let norm = path.replace('\\', "/");
+
+    // Fetch all rules for this context ordered shortest path first (default first).
+    let mut stmt = match db.prepare(
+        "SELECT path, can_list, can_read, can_create, can_update, can_delete
+         FROM share_permissions WHERE context_id = ?1
+         ORDER BY length(path) ASC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Perms::allow_all(),
+    };
+
+    let mapped = stmt.query_map([context_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)? != 0,
+            row.get::<_, i64>(2)? != 0,
+            row.get::<_, i64>(3)? != 0,
+            row.get::<_, i64>(4)? != 0,
+            row.get::<_, i64>(5)? != 0,
+        ))
+    });
+
+    let rules: Vec<(String, bool, bool, bool, bool, bool)> = match mapped {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => return Perms::allow_all(),
+    };
+
+    if rules.is_empty() {
+        return Perms::allow_all();
+    }
+
+    // Start from workspace default, then apply more-specific matches.
+    let mut result = Perms::allow_all();
+    for (rule_path, cl, cr, cc, cu, cd) in &rules {
+        let norm_rule = rule_path.replace('\\', "/");
+        let matches = if norm_rule.is_empty() {
+            true // workspace default
+        } else {
+            norm == norm_rule || norm.starts_with(&format!("{}/", norm_rule))
+        };
+        if matches {
+            result = Perms { can_list: *cl, can_read: *cr, can_create: *cc, can_update: *cu, can_delete: *cd };
+        }
+    }
+    result
+}
+
 async fn handle_cmd(
     msg: GuestMsg,
     root_paths: Arc<Vec<String>>,
-    _db: Arc<Mutex<rusqlite::Connection>>,
+    db: Arc<Mutex<rusqlite::Connection>>,
+    context_id: i64,
 ) -> HostMsg {
     macro_rules! denied {
         ($id:expr) => {
@@ -194,6 +266,11 @@ async fn handle_cmd(
     match msg {
         GuestMsg::ListDir { id, path } => {
             if !path_allowed(&path, &root_paths) { denied!(id); }
+            {
+                let db_g = db.lock().unwrap();
+                let p = resolve_perms(&db_g, context_id, &path);
+                if !p.can_list { denied!(id); }
+            }
             match tokio::task::spawn_blocking(move || list_dir_sync(&path)).await {
                 Ok(Ok(entries)) => HostMsg::Response {
                     id, ok: true,
@@ -205,6 +282,11 @@ async fn handle_cmd(
         }
         GuestMsg::ReadFile { id, path } => {
             if !path_allowed(&path, &root_paths) { denied!(id); }
+            {
+                let db_g = db.lock().unwrap();
+                let p = resolve_perms(&db_g, context_id, &path);
+                if !p.can_read { denied!(id); }
+            }
             match tokio::task::spawn_blocking(move || -> Result<String, String> {
                 let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
                 if meta.len() > 10 * 1024 * 1024 {
@@ -219,6 +301,11 @@ async fn handle_cmd(
         }
         GuestMsg::WriteFile { id, path, content } => {
             if !path_allowed(&path, &root_paths) { denied!(id); }
+            {
+                let db_g = db.lock().unwrap();
+                let p = resolve_perms(&db_g, context_id, &path);
+                if !p.can_update { denied!(id); }
+            }
             match tokio::task::spawn_blocking(move || {
                 std::fs::write(&path, content.as_bytes()).map_err(|e| e.to_string())
             }).await {
@@ -229,6 +316,11 @@ async fn handle_cmd(
         }
         GuestMsg::DeletePath { id, path } => {
             if !path_allowed(&path, &root_paths) { denied!(id); }
+            {
+                let db_g = db.lock().unwrap();
+                let p = resolve_perms(&db_g, context_id, &path);
+                if !p.can_delete { denied!(id); }
+            }
             match tokio::task::spawn_blocking(move || -> Result<(), String> {
                 let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
                 if meta.is_dir() {
@@ -244,6 +336,11 @@ async fn handle_cmd(
         }
         GuestMsg::RenamePath { id, from, to } => {
             if !path_allowed(&from, &root_paths) { denied!(id); }
+            {
+                let db_g = db.lock().unwrap();
+                let p = resolve_perms(&db_g, context_id, &from);
+                if !p.can_update { denied!(id); }
+            }
             match tokio::task::spawn_blocking(move || {
                 std::fs::rename(&from, &to).map_err(|e| e.to_string())
             }).await {
@@ -254,6 +351,11 @@ async fn handle_cmd(
         }
         GuestMsg::CreateFile { id, path } => {
             if !path_allowed(&path, &root_paths) { denied!(id); }
+            {
+                let db_g = db.lock().unwrap();
+                let p = resolve_perms(&db_g, context_id, &path);
+                if !p.can_create { denied!(id); }
+            }
             match tokio::task::spawn_blocking(move || {
                 std::fs::File::create(&path).map(|_| ()).map_err(|e| e.to_string())
             }).await {
@@ -264,6 +366,11 @@ async fn handle_cmd(
         }
         GuestMsg::CreateDir { id, path } => {
             if !path_allowed(&path, &root_paths) { denied!(id); }
+            {
+                let db_g = db.lock().unwrap();
+                let p = resolve_perms(&db_g, context_id, &path);
+                if !p.can_create { denied!(id); }
+            }
             match tokio::task::spawn_blocking(move || {
                 std::fs::create_dir_all(&path).map_err(|e| e.to_string())
             }).await {

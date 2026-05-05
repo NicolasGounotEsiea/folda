@@ -17,6 +17,8 @@ import { Toolbar } from "./components/Toolbar";
 import { useStore, pathToTab } from "./store/useStore";
 import type { Context, FileEntry, ListEntry, Tag } from "./types";
 import { TimelineView } from "./views/TimelineView";
+import { SettingsModal } from "./components/SettingsModal";
+import { deserializeSettings, applySettings } from "./utils/settings";
 
 interface FileChangedPayload {
   path: string;
@@ -37,7 +39,10 @@ export function App() {
     selectedPaths, listEntries,
     setContexts, setTabs,
     sharingMode, addSharingClient, removeSharingClient, resetSharing,
+    updateSettings,
   } = useStore();
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Restore last session
   useEffect(() => {
@@ -60,6 +65,12 @@ export function App() {
           ctxs = await invoke<Context[]>("get_contexts").catch(() => [] as Context[]);
         }
       }
+
+      // Load and apply persisted settings
+      const rawSettings = await invoke<Record<string, string>>("get_all_settings").catch(() => ({} as Record<string, string>));
+      const loadedSettings = deserializeSettings(rawSettings);
+      updateSettings(loadedSettings);
+      applySettings(loadedSettings);
 
       setContexts(ctxs); // sets activeContextId + rootPaths from DB-active workspace
 
@@ -221,7 +232,7 @@ export function App() {
   return (
     <div className="flex flex-col h-full bg-surface-0">
       <Titlebar />
-      <Toolbar />
+      <Toolbar onOpenSettings={() => setSettingsOpen(true)} />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
@@ -273,6 +284,8 @@ export function App() {
           )}
         </div>
       )}
+
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
 
       {commandPaletteOpen && (
         <CommandPalette onClose={() => setCommandPaletteOpen(false)} />

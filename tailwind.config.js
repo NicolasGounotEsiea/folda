@@ -5,26 +5,26 @@ export default {
     extend: {
       colors: {
         surface: {
-          0: "#0c0c0c",
-          1: "#131313",
-          2: "#1a1a1a",
-          3: "#222222",
-          4: "#2a2a2a",
-          5: "#333333",
+          0: "var(--color-surface-0)",
+          1: "var(--color-surface-1)",
+          2: "var(--color-surface-2)",
+          3: "var(--color-surface-3)",
+          4: "var(--color-surface-4)",
+          5: "var(--color-surface-5)",
         },
         accent: {
-          DEFAULT: "#6366f1",
-          dim: "#4f46e5",
-          glow: "#818cf8",
+          DEFAULT: "rgb(var(--color-accent-rgb) / <alpha-value>)",
+          dim: "var(--color-accent-dim)",
+          glow: "var(--color-accent-glow)",
         },
         border: {
-          DEFAULT: "#2a2a2a",
-          subtle: "#1f1f1f",
+          DEFAULT: "var(--color-border)",
+          subtle: "var(--color-border-subtle)",
         },
         text: {
-          primary: "#e8e8e8",
-          secondary: "#888888",
-          muted: "#555555",
+          primary:   "var(--color-text-primary)",
+          secondary: "var(--color-text-secondary)",
+          muted:     "var(--color-text-muted)",
         },
       },
       fontFamily: {

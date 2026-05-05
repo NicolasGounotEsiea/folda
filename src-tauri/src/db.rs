@@ -137,6 +137,9 @@ fn create_tables(conn: &Connection) -> Result<()> {
             app_name  TEXT
         );
 
+        CREATE INDEX IF NOT EXISTS activity_timestamp_idx ON activity(timestamp DESC);
+        CREATE INDEX IF NOT EXISTS activity_path_idx      ON activity(file_path);
+
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -189,6 +192,29 @@ fn create_tables(conn: &Connection) -> Result<()> {
             tag_ids    TEXT    NOT NULL DEFAULT '[]',
             context_id INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS snapshots (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path TEXT    NOT NULL,
+            timestamp INTEGER NOT NULL DEFAULT (unixepoch()),
+            size      INTEGER NOT NULL DEFAULT 0,
+            content   BLOB    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS snapshots_path_ts ON snapshots(file_path, timestamp DESC);
+
+        CREATE TABLE IF NOT EXISTS share_permissions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            context_id  INTEGER NOT NULL,
+            path        TEXT    NOT NULL DEFAULT '',
+            can_list    INTEGER NOT NULL DEFAULT 1,
+            can_read    INTEGER NOT NULL DEFAULT 1,
+            can_create  INTEGER NOT NULL DEFAULT 1,
+            can_update  INTEGER NOT NULL DEFAULT 1,
+            can_delete  INTEGER NOT NULL DEFAULT 1,
+            guest_id    TEXT    DEFAULT NULL,
+            UNIQUE(context_id, path)
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(

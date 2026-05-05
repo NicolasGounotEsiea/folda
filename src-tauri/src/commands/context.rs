@@ -146,6 +146,46 @@ pub fn set_active_context(
     Ok(())
 }
 
+/// Returns activity events for a single file, newest first.
+#[tauri::command]
+pub fn get_file_activity(
+    file_path: String,
+    limit: i64,
+    state: tauri::State<AppState>,
+) -> Result<Vec<crate::models::ActivityEntry>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let norm = file_path.replace('\\', "/");
+    let mut stmt = db
+        .prepare(
+            "SELECT id, file_id,
+                    replace(file_path, '\\', '/') as fp,
+                    file_name, action, timestamp, app_name
+             FROM activity
+             WHERE replace(file_path, '\\', '/') = ?1
+             ORDER BY timestamp DESC
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let entries = stmt
+        .query_map(rusqlite::params![norm, limit.max(1)], |row| {
+            Ok(crate::models::ActivityEntry {
+                id:        row.get(0)?,
+                file_id:   row.get(1)?,
+                file_path: row.get(2)?,
+                file_name: row.get(3)?,
+                action:    row.get(4)?,
+                timestamp: row.get(5)?,
+                app_name:  row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(entries)
+}
+
 #[tauri::command]
 pub fn get_timeline(
     from: i64,

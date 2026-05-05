@@ -9,9 +9,10 @@ import { markdown } from "@codemirror/lang-markdown";
 import { oneDark } from "@codemirror/theme-one-dark";
 import type { Extension } from "@codemirror/state";
 import CodeMirror, { type Statistics } from "@uiw/react-codemirror";
-import { Ban, FileCode, Save, X } from "lucide-react";
+import { Ban, FileCode, History, Save, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
+import { SnapshotPanel } from "./SnapshotPanel";
 
 // These extensions are handled by MediaViewer or DocumentViewer — EditorView only sees them
 // if somehow routed here, in which case we show a "can't edit" message.
@@ -55,7 +56,7 @@ function getLangExtension(ext: string): Extension | null {
 }
 
 export function EditorView() {
-  const { openedFile, closeFile, activeTabId, updateTabCache, sharingMode } = useStore();
+  const { openedFile, closeFile, activeTabId, updateTabCache, sharingMode, settings } = useStore();
   const isRemote = sharingMode === "joined";
   const readFile = (path: string) =>
     isRemote ? invoke<string>("read_remote_file", { path }) : invoke<string>("read_file_full", { path });
@@ -68,6 +69,8 @@ export function EditorView() {
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ line: 1, col: 1 });
   const [confirmClose, setConfirmClose] = useState(false);
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
+  const [snapshotKey, setSnapshotKey] = useState(0); // bump to refresh panel
   const contentRef = useRef(content);
   const originalRef = useRef(originalContent);
   contentRef.current = content;
@@ -114,15 +117,23 @@ export function EditorView() {
     const current = contentRef.current;
     setSaving(true);
     try {
+      // Auto-snapshot before saving (local files only, ≤1 MB enforced server-side)
+      if (!isRemote && settings.snapshotMode === "auto") {
+        invoke("create_snapshot", {
+          filePath: openedFile.path,
+          maxCount: settings.snapshotMaxCount,
+        }).catch(() => {});
+      }
       await writeFile(openedFile.path, current);
       setOriginalContent(current);
       if (activeTabId) updateTabCache(activeTabId, current, current);
+      setSnapshotKey((k) => k + 1);
     } catch (e) {
       setError(String(e));
     } finally {
       setSaving(false);
     }
-  }, [openedFile, activeTabId, updateTabCache]);
+  }, [openedFile, activeTabId, updateTabCache, isRemote, settings.snapshotMode, settings.snapshotMaxCount]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -163,7 +174,8 @@ export function EditorView() {
   const langName = LANG_NAMES[ext] ?? (ext ? ext.toUpperCase() : "Plain Text");
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden bg-[#282c34]">
+    <div className="flex-1 flex overflow-hidden bg-[#282c34]">
+    <div className="flex-1 flex flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 px-3 h-10 bg-surface-1 border-b border-border-subtle shrink-0">
         <FileCode size={13} className="text-text-muted shrink-0" />
@@ -184,6 +196,15 @@ export function EditorView() {
           <Save size={10} />
           {saving ? "Saving…" : "Save"}
         </button>
+        {!isRemote && (
+          <button
+            onClick={() => setSnapshotOpen((v) => !v)}
+            title="Snapshots"
+            className={`w-7 h-7 flex items-center justify-center rounded transition-colors shrink-0 ${snapshotOpen ? "text-accent bg-accent/10" : "text-text-muted hover:text-text-secondary hover:bg-surface-3"}`}
+          >
+            <History size={13} />
+          </button>
+        )}
         <button
           onClick={() => isDirty ? setConfirmClose(true) : closeFile()}
           className="w-6 h-6 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors shrink-0"
@@ -276,6 +297,27 @@ export function EditorView() {
           : <span className="text-[10px] text-emerald-500">Saved</span>
         }
       </div>
+    </div>
+
+    {/* Snapshot side panel */}
+    {snapshotOpen && openedFile && !isRemote && (
+      <SnapshotPanel
+        key={snapshotKey}
+        filePath={openedFile.path}
+        currentContent={content}
+        onClose={() => setSnapshotOpen(false)}
+        onRestored={() => {
+          // Reload file content after restore
+          invoke<string>("read_file_full", { path: openedFile.path })
+            .then((text) => {
+              setContent(text);
+              setOriginalContent(text);
+              if (activeTabId) updateTabCache(activeTabId, text, text);
+            })
+            .catch(() => {});
+        }}
+      />
+    )}
     </div>
   );
 }

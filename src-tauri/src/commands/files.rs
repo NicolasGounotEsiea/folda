@@ -559,18 +559,40 @@ pub fn get_file_preview(path: String) -> Result<Option<String>, String> {
     }
 }
 
+fn log_activity(db: &rusqlite::Connection, file_path: &str, file_name: &str, action: &str) {
+    let norm = file_path.replace('\\', "/");
+    let _ = db.execute(
+        "INSERT INTO activity (file_id, file_path, file_name, action)
+         SELECT id, ?1, ?2, ?3 FROM files WHERE path = ?4
+         UNION ALL
+         SELECT NULL, ?1, ?2, ?3 WHERE NOT EXISTS (SELECT 1 FROM files WHERE path = ?4)
+         LIMIT 1",
+        rusqlite::params![norm, file_name, action, file_path],
+    );
+}
+
 #[tauri::command]
-pub fn read_file_full(path: String) -> Result<String, String> {
+pub fn read_file_full(path: String, state: tauri::State<AppState>) -> Result<String, String> {
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     if meta.len() > 10 * 1024 * 1024 {
         return Err("File too large to edit (>10 MB)".to_string());
     }
-    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    if let Ok(db) = state.db.lock() {
+        let name = std::path::Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or("");
+        log_activity(&db, &path, name, "opened");
+    }
+    Ok(content)
 }
 
 #[tauri::command]
-pub fn write_file(path: String, content: String) -> Result<(), String> {
-    std::fs::write(&path, content.as_bytes()).map_err(|e| e.to_string())
+pub fn write_file(path: String, content: String, state: tauri::State<AppState>) -> Result<(), String> {
+    std::fs::write(&path, content.as_bytes()).map_err(|e| e.to_string())?;
+    if let Ok(db) = state.db.lock() {
+        let name = std::path::Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or("");
+        log_activity(&db, &path, name, "modified");
+    }
+    Ok(())
 }
 
 #[tauri::command]

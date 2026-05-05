@@ -2,13 +2,52 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Dark theme (default) ────────────────────────────────────────────────── */
 :root {
+  --color-surface-0: #0c0c0c;
+  --color-surface-1: #131313;
+  --color-surface-2: #1a1a1a;
+  --color-surface-3: #222222;
+  --color-surface-4: #2a2a2a;
+  --color-surface-5: #333333;
+
+  --color-border:        #2a2a2a;
+  --color-border-subtle: #1f1f1f;
+
+  --color-text-primary:   #e8e8e8;
+  --color-text-secondary: #888888;
+  --color-text-muted:     #555555;
+
+  /* Accent — overridden dynamically via JS */
+  --color-accent:     #6366f1;
+  --color-accent-rgb: 99 102 241; /* space-separated RGB for Tailwind opacity modifiers */
+  --color-accent-dim: #4f46e5;
+  --color-accent-glow:#818cf8;
+
   --titlebar-height: 38px;
   --toolbar-height: 48px;
   --sidebar-width: 200px;
   --preview-width: 300px;
 }
 
+/* ── Light theme ─────────────────────────────────────────────────────────── */
+:root.light {
+  --color-surface-0: #e8e8e8;
+  --color-surface-1: #f5f5f5;
+  --color-surface-2: #ffffff;
+  --color-surface-3: #ebebeb;
+  --color-surface-4: #dedede;
+  --color-surface-5: #d0d0d0;
+
+  --color-border:        #d0d0d0;
+  --color-border-subtle: #e0e0e0;
+
+  --color-text-primary:   #111111;
+  --color-text-secondary: #555555;
+  --color-text-muted:     #999999;
+}
+
+/* ── Base ────────────────────────────────────────────────────────────────── */
 * {
   box-sizing: border-box;
   -webkit-font-smoothing: antialiased;
@@ -20,41 +59,20 @@ body,
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: #0c0c0c;
-  color: #e8e8e8;
+  background: var(--color-surface-0);
+  color: var(--color-text-primary);
   font-family: -apple-system, Inter, system-ui, sans-serif;
   font-size: 13px;
   user-select: none;
 }
 
-::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
-}
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--color-surface-5); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
 
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #333;
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #444;
-}
-
-.drag-region {
-  -webkit-app-region: drag;
-}
-
-.no-drag {
-  -webkit-app-region: no-drag;
-}
-
-input,
-button,
-select {
-  -webkit-app-region: no-drag;
-}
+/* ── Drag region ─────────────────────────────────────────────────────────── */
+.drag-region { -webkit-app-region: drag; }
+.no-drag     { -webkit-app-region: no-drag; }
+input, button, select { -webkit-app-region: no-drag; }
