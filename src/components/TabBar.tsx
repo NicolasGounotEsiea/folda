@@ -43,7 +43,7 @@ function FolderTabMenu({
     return () => window.removeEventListener("mousedown", handler, true);
   }, [onClose]);
 
-  const menuW = 180;
+  const menuW = 200;
   const left = Math.min(x, window.innerWidth - menuW - 8);
 
   return (
@@ -52,6 +52,16 @@ function FolderTabMenu({
       style={{ position: "fixed", top: y, left, minWidth: menuW, zIndex: 9999 }}
       className="bg-surface-2 border border-border rounded-lg shadow-2xl py-1 overflow-hidden"
     >
+      <button
+        onClick={() => {
+          invoke("open_new_window", { mode: "folder", path }).catch(console.error);
+          onClose();
+        }}
+        className="w-full flex items-center gap-2 px-3 h-7 text-left text-[12px] text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors"
+      >
+        Ouvrir dans une nouvelle fenêtre
+      </button>
+      <div className="my-1 border-t border-border-subtle" />
       <p className="px-3 py-1 text-[10px] text-text-muted uppercase tracking-widest">Add to workspace</p>
       {contexts.map((ctx) => (
         <button
@@ -103,12 +113,25 @@ function FileTabMenu({
   const menuW = 200;
   const left = Math.min(x, window.innerWidth - menuW - 8);
 
+  const fileExt = filePath.replace(/\\/g, "/").split("/").pop()?.split(".").pop() ?? "";
+  const fileName = filePath.replace(/\\/g, "/").split("/").pop() ?? "";
+
   return (
     <div
       ref={ref}
       style={{ position: "fixed", top: y, left, minWidth: menuW, zIndex: 9999 }}
       className="bg-surface-2 border border-border rounded-lg shadow-2xl py-1 overflow-hidden"
     >
+      <button
+        onClick={() => {
+          invoke("open_new_window", { mode: "file", path: filePath, name: fileName, ext: fileExt }).catch(console.error);
+          onClose();
+        }}
+        className="w-full flex items-center gap-2 px-3 h-7 text-left text-[12px] text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors"
+      >
+        Ouvrir dans une nouvelle fenêtre
+      </button>
+      <div className="my-1 border-t border-border-subtle" />
       <p className="px-3 py-1 text-[10px] text-text-muted uppercase tracking-widest">Ajouter au workspace</p>
       {contexts.map((ctx) => {
         const alreadyIn = (ctx.open_file_tabs ?? []).includes(filePath);
@@ -364,7 +387,12 @@ export function TabBar() {
               <div
                 key={tab.id}
                 onClick={() => handleFolderTabClick(tab.id)}
-                onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); handleCloseFolderTab(e as unknown as React.MouseEvent, tab.id); }}}
+                onMouseDown={(e) => {
+                  if (e.button === 1) { e.preventDefault(); handleCloseFolderTab(e as unknown as React.MouseEvent, tab.id); }
+                  // TEAR-OUT HOOK: detect drag outside window bounds here,
+                  // then call invoke("open_new_window", { mode:"folder", path:tab.path })
+                  // and closeFolderTab(tab.id).
+                }}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   setFolderTabMenu({ x: e.clientX, y: e.clientY + 4, path: tab.path });
@@ -409,7 +437,12 @@ export function TabBar() {
             <div
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); tryCloseTab(tab.id); }}}
+              onMouseDown={(e) => {
+                if (e.button === 1) { e.preventDefault(); tryCloseTab(tab.id); }
+                // TEAR-OUT HOOK: detect drag outside window bounds here,
+                // then call invoke("open_new_window", { mode:"file", path:tab.id, name:tab.file.name, ext:tab.file.extension })
+                // and closeTab(tab.id).
+              }}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setFileTabMenu({ x: e.clientX, y: e.clientY + 4, filePath: tab.id });

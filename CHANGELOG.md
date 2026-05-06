@@ -2,6 +2,28 @@
 
 All notable changes to Contextual Workspace are documented here.
 
+## [0.1.3] - 2026-05-06
+
+### Added
+
+- **Multi-window support** — right-click any file or folder and choose *Open in new window*; same option available on folder and file tab context menus. Popup windows use native OS decorations so move, resize, and close all work out of the box.
+- **Image thumbnails in grid view** — `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`, `.avif` files render actual thumbnails in grid layout instead of a generic icon. Thumbnails load lazily via Tauri's asset protocol.
+- **Status bar** — the file list now shows a persistent bottom bar with total item count (folders + files); when items are selected it switches to selection count and cumulative file size.
+- **Editable path bar** — click anywhere on the breadcrumb to switch to a text input and type a path directly. Enter navigates, Escape cancels.
+
+### Improved
+
+- **CSV editor** — editor now stays in table view after initial load (was incorrectly falling back to a raw textarea). Virtual scrolling added for large files (up to 50 000 rows with no lag); row/column count shown in the info bar; fixed an issue where the last rows were unreachable due to the status bar sitting outside the scroll container.
+- **Image gallery navigation** — arrow keys and prev/next buttons now cycle images within the current tab instead of opening a new tab for each image.
+- **Tab bar overflow** — left/right chevron scroll buttons appear automatically when file or folder tabs overflow the bar width; mouse-wheel scrolling also works.
+- **Navigation performance** — listing a directory no longer scans each subdirectory to count children. This eliminates multi-second hangs when navigating outside a workspace on machines with OneDrive or other virtual-filesystem providers.
+
+### Fixed
+
+- **PDF viewer white screen** — updated the pdfjs-dist v5 render call to pass the required `canvas` parameter; added `vite-env.d.ts` so the `?url` worker import resolves under TypeScript.
+- **"Open with default app" error** — spurious `state: undefined` argument removed from the `open_with_default` invoke call in DocumentViewer.
+- **Popup window snap-back to folder** — React Strict Mode causes the restore effect to run twice; the second run was consuming the (now-absent) init data and falling through to normal workspace restore, which called `setContexts` and wiped `openedFile`. Fixed by: (1) making `get_window_init_data` non-destructive (clones the entry instead of removing it); (2) always returning early in non-main windows regardless of whether init data is present; (3) guarding the init block with `!popupInit` so it runs at most once.
+
 ## [0.1.2] - 2026-05-05
 
 ### Fixed

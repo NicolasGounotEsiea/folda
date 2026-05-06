@@ -9,6 +9,9 @@ pub mod sharing;
 pub struct AppState {
     pub db: Arc<Mutex<rusqlite::Connection>>,
     pub sharing: tokio::sync::Mutex<sharing::SharingState>,
+    /// Pending init data for new popup windows, keyed by window label.
+    /// Written by `open_new_window`, consumed (removed) by `get_window_init_data`.
+    pub window_init: Mutex<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,6 +27,7 @@ pub fn run() {
             app.manage(AppState {
                 db: Arc::new(Mutex::new(conn)),
                 sharing: tokio::sync::Mutex::new(sharing::SharingState::Idle),
+                window_init: Mutex::new(std::collections::HashMap::new()),
             });
             Ok(())
         })
@@ -92,6 +96,8 @@ pub fn run() {
             commands::settings::get_all_settings,
             commands::settings::set_setting,
             commands::settings::purge_old_activity,
+            commands::windowing::open_new_window,
+            commands::windowing::get_window_init_data,
             // Sharing
             commands::sharing::start_sharing,
             commands::sharing::stop_sharing,

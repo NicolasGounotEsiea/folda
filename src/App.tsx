@@ -27,6 +27,13 @@ interface FileChangedPayload {
   timestamp: number;
 }
 
+interface WindowInitData {
+  mode: "folder" | "file";
+  path: string;
+  name?: string | null;
+  ext?: string | null;
+}
+
 export function App() {
   const {
     viewMode, currentPath, openedFile,
@@ -39,14 +46,61 @@ export function App() {
     selectedPaths, listEntries,
     setContexts, setTabs,
     sharingMode, addSharingClient, removeSharingClient, resetSharing,
-    updateSettings, setShowHidden,
+    updateSettings, setShowHidden, openFile,
   } = useStore();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Null = main window, set = popup window with init data.
+  // IS_POPUP is stable: the window label never changes after creation.
+  const IS_POPUP = getCurrentWindow().label !== "main";
+  const [popupInit, setPopupInit] = useState<WindowInitData | null>(null);
 
   // Restore last session
   useEffect(() => {
     const restore = async () => {
+      // ── Popup-window detection ────────────────────────────────────────────
+      // Non-main windows receive init data via get_window_init_data.
+      // TEAR-OUT HOOK: when a tab is torn out and a new window is created,
+      // that window goes through this same path — no extra code needed here.
+      const winLabel = getCurrentWindow().label;
+      if (winLabel !== "main") {
+        // Non-main windows never run the normal workspace restore — always return here.
+        // get_window_init_data is non-destructive (leaves data in the map) so this is
+        // safe even when React Strict Mode invokes the effect twice.
+        const initData = await invoke<WindowInitData | null>(
+          "get_window_init_data", { label: winLabel }
+        ).catch(() => null);
+
+        if (initData && !popupInit) {
+          setPopupInit(initData);
+          const rawSettings = await invoke<Record<string, string>>("get_all_settings").catch(() => ({} as Record<string, string>));
+          const loaded = deserializeSettings(rawSettings);
+          updateSettings(loaded);
+          applySettings(loaded);
+
+          if (initData.mode === "folder") {
+            setCurrentPath(initData.path);
+            pushNav(initData.path);
+            const entries = await invoke<ListEntry[]>("list_directory", { path: initData.path, contextId: 0 }).catch(() => [] as ListEntry[]);
+            setListEntries(entries);
+          } else if (initData.mode === "file") {
+            const name = initData.name ?? initData.path.replace(/\\/g, "/").split("/").pop() ?? "";
+            // Open the file immediately so the viewer renders on first paint
+            openFile({ id: -1, path: initData.path, name, extension: initData.ext ?? "", size: 0, created_at: 0, modified_at: 0, accessed_at: 0, tags: [] });
+            // Load the parent folder in the background so MediaViewer has sibling
+            // images for prev/next navigation
+            const norm = initData.path.replace(/\\/g, "/");
+            const parentPath = norm.split("/").slice(0, -1).join("/");
+            if (parentPath) {
+              setCurrentPath(parentPath);
+              invoke<ListEntry[]>("list_directory", { path: parentPath, contextId: 0 })
+                .then(setListEntries)
+                .catch(() => {});
+            }
+          }
+        }
+        return; // always skip normal workspace restore for non-main windows
+      }
       // Load contexts — they are the source of truth for folders
       let ctxs = await invoke<Context[]>("get_contexts").catch(() => [] as Context[]);
 
@@ -201,7 +255,9 @@ export function App() {
   const [previewOpen, setPreviewOpen] = useState(true);
 
   // Save workspace state on OS-level close (Alt+F4, taskbar right-click, etc.)
+  // Popup windows use native OS decorations so the OS handles close naturally.
   useEffect(() => {
+    if (IS_POPUP) return; // native close button on popups needs no interception
     const win = getCurrentWindow();
     const p = win.onCloseRequested((event) => {
       if (isClosing()) return; // already saving, destroy() pending
@@ -209,6 +265,7 @@ export function App() {
       saveAndClose(); // saves state then destroy()s — no second CloseRequested
     });
     return () => { p.then((f) => f()); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const selectedEntries = listEntries.filter((e) => selectedPaths.includes(e.path));
@@ -232,10 +289,12 @@ export function App() {
 
   return (
     <div className="flex flex-col h-full bg-surface-0">
-      <Titlebar />
+      {/* Custom titlebar only for the main window — popup windows use native OS chrome */}
+      {!IS_POPUP && <Titlebar />}
       <Toolbar onOpenSettings={() => setSettingsOpen(true)} />
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar />
+        {/* Sidebar hidden in popup windows for a focused, distraction-free view */}
+        {!IS_POPUP && <Sidebar />}
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
           <TabBar />
           {openedFile ? (() => {

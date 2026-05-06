@@ -3,8 +3,6 @@ import { Minus, Square, X } from "lucide-react";
 import { useStore } from "../store/useStore";
 import { saveAndClose } from "../utils/appClose";
 
-const appWindow = getCurrentWindow();
-
 export function Titlebar() {
   const { sharingMode, sharingWorkspaceName, sharingWorkspaceIcon, sharingClients } = useStore();
 
@@ -39,13 +37,13 @@ export function Titlebar() {
 
       <div className="flex items-center h-full">
         <button
-          onClick={() => appWindow.minimize().catch(console.error)}
+          onClick={() => getCurrentWindow().minimize().catch(console.error)}
           className="w-11 h-full flex items-center justify-center text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
         >
           <Minus size={12} />
         </button>
         <button
-          onClick={() => appWindow.toggleMaximize().catch(console.error)}
+          onClick={() => getCurrentWindow().toggleMaximize().catch(console.error)}
           className="w-11 h-full flex items-center justify-center text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
         >
           <Square size={11} />

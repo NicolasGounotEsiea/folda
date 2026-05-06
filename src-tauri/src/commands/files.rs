@@ -471,13 +471,10 @@ pub fn list_directory(
             let modified_at = ts_secs(meta.modified());
 
             if file_type.is_dir() {
-                let child_count = std::fs::read_dir(&entry_path)
-                    .map(|it| it.count())
-                    .unwrap_or(0) as i64;
                 let folder_tags = load_folder_tags(&db, &entry_path, context_id).unwrap_or_default();
                 Some(ListEntry {
                     is_dir: true, name, path: entry_path,
-                    size: child_count, created_at, modified_at, extension: String::new(),
+                    size: -1, created_at, modified_at, extension: String::new(),
                     id: None, tags: folder_tags,
                 })
             } else {

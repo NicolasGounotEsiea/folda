@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
 import {
   ArrowDown, ArrowUp, ChevronUp,
@@ -78,6 +78,51 @@ function formatDate(unixSecs: number): string {
   return new Date(unixSecs * 1000).toLocaleDateString(undefined, {
     day: "numeric", month: "short", year: "numeric",
   });
+}
+
+const IMAGE_THUMB_EXTS = new Set(["png","jpg","jpeg","gif","webp","bmp","avif"]);
+
+function GridThumbnail({ entry }: { entry: ListEntry }) {
+  if (entry.is_dir || !IMAGE_THUMB_EXTS.has(entry.extension.toLowerCase())) {
+    return (
+      <div className="w-full h-16 flex items-center justify-center">
+        <FileIcon entry={entry} />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={convertFileSrc(entry.path)}
+      alt=""
+      loading="lazy"
+      draggable={false}
+      className="w-full h-16 object-cover rounded-sm"
+      onError={(ev) => {
+        const img = ev.currentTarget;
+        img.style.display = "none";
+        const fallback = document.createElement("div");
+        fallback.className = "w-full h-16 flex items-center justify-center";
+        img.parentNode?.insertBefore(fallback, img);
+      }}
+    />
+  );
+}
+
+function StatusBar({ total, selected, selectedSize }: { total: number; selected: number; selectedSize: number }) {
+  return (
+    <div className="shrink-0 flex items-center gap-2 px-3 h-6 bg-surface-1 border-t border-border-subtle text-[10px] text-text-muted select-none">
+      <span>{total.toLocaleString("fr-FR")} élément{total !== 1 ? "s" : ""}</span>
+      {selected > 0 && (
+        <>
+          <span className="text-border">·</span>
+          <span className="text-text-secondary">
+            {selected} sélectionné{selected !== 1 ? "s" : ""}
+            {selectedSize > 0 && <span className="text-text-muted"> — {formatSize(selectedSize)}</span>}
+          </span>
+        </>
+      )}
+    </div>
+  );
 }
 
 function FileIcon({ entry }: { entry: ListEntry }) {
@@ -212,9 +257,7 @@ function EntryRow({
           </div>
           {/* col 3: size */}
           <span className="text-[11px] text-text-muted text-right">
-            {entry.is_dir
-              ? `${entry.size} item${entry.size !== 1 ? "s" : ""}`
-              : formatSize(entry.size)}
+            {entry.is_dir ? "—" : formatSize(entry.size)}
           </span>
           {/* col 4: modified */}
           <span className="text-[11px] text-text-muted text-right">
@@ -321,6 +364,12 @@ export function FileList() {
       return sortDir === "asc" ? cmp : -cmp;
     });
   }, [listEntries, showHidden, selectedTagIds, sortBy, sortDir]);
+
+  const selectedSize = useMemo(() =>
+    visibleEntries
+      .filter((e) => !e.is_dir && selectedPaths.includes(e.path))
+      .reduce((s, e) => s + e.size, 0),
+  [visibleEntries, selectedPaths]);
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
   const refreshList = useCallback(async (path?: string) => {
@@ -509,9 +558,19 @@ export function FileList() {
       if (!entry.is_dir) {
         items.push({ label: "Open with system", onClick: () => invoke("open_with_default", { path: entry.path }) });
         items.push({ label: "Open in editor", onClick: () => handleOpen(entry) });
+        items.push({
+          label: "Open in new window",
+          onClick: () => invoke("open_new_window", {
+            mode: "file", path: entry.path, name: entry.name, ext: entry.extension,
+          }).catch(console.error),
+        });
       } else {
         items.push({ label: "Open folder", onClick: () => navigate(entry.path) });
         items.push({ label: "Open in new tab", onClick: () => handleOpenFolderInNewTab(entry.path) });
+        items.push({
+          label: "Open in new window",
+          onClick: () => invoke("open_new_window", { mode: "folder", path: entry.path }).catch(console.error),
+        });
       }
       items.push({ separator: true });
       items.push({ label: "Rename", shortcut: "F2", onClick: () => setRenamingPath(entry.path) });
@@ -759,6 +818,7 @@ export function FileList() {
             onCancel={() => setDeleteTargets(null)}
           />
         )}
+        <div className="flex-1 flex flex-col min-h-0">
         <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
           {parentPath && (
             <button onClick={() => navigate(parentPath)} onDoubleClick={() => navigate(parentPath)}
@@ -794,9 +854,9 @@ export function FileList() {
                     onDoubleClick={() => handleOpen(e)}
                     onClick={(ev) => handleClick(ev, e)}
                     onContextMenu={(ev) => handleContextMenu(ev, e)}
-                    className={clsx("flex flex-col items-start gap-2 p-3 rounded-lg border text-left transition-colors",
+                    className={clsx("flex flex-col items-start gap-1.5 p-2 rounded-lg border text-left transition-colors overflow-hidden",
                       selectedPaths.includes(e.path) ? "border-accent/50 bg-accent/5" : "border-border hover:bg-surface-2")}>
-                    <FileIcon entry={e} />
+                    <GridThumbnail entry={e} />
                     <span className="text-[12px] text-text-primary truncate w-full">{e.name}</span>
                     <span className="text-[10px] text-text-muted">{formatSize(e.size)}</span>
                   </button>
@@ -810,6 +870,8 @@ export function FileList() {
               <span className="text-[12px]">Empty folder</span>
             </div>
           )}
+        </div>
+        <StatusBar total={visibleEntries.length} selected={selectedPaths.length} selectedSize={selectedSize} />
         </div>
         {ctxMenu && (
           <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={buildMenuItems(ctxMenu.entry)} onClose={() => setCtxMenu(null)} />
@@ -830,6 +892,7 @@ export function FileList() {
         />
       )}
 
+      <div className="flex-1 flex flex-col min-h-0">
       <div
         className="flex-1 overflow-y-auto flex flex-col"
         onContextMenu={(e) => {
@@ -935,6 +998,8 @@ export function FileList() {
             {ghostPos.label}
           </div>
         )}
+      </div>
+      <StatusBar total={visibleEntries.length} selected={selectedPaths.length} selectedSize={selectedSize} />
       </div>
 
       {ctxMenu && (

@@ -10,3 +10,4 @@ pub mod snapshots;
 pub mod stats;
 pub mod tags;
 pub mod settings;
+pub mod windowing;

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search, Settings } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import type { FileEntry, ListEntry } from "../types";
 import { clsx } from "clsx";
@@ -31,6 +31,28 @@ export function Toolbar({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const t = useTranslation();
   const searchRef = useRef<HTMLInputElement>(null);
+  const pathInputRef = useRef<HTMLInputElement>(null);
+  const [pathInputMode, setPathInputMode] = useState(false);
+  const [pathInputValue, setPathInputValue] = useState("");
+
+  const enterPathMode = () => {
+    setPathInputValue(currentPath ?? "");
+    setPathInputMode(true);
+    setTimeout(() => { pathInputRef.current?.select(); }, 0);
+  };
+
+  const commitPath = async (raw: string) => {
+    setPathInputMode(false);
+    const p = raw.trim();
+    if (!p || p === currentPath) return;
+    try {
+      const entries = await invoke<import("../types").ListEntry[]>("list_directory", { path: p, contextId: activeContextId ?? 0 });
+      setCurrentPath(p);
+      pushNav(p);
+      setListEntries(entries);
+      selectFile(null);
+    } catch { /* invalid path — silently ignore */ }
+  };
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -119,14 +141,31 @@ export function Toolbar({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (
     <div className="flex items-center gap-2 px-3 h-[48px] bg-surface-1 border-b border-border-subtle shrink-0">
 
-      {/* Breadcrumb */}
-      {breadcrumb.length > 0 ? (
-        <div className="flex items-center gap-0.5 min-w-0 overflow-hidden flex-1">
+      {/* Breadcrumb / path input */}
+      {pathInputMode ? (
+        <input
+          ref={pathInputRef}
+          value={pathInputValue}
+          onChange={(e) => setPathInputValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commitPath(pathInputValue);
+            if (e.key === "Escape") setPathInputMode(false);
+          }}
+          onBlur={() => setPathInputMode(false)}
+          className="flex-1 h-7 px-2 rounded bg-surface-3 border border-accent text-[12px] text-text-primary outline-none font-mono"
+          spellCheck={false}
+        />
+      ) : breadcrumb.length > 0 ? (
+        <div
+          className="flex items-center gap-0.5 min-w-0 overflow-hidden flex-1 cursor-text group/breadcrumb rounded px-1 hover:bg-surface-3 transition-colors"
+          onClick={enterPathMode}
+          title="Cliquer pour modifier le chemin"
+        >
           {breadcrumb.map((seg, i) => (
             <span key={seg.path} className="flex items-center gap-0.5 min-w-0">
               {i > 0 && <ChevronRight size={11} className="text-text-muted shrink-0" />}
               <button
-                onClick={() => navigateTo(seg.path)}
+                onClick={(e) => { e.stopPropagation(); navigateTo(seg.path); }}
                 className={clsx(
                   "text-[12px] truncate max-w-[160px] transition-colors",
                   i === breadcrumb.length - 1

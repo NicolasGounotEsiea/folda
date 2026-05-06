@@ -14,7 +14,8 @@ Two formats are available: **NSIS `.exe`** (recommended) and **MSI `.msi`**.
 ## Features
 
 - **Multi-workspace** — organize folders into named workspaces with icons, tags, and pinned paths
-- **File explorer** — multi-tab browsing, context menus, bulk rename, drag & drop
+- **File explorer** — multi-tab browsing, context menus, bulk rename, drag & drop; image thumbnails in grid view; status bar; editable path bar
+- **Multi-window** — open any file or folder in an independent window via right-click → *Open in new window*
 - **Editor** — syntax-highlighted editor (CodeMirror) for text, code, Markdown, and DOCX preview
 - **Snapshots** — lightweight per-file version history stored in SQLite; auto mode (snapshot on every save) or manual mode; configurable max count (2–50); click any snapshot to open a diff view showing exactly what changed (added/removed lines highlighted), with one-click restore
 - **Activity feed** — per-file history tab in the preview panel showing open, edit, rename, and delete events with timestamps
@@ -120,7 +121,7 @@ Features planned to increase product value and justify purchase pricing.
 
 ### Cloud & Sync
 - [ ] **Workspace sync** — sync metadata, tags, and saved views across machines via an optional cloud backend (tags follow files across devices)
-- [ ] **Owners rules / permissions** — possibility to choose for the owner if other users can see/update/create/delete files
+- [x] **Owners rules / permissions** — granular per-path permissions (list, read, create, edit, delete) configurable per workspace; longest-prefix match wins
 - [ ] **Export / import workspace** — portable `.cwsp` bundle that preserves folder structure, tags, pinned items, and rules
 - [ ] **Conflict resolution UI** — when the same file is edited on two machines, show a diff and let the user pick
 
@@ -144,6 +145,10 @@ Features planned to increase product value and justify purchase pricing.
 ### UX & Polish
 - [x] **Tab bar scroll** — mouse-wheel scroll and chevron buttons when tabs overflow the bar
 - [x] **Image gallery navigation** — arrow keys cycle through images in the current tab without opening new tabs
+- [x] **Multi-window** — open any file or folder in a new independent window; popup windows use native OS chrome (move, resize, close)
+- [x] **Image thumbnails in grid view** — actual image previews in grid layout with lazy loading
+- [x] **Status bar** — item count; switches to selection count + cumulative size when items are selected
+- [x] **Editable path bar** — click the breadcrumb to type a path directly and navigate
 - [ ] **Onboarding wizard** — guided first-run that creates a workspace, explains tags, shows keyboard shortcuts
 - [ ] **Keyboard shortcut panel** — `?` key opens a reference overlay
 - [ ] **Command palette improvements** — tag assignment, workspace switch, open recent files via Ctrl+K
