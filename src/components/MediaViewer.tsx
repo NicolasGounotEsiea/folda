@@ -1,8 +1,9 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
-import { ChevronLeft, ChevronRight, FileImage, Film, Maximize2, Minimize2, Music, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, FileImage, Film, History, Maximize2, Minimize2, Music, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
+import { SnapshotPanel } from "./SnapshotPanel";
 
 export const IMAGE_EXTS = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "ico"];
 export const VIDEO_EXTS = ["mp4", "webm", "mov", "mkv", "m4v", "avi"];
@@ -16,6 +17,8 @@ export function MediaViewer() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0, px: 0, py: 0 });
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
+  const [imgCacheKey, setImgCacheKey] = useState(0);
 
   // Siblings = images in same folder, in list order
   const imageSiblings = listEntries.filter(
@@ -77,10 +80,12 @@ export function MediaViewer() {
   const ext = openedFile.extension.toLowerCase();
   const isVideo = VIDEO_EXTS.includes(ext);
   const isAudio = AUDIO_EXTS.includes(ext);
-  const url = convertFileSrc(openedFile.path);
+  const isImage = !isVideo && !isAudio;
+  const url = convertFileSrc(openedFile.path) + (imgCacheKey > 0 ? `?v=${imgCacheKey}` : "");
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden bg-surface-0">
+    <div className="flex-1 flex overflow-hidden bg-surface-0">
+    <div className="flex-1 flex flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 px-3 h-10 bg-surface-1 border-b border-border-subtle shrink-0">
         {isVideo
@@ -126,6 +131,14 @@ export function MediaViewer() {
                 {Math.round(zoom * 100)}%
               </span>
             )}
+            <button
+              onClick={() => setSnapshotOpen((v) => !v)}
+              title="Snapshots"
+              className={clsx(
+                "w-6 h-6 flex items-center justify-center rounded transition-colors",
+                snapshotOpen ? "text-accent bg-accent/10" : "text-text-muted hover:text-text-primary hover:bg-surface-3"
+              )}
+            ><History size={13} /></button>
           </>
         )}
 
@@ -233,6 +246,19 @@ export function MediaViewer() {
           {isVideo ? "Vidéo" : isAudio ? "Audio" : "Image"}
         </span>
       </div>
+    </div>
+
+    {snapshotOpen && isImage && (
+      <SnapshotPanel
+        filePath={openedFile.path}
+        isBinary={true}
+        onClose={() => setSnapshotOpen(false)}
+        onRestored={() => {
+          setImgCacheKey((k) => k + 1);
+          setSnapshotOpen(false);
+        }}
+      />
+    )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { saveAndClose, isClosing } from "./utils/appClose";
 import { BulkRename } from "./components/BulkRename";
 import { CommandPalette } from "./components/CommandPalette";
@@ -270,23 +270,6 @@ export function App() {
 
   const selectedEntries = listEntries.filter((e) => selectedPaths.includes(e.path));
 
-  // Status bar data
-  const statusInfo = useMemo(() => {
-    if (!currentPath) return null;
-    const dirs = listEntries.filter((e) => e.is_dir).length;
-    const files = listEntries.filter((e) => !e.is_dir).length;
-    const total = listEntries.length;
-    const selFiles = selectedEntries.filter((e) => !e.is_dir);
-    const selSize = selFiles.reduce((acc, e) => acc + e.size, 0);
-    const formatSize = (b: number) => {
-      if (b < 1024) return `${b} B`;
-      if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-      if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
-      return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
-    };
-    return { total, dirs, files, selCount: selectedPaths.length, selSize, selFiles: selFiles.length, formatSize };
-  }, [listEntries, selectedEntries, selectedPaths.length, currentPath]);
-
   return (
     <div className="flex flex-col h-full bg-surface-0">
       {/* Custom titlebar only for the main window — popup windows use native OS chrome */}
@@ -321,29 +304,6 @@ export function App() {
           )}
         </div>
       </div>
-
-      {/* Global status bar */}
-      {statusInfo && viewMode === "explorer" && !openedFile && (
-        <div className="flex items-center gap-4 px-4 h-6 bg-surface-1 border-t border-border-subtle shrink-0 select-none">
-          {statusInfo.selCount > 0 ? (
-            <>
-              <span className="text-[10px] text-accent font-medium">
-                {statusInfo.selCount} selected
-              </span>
-              {statusInfo.selFiles > 0 && (
-                <span className="text-[10px] text-text-muted">{statusInfo.formatSize(statusInfo.selSize)}</span>
-              )}
-            </>
-          ) : (
-            <span className="text-[10px] text-text-muted">
-              {statusInfo.total} item{statusInfo.total !== 1 ? "s" : ""}
-              {statusInfo.dirs > 0 && statusInfo.files > 0 && (
-                <> · <span className="opacity-70">{statusInfo.dirs} folder{statusInfo.dirs !== 1 ? "s" : ""}, {statusInfo.files} file{statusInfo.files !== 1 ? "s" : ""}</span></>
-              )}
-            </span>
-          )}
-        </div>
-      )}
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
 

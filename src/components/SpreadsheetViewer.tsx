@@ -1,8 +1,10 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
-import { Save, X } from "lucide-react";
+import { History, Save, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
+import { useStore } from "../store/useStore";
+import { SnapshotPanel } from "./SnapshotPanel";
 
 const MAX_ROWS = 50_000;
 const ROW_HEIGHT = 22; // px — must match CSS
@@ -26,6 +28,7 @@ interface Props {
   path: string;
   ext: string;
   onSaved?: () => void;
+  onRestored?: () => void;
 }
 
 function serializeCSV(rows: string[][]): string {
@@ -43,13 +46,17 @@ function fmtNum(n: number) {
   return n.toLocaleString("fr-FR");
 }
 
-export function SpreadsheetViewer({ path, ext, onSaved }: Props) {
+export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
+  const { settings } = useStore();
   const [sheets, setSheets] = useState<SheetData[]>([]);
   const [activeIdx, setActiveIdx] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
+  const [snapshotKey, setSnapshotKey] = useState(0);
+  const [rawContent, setRawContent] = useState<string>("");
 
   // Virtual scroll state
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -66,6 +73,12 @@ export function SpreadsheetViewer({ path, ext, onSaved }: Props) {
     setSheets([]);
     setActiveIdx(0);
     setScrollTop(0);
+
+    if (isCSV) {
+      invoke<string>("read_file_full", { path })
+        .then((text) => setRawContent(text))
+        .catch(() => setRawContent(""));
+    }
 
     const url = convertFileSrc(path);
     let cancelled = false;
@@ -120,8 +133,14 @@ export function SpreadsheetViewer({ path, ext, onSaved }: Props) {
         });
         if (cells.length > 0) rows.push(cells);
       });
-      await invoke("write_file", { path, content: serializeCSV(rows) });
+      const newContent = serializeCSV(rows);
+      if (settings.snapshotMode === "auto") {
+        invoke("create_snapshot", { filePath: path, maxCount: settings.snapshotMaxCount }).catch(() => {});
+      }
+      await invoke("write_file", { path, content: newContent });
+      setRawContent(newContent);
       setEditMode(false);
+      setSnapshotKey((k) => k + 1);
       onSaved?.();
     } catch (e) {
       setError(String(e));
@@ -141,7 +160,8 @@ export function SpreadsheetViewer({ path, ext, onSaved }: Props) {
   const padBottom = Math.max(0, (numRows - endIdx) * ROW_HEIGHT);
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <div className="flex-1 flex overflow-hidden min-h-0">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Tab bar + controls */}
       <div className="flex items-center gap-1 px-2 py-1 bg-surface-2 border-b border-border-subtle shrink-0 overflow-x-auto">
         {sheets.length > 1 && sheets.map((s, i) => (
@@ -185,6 +205,17 @@ export function SpreadsheetViewer({ path, ext, onSaved }: Props) {
             </button>
           </div>
         )}
+
+        <button
+          onClick={() => setSnapshotOpen((v) => !v)}
+          title="Snapshots"
+          className={clsx(
+            "w-6 h-6 flex items-center justify-center rounded transition-colors shrink-0",
+            snapshotOpen ? "text-accent bg-accent/10" : "text-text-muted hover:text-text-secondary hover:bg-surface-3"
+          )}
+        >
+          <History size={12} />
+        </button>
       </div>
 
       {/* Loading / error */}
@@ -305,6 +336,21 @@ export function SpreadsheetViewer({ path, ext, onSaved }: Props) {
           </div>
         </>
       )}
+    </div>
+
+    {snapshotOpen && (
+      <SnapshotPanel
+        key={snapshotKey}
+        filePath={path}
+        isBinary={!isCSV}
+        currentContent={isCSV ? rawContent : undefined}
+        onClose={() => setSnapshotOpen(false)}
+        onRestored={() => {
+          setSnapshotOpen(false);
+          onRestored?.();
+        }}
+      />
+    )}
     </div>
   );
 }

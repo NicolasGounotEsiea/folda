@@ -1,9 +1,10 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { renderAsync } from "docx-preview";
-import { Ban, ExternalLink, FileText, X } from "lucide-react";
+import { Ban, ExternalLink, FileText, History, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import { PdfViewer } from "./PdfViewer";
+import { SnapshotPanel } from "./SnapshotPanel";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
 
 export const DOC_EXTS = [
@@ -83,6 +84,7 @@ function UnsupportedView({ label }: { label: string }) {
 export function DocumentViewer() {
   const { openedFile, closeFile } = useStore();
   const [reloadKey, setReloadKey] = useState(0);
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
 
   const ext = openedFile?.extension.toLowerCase() ?? "";
   const typeLabel = TYPE_LABELS[ext] ?? ext.toUpperCase();
@@ -125,6 +127,17 @@ export function DocumentViewer() {
           Ouvrir avec…
         </button>
 
+        {/* Snapshot history button — only for non-spreadsheet types (spreadsheet handles it internally) */}
+        {!isSpreadsheet && (
+          <button
+            onClick={() => setSnapshotOpen((v) => !v)}
+            title="Snapshots"
+            className={`w-7 h-7 flex items-center justify-center rounded transition-colors shrink-0 ${snapshotOpen ? "text-accent bg-accent/10" : "text-text-muted hover:text-text-secondary hover:bg-surface-3"}`}
+          >
+            <History size={13} />
+          </button>
+        )}
+
         <button
           onClick={closeFile}
           className="w-6 h-6 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors shrink-0"
@@ -134,25 +147,42 @@ export function DocumentViewer() {
         </button>
       </div>
 
-      {/* Content */}
-      {isPdf && <PdfViewer key={openedFile.path} path={openedFile.path} />}
+      {/* Content + optional snapshot panel */}
+      <div className="flex flex-1 overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {isPdf && <PdfViewer key={openedFile.path + reloadKey} path={openedFile.path} />}
 
-      {isDocx && <DocxViewer key={openedFile.path} path={openedFile.path} />}
+          {isDocx && <DocxViewer key={openedFile.path + reloadKey} path={openedFile.path} />}
 
-      {isSpreadsheet && (
-        <SpreadsheetViewer
-          key={openedFile.path + reloadKey}
-          path={openedFile.path}
-          ext={ext}
-          onSaved={() => setReloadKey((k) => k + 1)}
-        />
-      )}
+          {isSpreadsheet && (
+            <SpreadsheetViewer
+              key={openedFile.path + reloadKey}
+              path={openedFile.path}
+              ext={ext}
+              onSaved={() => setReloadKey((k) => k + 1)}
+              onRestored={() => setReloadKey((k) => k + 1)}
+            />
+          )}
 
-      {isPresentation && <UnsupportedView label={typeLabel} />}
+          {isPresentation && <UnsupportedView label={typeLabel} />}
 
-      {!isPdf && !isDocx && !isSpreadsheet && !isPresentation && (
-        <UnsupportedView label={typeLabel} />
-      )}
+          {!isPdf && !isDocx && !isSpreadsheet && !isPresentation && (
+            <UnsupportedView label={typeLabel} />
+          )}
+        </div>
+
+        {snapshotOpen && !isSpreadsheet && (
+          <SnapshotPanel
+            filePath={openedFile.path}
+            isBinary={true}
+            onClose={() => setSnapshotOpen(false)}
+            onRestored={() => {
+              setReloadKey((k) => k + 1);
+              setSnapshotOpen(false);
+            }}
+          />
+        )}
+      </div>
     </div>
   );
 }

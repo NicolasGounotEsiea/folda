@@ -186,12 +186,13 @@ function DiffModal({ snap, snapContent, currentContent, onClose, onRestore, rest
 
 interface SnapshotPanelProps {
   filePath: string;
-  currentContent: string;
+  currentContent?: string;
+  isBinary?: boolean;
   onClose: () => void;
   onRestored: () => void;
 }
 
-export function SnapshotPanel({ filePath, currentContent, onClose, onRestored }: SnapshotPanelProps) {
+export function SnapshotPanel({ filePath, currentContent, isBinary = false, onClose, onRestored }: SnapshotPanelProps) {
   const { settings } = useStore();
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [loading, setLoading] = useState(true);
@@ -264,7 +265,7 @@ export function SnapshotPanel({ filePath, currentContent, onClose, onRestored }:
             Snapshots
           </span>
           <div className="flex items-center gap-1">
-            {settings.snapshotMode === "manual" && (
+            {(isBinary || settings.snapshotMode === "manual") && (
               <button
                 onClick={handleManualSnapshot}
                 disabled={creating}
@@ -293,17 +294,21 @@ export function SnapshotPanel({ filePath, currentContent, onClose, onRestored }:
               {settings.snapshotMode === "manual" && (
                 <span className="text-[10px] opacity-60">Click "+ Save" to create one</span>
               )}
+              {isBinary && settings.snapshotMode === "auto" && (
+                <span className="text-[10px] opacity-60">Use "+ Save" to create one manually</span>
+              )}
             </div>
           ) : (
             <div className="flex flex-col">
               {snapshots.map((snap, i) => (
                 <button
                   key={snap.id}
-                  onClick={() => handleOpenDiff(snap)}
+                  onClick={() => { if (!isBinary) handleOpenDiff(snap); }}
                   className={clsx(
                     "group text-left flex flex-col gap-0.5 px-3 py-2 border-b border-border-subtle w-full",
                     "hover:bg-surface-2 transition-colors",
-                    diffSnap?.id === snap.id && "bg-surface-2 ring-1 ring-inset ring-accent/30"
+                    !isBinary && diffSnap?.id === snap.id && "bg-surface-2 ring-1 ring-inset ring-accent/30",
+                    isBinary && "cursor-default"
                   )}
                 >
                   <div className="flex items-center justify-between gap-1">
@@ -344,8 +349,8 @@ export function SnapshotPanel({ filePath, currentContent, onClose, onRestored }:
         </div>
       </div>
 
-      {/* Diff modal */}
-      {diffSnap && (
+      {/* Diff modal — text files only */}
+      {!isBinary && diffSnap && (
         diffLoading ? (
           <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60">
             <span className="text-text-muted text-[12px] animate-pulse">Loading diff…</span>
@@ -354,7 +359,7 @@ export function SnapshotPanel({ filePath, currentContent, onClose, onRestored }:
           <DiffModal
             snap={diffSnap}
             snapContent={diffContent}
-            currentContent={currentContent}
+            currentContent={currentContent ?? ""}
             onClose={() => { setDiffSnap(null); setDiffContent(null); }}
             onRestore={() => handleRestore(diffSnap)}
             restoring={restoring === diffSnap.id}

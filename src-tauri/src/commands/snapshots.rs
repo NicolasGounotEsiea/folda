@@ -17,8 +17,8 @@ pub fn create_snapshot(
     state: tauri::State<AppState>,
 ) -> Result<(), String> {
     let content = std::fs::read(&file_path).map_err(|e| e.to_string())?;
-    if content.len() > 1024 * 1024 {
-        return Ok(()); // silently skip large files
+    if content.len() > 10 * 1024 * 1024 {
+        return Ok(()); // silently skip large files (>10 MB)
     }
 
     let size = content.len() as i64;
