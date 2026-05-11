@@ -1,6 +1,21 @@
 # Changelog
 
-All notable changes to Contextual Workspace are documented here.
+All notable changes to nxs are documented here.
+
+## [0.1.4] - 2026-05-12
+
+### Added
+
+- **Trash / Recycle bin** — delete (Del) now moves files and folders to a soft-delete bin stored in AppData instead of permanently removing them. The bin is accessible via the "Corbeille" button at the bottom of the sidebar: browse trashed items with their original path, deletion date, and size; restore any item to its original location (with automatic conflict resolution if the path is taken); delete an item permanently; or empty the entire bin at once with a two-step confirmation. Shift+Del bypasses the bin and permanently deletes immediately (with confirmation dialog). Remote tabs still use direct deletion.
+- **Archive manager** — clicking any `.zip`, `.tar`, `.tar.gz`, or `.tgz` file opens a built-in archive viewer instead of the editor. Features: virtual folder navigation with breadcrumb trail, sortable file/folder listing with sizes and compression ratios, "Extract here" (extracts to a same-level folder named after the archive), and "Extract to…" which opens the in-app folder picker. Status bar shows file count, total uncompressed and compressed size, and space savings percentage.
+- **In-app folder picker** — replaces the native OS file dialog for all "pick a destination" flows. Supports breadcrumb navigation, ".." back row, subfolder creation (inline input), and a path preview. Used by "Extract to…" in both the archive viewer and the file list context menu.
+- **ZIP creation with name prompt** — right-click any file, folder, or selection → *Compress to ZIP*. An inline modal lets you set the archive name before it is created (pre-filled with the file/folder name, ".zip" appended automatically). Works for single items and multi-selections.
+- **Binary snapshots** — the snapshot/history panel now supports non-text files. Images (PNG, JPG, WebP…) and office documents (XLSX, ODS, PDF) can be snapshotted and restored; the panel shows a restore-only UI (no diff) for binary formats. CSV files retain the full line-by-line diff view.
+
+### Improved
+
+- **i18n consistency** — all UI strings in every component now go through the `useTranslation()` system. No more hardcoded French or English mixed across the codebase. New translation keys cover: common actions (cancel, close, refresh, create), file operations (rename, duplicate, copy, cut, paste), context menu labels, status bar plurals, trash strings, archive strings, and the folder picker. Both `en` and `fr` locales are fully covered.
+- **Context menu** — "Delete" for local files is now labelled *Move to Trash* (Del) with a separate *Delete permanently* entry (Shift+Del); remote tabs keep a single *Delete* entry. All labels adapt to the current language.
 
 ## [0.1.3] - 2026-05-06
 

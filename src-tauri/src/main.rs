@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    contextual_workspace_lib::run()
+    nxs_lib::run()
 }

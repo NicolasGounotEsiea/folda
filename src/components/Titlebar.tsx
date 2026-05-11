@@ -12,10 +12,7 @@ export function Titlebar() {
       style={{ borderBottom: "1px solid #1f1f1f" }}
     >
       <div className="flex flex-1 items-center gap-2 px-4 h-full" data-tauri-drag-region>
-        <div className="w-3 h-3 rounded-sm bg-accent opacity-80" />
-        <span className="text-[12px] text-text-secondary font-medium tracking-wide">
-          Contextual Workspace
-        </span>
+        <img src="/nxs-icon.svg" alt="nxs" className="h-[22px] w-[22px] rounded-[4px] shrink-0" />
 
         {/* Sharing indicator */}
         {sharingMode === "hosting" && sharingWorkspaceName && (

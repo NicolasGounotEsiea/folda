@@ -11,6 +11,8 @@ import type { Context, FileEntry, ListEntry, PinnedItem, SavedView, Tag as TagTy
 import { JoinModal } from "./JoinModal";
 import { ShareModal } from "./ShareModal";
 import { TagRulesModal } from "./TagRulesModal";
+import { TrashModal } from "./TrashModal";
+import { useTranslation } from "../utils/i18n";
 
 const COLOR_PALETTE = [
   "#6366f1","#ec4899","#f59e0b","#10b981","#3b82f6",
@@ -335,6 +337,8 @@ export function Sidebar() {
     shareModalOpen, joinModalOpen, setShareModalOpen, setJoinModalOpen,
   } = useStore();
 
+  const tSidebar = useTranslation();
+  const [trashOpen, setTrashOpen] = useState(false);
   const [showNewTag, setShowNewTag] = useState(false);
   const [newTagName, setNewTagName] = useState("");
   const [newTagColor, setNewTagColor] = useState(COLOR_PALETTE[0]);
@@ -912,6 +916,17 @@ export function Sidebar() {
 
       {showRulesModal && <TagRulesModal onClose={() => setShowRulesModal(false)} />}
 
+      {/* ── Trash ── */}
+      <div className="shrink-0 border-t border-border-subtle px-3 py-1.5">
+        <button
+          onClick={() => setTrashOpen(true)}
+          className="w-full flex items-center gap-2 px-2 h-7 rounded text-[12px] text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
+        >
+          <Trash2 size={12} className="shrink-0" />
+          {tSidebar.trash}
+        </button>
+      </div>
+
       {/* ── Sharing ── */}
       <div className="shrink-0 border-t border-border-subtle px-3 py-2 flex flex-col gap-1">
         {sharingMode === "joined" ? (
@@ -963,6 +978,7 @@ export function Sidebar() {
 
       {shareModalOpen && <ShareModal onClose={() => setShareModalOpen(false)} />}
       {joinModalOpen && <JoinModal onClose={() => setJoinModalOpen(false)} />}
+      {trashOpen && <TrashModal onClose={() => setTrashOpen(false)} />}
     </aside>
   );
 }

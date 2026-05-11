@@ -457,7 +457,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                     <Eye size={20} />
                   </div>
                   <div>
-                    <p className="text-[13px] font-semibold text-text-primary">Contextual Workspace</p>
+                    <p className="text-[13px] font-semibold text-text-primary">nxs</p>
                     <p className="text-[11px] text-text-muted">{t.about.builtWith}</p>
                   </div>
                   <div className="ml-auto">

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Trash2 } from "lucide-react";
+import { useTranslation } from "../utils/i18n";
 
 interface Props {
   message: string;
@@ -9,8 +10,10 @@ interface Props {
   onCancel: () => void;
 }
 
-export function ConfirmDialog({ message, detail, confirmLabel = "Delete", onConfirm, onCancel }: Props) {
+export function ConfirmDialog({ message, detail, confirmLabel, onConfirm, onCancel }: Props) {
+  const t = useTranslation();
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const label = confirmLabel ?? t.delete;
 
   useEffect(() => {
     cancelRef.current?.focus();
@@ -40,13 +43,13 @@ export function ConfirmDialog({ message, detail, confirmLabel = "Delete", onConf
             onClick={onCancel}
             className="px-3 h-7 rounded text-[12px] text-text-secondary hover:bg-surface-3 transition-colors"
           >
-            Cancel
+            {t.cancel}
           </button>
           <button
             onClick={onConfirm}
             className="px-3 h-7 rounded text-[12px] bg-red-500/80 hover:bg-red-500 text-white transition-colors"
           >
-            {confirmLabel}
+            {label}
           </button>
         </div>
       </div>

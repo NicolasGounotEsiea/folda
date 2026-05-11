@@ -17,75 +17,7 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
 }
 
 fn create_tables(conn: &Connection) -> Result<()> {
-    // Idempotent migrations for columns added after initial schema
-    let _ = conn.execute_batch(
-        "ALTER TABLE contexts ADD COLUMN last_path TEXT NOT NULL DEFAULT '';",
-    );
-    let _ = conn.execute_batch(
-        "ALTER TABLE contexts ADD COLUMN open_tabs TEXT NOT NULL DEFAULT '[]';",
-    );
-    let _ = conn.execute_batch(
-        "ALTER TABLE contexts ADD COLUMN open_file_tabs TEXT NOT NULL DEFAULT '[]';",
-    );
-
-    // Migration: add context_id to pinned_items, change UNIQUE from path to (path, context_id)
-    if !has_column(conn, "pinned_items", "context_id") {
-        conn.execute_batch("
-            BEGIN;
-            CREATE TABLE pinned_items_new (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                path       TEXT    NOT NULL,
-                name       TEXT    NOT NULL,
-                is_dir     INTEGER NOT NULL DEFAULT 0,
-                context_id INTEGER NOT NULL DEFAULT 0,
-                added_at   INTEGER NOT NULL DEFAULT (unixepoch()),
-                UNIQUE(path, context_id)
-            );
-            INSERT OR IGNORE INTO pinned_items_new (id, path, name, is_dir, added_at)
-                SELECT id, path, name, is_dir, added_at FROM pinned_items;
-            DROP TABLE pinned_items;
-            ALTER TABLE pinned_items_new RENAME TO pinned_items;
-            COMMIT;
-        ")?;
-    }
-
-    // Migration: add context_id to file_tags, change PK from (file_id, tag_id) to (file_id, tag_id, context_id)
-    if !has_column(conn, "file_tags", "context_id") {
-        conn.execute_batch("
-            BEGIN;
-            CREATE TABLE file_tags_new (
-                file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-                tag_id     INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
-                context_id INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                PRIMARY KEY (file_id, tag_id, context_id)
-            );
-            INSERT OR IGNORE INTO file_tags_new (file_id, tag_id, created_at)
-                SELECT file_id, tag_id, created_at FROM file_tags;
-            DROP TABLE file_tags;
-            ALTER TABLE file_tags_new RENAME TO file_tags;
-            COMMIT;
-        ")?;
-    }
-
-    // Migration: add context_id to folder_tags, change PK
-    if !has_column(conn, "folder_tags", "context_id") {
-        conn.execute_batch("
-            BEGIN;
-            CREATE TABLE folder_tags_new (
-                folder_path TEXT    NOT NULL,
-                tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-                context_id  INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (folder_path, tag_id, context_id)
-            );
-            INSERT OR IGNORE INTO folder_tags_new (folder_path, tag_id)
-                SELECT folder_path, tag_id FROM folder_tags;
-            DROP TABLE folder_tags;
-            ALTER TABLE folder_tags_new RENAME TO folder_tags;
-            COMMIT;
-        ")?;
-    }
-
+    // ── 1. Create all base tables first (idempotent) ──────────────────────────
     conn.execute_batch(
         "
         PRAGMA journal_mode=WAL;
@@ -217,6 +149,15 @@ fn create_tables(conn: &Connection) -> Result<()> {
             UNIQUE(context_id, path)
         );
 
+        CREATE TABLE IF NOT EXISTS trash_items (
+            id            TEXT    PRIMARY KEY,
+            original_path TEXT    NOT NULL,
+            name          TEXT    NOT NULL,
+            is_dir        INTEGER NOT NULL DEFAULT 0,
+            deleted_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+            size          INTEGER NOT NULL DEFAULT 0
+        );
+
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
             name,
             extension,
@@ -242,5 +183,75 @@ fn create_tables(conn: &Connection) -> Result<()> {
         END;
         ",
     )?;
+
+    // ── 2. Additive column migrations (safe to run on existing DBs) ───────────
+    let _ = conn.execute_batch(
+        "ALTER TABLE contexts ADD COLUMN last_path TEXT NOT NULL DEFAULT '';",
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE contexts ADD COLUMN open_tabs TEXT NOT NULL DEFAULT '[]';",
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE contexts ADD COLUMN open_file_tabs TEXT NOT NULL DEFAULT '[]';",
+    );
+
+    // Migration: add context_id to pinned_items (old DBs had UNIQUE on path only)
+    if !has_column(conn, "pinned_items", "context_id") {
+        conn.execute_batch("
+            BEGIN;
+            CREATE TABLE pinned_items_new (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                path       TEXT    NOT NULL,
+                name       TEXT    NOT NULL,
+                is_dir     INTEGER NOT NULL DEFAULT 0,
+                context_id INTEGER NOT NULL DEFAULT 0,
+                added_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+                UNIQUE(path, context_id)
+            );
+            INSERT OR IGNORE INTO pinned_items_new (id, path, name, is_dir, added_at)
+                SELECT id, path, name, is_dir, added_at FROM pinned_items;
+            DROP TABLE pinned_items;
+            ALTER TABLE pinned_items_new RENAME TO pinned_items;
+            COMMIT;
+        ")?;
+    }
+
+    // Migration: add context_id to file_tags
+    if !has_column(conn, "file_tags", "context_id") {
+        conn.execute_batch("
+            BEGIN;
+            CREATE TABLE file_tags_new (
+                file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                tag_id     INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
+                context_id INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                PRIMARY KEY (file_id, tag_id, context_id)
+            );
+            INSERT OR IGNORE INTO file_tags_new (file_id, tag_id, created_at)
+                SELECT file_id, tag_id, created_at FROM file_tags;
+            DROP TABLE file_tags;
+            ALTER TABLE file_tags_new RENAME TO file_tags;
+            COMMIT;
+        ")?;
+    }
+
+    // Migration: add context_id to folder_tags
+    if !has_column(conn, "folder_tags", "context_id") {
+        conn.execute_batch("
+            BEGIN;
+            CREATE TABLE folder_tags_new (
+                folder_path TEXT    NOT NULL,
+                tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                context_id  INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (folder_path, tag_id, context_id)
+            );
+            INSERT OR IGNORE INTO folder_tags_new (folder_path, tag_id)
+                SELECT folder_path, tag_id FROM folder_tags;
+            DROP TABLE folder_tags;
+            ALTER TABLE folder_tags_new RENAME TO folder_tags;
+            COMMIT;
+        ")?;
+    }
+
     Ok(())
 }

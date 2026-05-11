@@ -9,6 +9,7 @@ import { DocumentViewer, DOC_EXTS } from "./components/DocumentViewer";
 import { EditorView } from "./components/EditorView";
 import { FileList } from "./components/FileList";
 import { AUDIO_EXTS, IMAGE_EXTS, MediaViewer, VIDEO_EXTS } from "./components/MediaViewer";
+import { ARCHIVE_EXTS, ArchiveViewer } from "./components/ArchiveViewer";
 import { PreviewPanel } from "./components/PreviewPanel";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
@@ -284,6 +285,7 @@ export function App() {
             const ext = openedFile.extension.toLowerCase();
             if (IMAGE_EXTS.includes(ext) || VIDEO_EXTS.includes(ext) || AUDIO_EXTS.includes(ext)) return <MediaViewer />;
             if (DOC_EXTS.includes(ext)) return <DocumentViewer />;
+            if (ARCHIVE_EXTS.includes(ext)) return <ArchiveViewer />;
             return <EditorView />;
           })() : viewMode === "explorer" ? (
             <div className="flex flex-1 overflow-hidden">

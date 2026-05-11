@@ -1,4 +1,4 @@
-# Contextual Workspace
+# nxs
 
 [![CI](https://github.com/NicolasGounotEsiea/folda/actions/workflows/ci.yml/badge.svg)](https://github.com/NicolasGounotEsiea/folda/actions/workflows/ci.yml)
 [![Release](https://github.com/NicolasGounotEsiea/folda/actions/workflows/release.yml/badge.svg)](https://github.com/NicolasGounotEsiea/folda/releases)
@@ -16,14 +16,17 @@ Two formats are available: **NSIS `.exe`** (recommended) and **MSI `.msi`**.
 - **Multi-workspace** — organize folders into named workspaces with icons, tags, and pinned paths
 - **File explorer** — multi-tab browsing, context menus, bulk rename, drag & drop; image thumbnails in grid view; status bar; editable path bar
 - **Multi-window** — open any file or folder in an independent window via right-click → *Open in new window*
+- **Trash** — Del moves files to a recoverable bin; browse, restore, or permanently delete from the sidebar; Shift+Del skips the bin
+- **Archive manager** — browse ZIP, TAR, TAR.GZ contents with virtual folder navigation; extract here or to any destination via the in-app folder picker; compress files/folders to ZIP with a custom name
 - **Editor** — syntax-highlighted editor (CodeMirror) for text, code, Markdown, and DOCX preview
-- **Snapshots** — lightweight per-file version history stored in SQLite; auto mode (snapshot on every save) or manual mode; configurable max count (2–50); click any snapshot to open a diff view showing exactly what changed (added/removed lines highlighted), with one-click restore
+- **Snapshots** — lightweight per-file version history stored in SQLite; auto mode (snapshot on every save) or manual mode; configurable max count (2–50); diff view for text files; restore-only for binary files (images, spreadsheets, PDFs)
 - **Activity feed** — per-file history tab in the preview panel showing open, edit, rename, and delete events with timestamps
 - **Tags** — tag files and folders, filter by tag inside a workspace; save filter combinations as views
 - **Tag rules** — auto-tag files by extension, name, path, or size; rules apply automatically on every folder navigation
 - **Search** — full-text search across workspace paths
-- **Shared workspaces** — host your workspace over a local or remote network; guests can browse, edit, create, and delete files in real time; granular per-path permissions (list, read, create, edit, delete) configurable per workspace; supports copy/paste and drag & drop across local and remote tabs
+- **Shared workspaces** — host your workspace over a local or remote network; guests can browse, edit, create, and delete files in real time; granular per-path permissions (list, read, create, edit, delete); supports copy/paste and drag & drop across local and remote tabs
 - **Frameless window** — custom titlebar with native window controls
+- **i18n** — English and French UI, switchable in Settings
 
 ## Tech stack
 
@@ -62,22 +65,28 @@ The installer is output to `src-tauri/target/release/bundle/`.
 ## Project structure
 
 ```
-src/                  React frontend
-  components/         UI components
-  store/useStore.ts   Zustand global state
-  utils/settings.ts   App settings (theme, accent, editor, snapshots…)
-  types/              Shared TypeScript types
-  views/              Page-level views
+src/                    React frontend
+  components/           UI components
+    ArchiveViewer.tsx   Built-in archive browser (ZIP/TAR/TAR.GZ)
+    FolderPickerModal.tsx In-app destination folder picker
+    TrashModal.tsx      Trash bin browser with restore
+  store/useStore.ts     Zustand global state
+  utils/i18n.ts         Translation system (en / fr)
+  utils/settings.ts     App settings (theme, accent, editor, snapshots…)
+  types/                Shared TypeScript types
+  views/                Page-level views
 src-tauri/
   src/
-    commands/         Tauri commands exposed to the frontend
-      snapshots.rs    Snapshot CRUD (create, list, restore, delete, diff)
-      permissions.rs  Share permission CRUD (per-workspace, per-path)
-      context.rs      Workspace + activity feed commands
-    sharing/          P2P workspace sharing (WebSocket server + client)
-    db.rs             SQLite schema + migrations
-    models.rs         Rust data models
-    lib.rs            App entry point + command registration
+    commands/           Tauri commands exposed to the frontend
+      archive.rs        ZIP/TAR listing, extraction, ZIP creation
+      trash.rs          Trash CRUD (move, list, restore, delete, empty)
+      snapshots.rs      Snapshot CRUD (create, list, restore, delete, diff)
+      permissions.rs    Share permission CRUD
+      context.rs        Workspace + activity feed commands
+    sharing/            P2P workspace sharing (WebSocket server + client)
+    db.rs               SQLite schema + migrations
+    models.rs           Rust data models
+    lib.rs              App entry point + command registration
 ```
 
 ## Snapshots
@@ -88,17 +97,29 @@ Open any file in the editor, then click the **clock icon** (History) in the top-
 |---|---|---|
 | Mode | Auto (on every save) | Auto / Manual |
 | Max snapshots per file | 10 | 2 – 50 |
-| Max file size tracked | 1 MB | — |
 
-Clicking a snapshot in the panel opens a **diff modal**: removed lines (present in snapshot, gone today) are shown in red; added lines (new since that snapshot) in green. Unchanged sections are collapsed. Restore is available directly from the modal.
+Text files show a line-by-line diff view (removed in red, added in green, unchanged sections collapsed). Binary files (images, spreadsheets, PDFs) show a restore-only panel.
+
+## Archive manager
+
+Click any `.zip`, `.tar`, `.tar.gz`, or `.tgz` file to open it in the built-in viewer. Navigate into folders, view sizes and compression ratios, and extract via:
+
+- **Extract here** — extracts to a new folder in the same directory, named after the archive
+- **Extract to…** — opens the in-app folder picker to choose a destination
+
+Right-click any file or selection in the file list to **Compress to ZIP** with a custom archive name.
+
+## Trash
+
+- **Del** — moves selected files/folders to the trash (recoverable)
+- **Shift+Del** — permanently deletes with a confirmation dialog
+- **Sidebar → Trash** — browse all trashed items, restore to original location, delete permanently, or empty the bin
 
 ## Shared workspaces
 
-The host starts sharing from the sidebar — the app binds a WebSocket server on a random port and discovers its public IP via STUN (no relay server needed). Guests enter the `IP:PORT` code and an 8-character password. All file operations are routed through the WebSocket with per-path access control enforced server-side.
+The host starts sharing from the sidebar — the app binds a WebSocket server on a random port. Guests enter the `IP:PORT` code and an 8-character password. All file operations are routed through the WebSocket with per-path access control enforced server-side.
 
 ### Guest permissions
-
-While hosting, expand **Permissions invités** in the Share modal to configure what guests can do:
 
 | Permission | Covers |
 |---|---|
@@ -108,55 +129,49 @@ While hosting, expand **Permissions invités** in the Share modal to configure w
 | Edit | Save changes to existing files, rename |
 | Delete | Delete files and folders |
 
-A workspace-wide default applies everywhere. Add path overrides to grant narrower or broader access to specific folders or files (longest-prefix match wins).
-
 ## Roadmap
 
-Features planned to increase product value and justify purchase pricing.
-
 ### Search & Discovery
-- [ ] **Full-text search inside files** — index file contents (text, code, PDF text layer) with instant results, like Everything + content search. The biggest gap vs. free alternatives.
+- [ ] **Full-text search inside files** — index file contents (text, code, PDF text layer) with instant results
 - [ ] **Search operators** — `tag:Code size:>1MB modified:7d`, regex, exclude patterns
-- [ ] **Global search palette** — Ctrl+Shift+F opens a full-screen search across all workspaces simultaneously
+- [ ] **Global search palette** — Ctrl+Shift+F across all workspaces simultaneously
 
 ### Cloud & Sync
-- [ ] **Workspace sync** — sync metadata, tags, and saved views across machines via an optional cloud backend (tags follow files across devices)
-- [x] **Owners rules / permissions** — granular per-path permissions (list, read, create, edit, delete) configurable per workspace; longest-prefix match wins
-- [ ] **Export / import workspace** — portable `.cwsp` bundle that preserves folder structure, tags, pinned items, and rules
-- [ ] **Conflict resolution UI** — when the same file is edited on two machines, show a diff and let the user pick
+- [ ] **Workspace sync** — sync metadata, tags, and saved views across machines
+- [x] **Guest permissions** — granular per-path permissions (list, read, create, edit, delete)
+- [ ] **Export / import workspace** — portable bundle preserving folder structure, tags, pinned items, rules
 
 ### File History
-- [x] **Snapshots** — lightweight file-level history without Git; restore any tracked file to a previous state
-- [x] **Snapshot diff view** — click any snapshot to see a line-by-line diff against the current file
-- [x] **Activity feed** — per-file timeline showing open, edit, delete, rename events with timestamps
-- [ ] **Snapshots for binary formats** — extend snapshot support to images, spreadsheets, and office documents (restore without diff)
-- [ ] **Trash with restore** — soft-delete files into a workspace trash before permanent deletion
+- [x] **Snapshots** — lightweight file-level history; restore any tracked file to a previous state
+- [x] **Snapshot diff view** — line-by-line diff for text files; restore-only for binary files
+- [x] **Activity feed** — per-file timeline with timestamps
+- [x] **Binary snapshots** — images, spreadsheets, and PDFs supported (restore without diff)
+- [x] **Trash with restore** — soft-delete into a recoverable bin; restore to original location
 
 ### Viewer & Editor Improvements
-- [x] **Multi-page PDF preview** — scrollable canvas render with page navigation and zoom, no external app needed
-- [x] **Office file preview** — `.docx` rendered inline; `.xlsx`, `.xls`, `.ods`, `.csv` rendered as a spreadsheet table
-- [x] **CSV inline editor** — edit cells directly in the table view (no raw text), Tab/Enter navigation, one-click save
-- [x] **Virtual scrolling for large files** — spreadsheet viewer renders only visible rows; supports up to 50 000 rows without lag
-- [ ] **Spreadsheet / CSV snapshots** — extend the snapshot panel to CSV and Excel files
+- [x] **Multi-page PDF preview** — scrollable canvas render with page navigation and zoom
+- [x] **Office file preview** — `.docx` rendered inline; `.xlsx`, `.xls`, `.ods`, `.csv` as spreadsheet table
+- [x] **CSV inline editor** — edit cells in table view, Tab/Enter navigation, one-click save
+- [x] **Archive manager** — browse ZIP/TAR/TAR.GZ with virtual folder navigation and extraction
 - [ ] **Image tools** — rotation, crop, EXIF metadata panel, slideshow mode
-- [ ] **Hex viewer** — for binary files (`.exe`, `.dll`, etc.) instead of "cannot edit" screen
+- [ ] **Hex viewer** — for binary files instead of "cannot edit" screen
 - [ ] **Diff view** — compare two selected files side-by-side
 
 ### UX & Polish
-- [x] **Tab bar scroll** — mouse-wheel scroll and chevron buttons when tabs overflow the bar
-- [x] **Image gallery navigation** — arrow keys cycle through images in the current tab without opening new tabs
-- [x] **Multi-window** — open any file or folder in a new independent window; popup windows use native OS chrome (move, resize, close)
-- [x] **Image thumbnails in grid view** — actual image previews in grid layout with lazy loading
-- [x] **Status bar** — item count; switches to selection count + cumulative size when items are selected
-- [x] **Editable path bar** — click the breadcrumb to type a path directly and navigate
-- [ ] **Onboarding wizard** — guided first-run that creates a workspace, explains tags, shows keyboard shortcuts
+- [x] **Tab bar scroll** — mouse-wheel scroll and chevron buttons when tabs overflow
+- [x] **Image gallery navigation** — arrow keys cycle through images in the current folder tab
+- [x] **Multi-window** — open any file or folder in a new independent window
+- [x] **Image thumbnails in grid view** — actual previews with lazy loading
+- [x] **Status bar** — item count; selection count + cumulative size when items selected
+- [x] **Editable path bar** — click the breadcrumb to type a path directly
+- [x] **i18n** — English and French fully covered; all UI strings go through the translation system
+- [ ] **Onboarding wizard** — guided first-run creating a workspace and explaining tags
 - [ ] **Keyboard shortcut panel** — `?` key opens a reference overlay
-- [ ] **Command palette improvements** — tag assignment, workspace switch, open recent files via Ctrl+K
-- [ ] **Customizable columns** — show/hide and reorder columns in list view (owner, permissions, custom metadata)
-- [ ] **Tab groups** — color-coded groups for folder tabs, saved as part of workspace state
+- [ ] **Command palette improvements** — tag assignment, workspace switch, open recent files
+- [ ] **Customizable columns** — show/hide and reorder columns in list view
 
 ### Monetization & Distribution
-- [ ] **License key system** — offline activation with a server-validated license
+- [ ] **License key system** — offline activation with server-validated license
 - [ ] **Auto-updater** — in-app update prompt via Tauri updater plugin
 - [ ] **Telemetry opt-in** — anonymous usage stats to guide feature prioritization
 

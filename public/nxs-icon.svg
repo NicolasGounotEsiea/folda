@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0%" stop-color="#151c2c"/>
+      <stop offset="100%" stop-color="#0c1018"/>
+    </linearGradient>
+    
+    <!-- X gradient - bright cyan top to deeper blue bottom -->
+    <linearGradient id="xGrad1" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#00e5ff"/>
+      <stop offset="50%" stop-color="#00aaee"/>
+      <stop offset="100%" stop-color="#0066dd"/>
+    </linearGradient>
+    <linearGradient id="xGrad2" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#00e5ff"/>
+      <stop offset="50%" stop-color="#00aaee"/>
+      <stop offset="100%" stop-color="#0066dd"/>
+    </linearGradient>
+    
+    <!-- Large ambient glow from X center - the light pool -->
+    <radialGradient id="ambientPool" cx="0.53" cy="0.52" r="0.35">
+      <stop offset="0%" stop-color="#00ccff" stop-opacity="0.18"/>
+      <stop offset="40%" stop-color="#0088cc" stop-opacity="0.08"/>
+      <stop offset="70%" stop-color="#004488" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    
+    <!-- Tight glow around X strokes -->
+    <radialGradient id="xCoreGlow" cx="0.53" cy="0.50" r="0.22">
+      <stop offset="0%" stop-color="#00ddff" stop-opacity="0.30"/>
+      <stop offset="50%" stop-color="#0088dd" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#003366" stop-opacity="0"/>
+    </radialGradient>
+    
+    <!-- Node center radial -->
+    <radialGradient id="nodeGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="25%" stop-color="#ccf4ff"/>
+      <stop offset="60%" stop-color="#00bbee" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#0066aa" stop-opacity="0"/>
+    </radialGradient>
+    
+    <!-- Filters -->
+    <!-- Wide soft bloom for ambient light -->
+    <filter id="bloomWide" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="30"/>
+    </filter>
+    <!-- Medium bloom for X glow -->
+    <filter id="bloomMed" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="14"/>
+    </filter>
+    <!-- Tight glow on X strokes -->
+    <filter id="glowTight" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="b"/>
+      <feComposite in="SourceGraphic" in2="b" operator="over"/>
+    </filter>
+    <!-- Node bloom -->
+    <filter id="nodeBloom" x="-150%" y="-150%" width="400%" height="400%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="8"/>
+    </filter>
+    <!-- Subtle text shadow -->
+    <filter id="txtShadow" x="-8%" y="-8%" width="116%" height="120%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="2.5" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    
+    <!-- Edge highlight gradient (top edge lighter) -->
+    <linearGradient id="edgeGrad" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.01"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- ═══════ BACKGROUND ═══════ -->
+  <rect x="28" y="28" width="456" height="456" rx="90" ry="90" fill="url(#bgGrad)"/>
+  <!-- Edge highlight -->
+  <rect x="28" y="28" width="456" height="456" rx="90" ry="90" 
+        fill="none" stroke="url(#edgeGrad)" stroke-width="1.5"/>
+  
+  <!-- ═══════ AMBIENT LIGHT POOL from X ═══════ -->
+  <!-- This is the key: the X illuminates the background -->
+  <ellipse cx="270" cy="268" rx="160" ry="160" fill="url(#ambientPool)"/>
+  
+  <!-- ═══════ X GLOW LAYERS ═══════ -->
+  <!-- Layer 1: Wide bloom (distant glow) -->
+  <g filter="url(#bloomWide)" opacity="0.40">
+    <line x1="230" y1="168" x2="320" y2="356" stroke="#00bbee" stroke-width="32" stroke-linecap="round"/>
+    <line x1="320" y1="168" x2="230" y2="356" stroke="#00bbee" stroke-width="32" stroke-linecap="round"/>
+  </g>
+  
+  <!-- Layer 2: Medium bloom -->
+  <g filter="url(#bloomMed)" opacity="0.50">
+    <line x1="230" y1="168" x2="320" y2="356" stroke="#00ccff" stroke-width="30" stroke-linecap="round"/>
+    <line x1="320" y1="168" x2="230" y2="356" stroke="#00ccff" stroke-width="30" stroke-linecap="round"/>
+  </g>
+  
+  <!-- ═══════ LETTER N ═══════ -->
+  <g filter="url(#txtShadow)">
+    <path d="M 108 352 
+             L 108 238
+             C 108 198, 130 178, 160 178
+             C 190 178, 206 198, 206 230
+             L 206 352" 
+          fill="none" stroke="#dde0e8" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  
+  <!-- ═══════ LETTER X (main strokes) ═══════ -->
+  <g filter="url(#glowTight)">
+    <line x1="230" y1="168" x2="320" y2="356" stroke="url(#xGrad1)" stroke-width="30" stroke-linecap="round"/>
+    <line x1="320" y1="168" x2="230" y2="356" stroke="url(#xGrad2)" stroke-width="30" stroke-linecap="round"/>
+  </g>
+  
+  <!-- Center node - bright white nexus point -->
+  <circle cx="275" cy="262" r="20" fill="url(#nodeGlow)" filter="url(#nodeBloom)" opacity="0.6"/>
+  <circle cx="275" cy="262" r="12" fill="url(#nodeGlow)"/>
+  <circle cx="275" cy="262" r="5" fill="#ffffff"/>
+  
+  <!-- ═══════ LETTER S ═══════ -->
+  <g filter="url(#txtShadow)">
+    <path d="M 400 216
+             C 400 192, 384 178, 362 178
+             C 338 178, 324 194, 324 214
+             C 324 234, 340 244, 362 253
+             C 384 262, 400 276, 400 300
+             C 400 328, 382 352, 356 352
+             C 334 352, 320 338, 320 318"
+          fill="none" stroke="#dde0e8" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

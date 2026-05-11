@@ -1,3 +1,5 @@
+pub mod archive;
+pub mod trash;
 pub mod context;
 pub mod files;
 pub mod folders;

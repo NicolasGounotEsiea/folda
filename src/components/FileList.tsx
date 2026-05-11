@@ -7,6 +7,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
+import { FolderPickerModal } from "./FolderPickerModal";
 import { useStore } from "../store/useStore";
 import type { FileEntry, ListEntry } from "../types";
 import { useTranslation } from "../utils/i18n";
@@ -109,14 +110,15 @@ function GridThumbnail({ entry }: { entry: ListEntry }) {
 }
 
 function StatusBar({ total, selected, selectedSize }: { total: number; selected: number; selectedSize: number }) {
+  const t = useTranslation();
   return (
     <div className="shrink-0 flex items-center gap-2 px-3 h-6 bg-surface-1 border-t border-border-subtle text-[10px] text-text-muted select-none">
-      <span>{total.toLocaleString("fr-FR")} élément{total !== 1 ? "s" : ""}</span>
+      <span>{total.toLocaleString()} {total !== 1 ? t.elements : t.element}</span>
       {selected > 0 && (
         <>
           <span className="text-border">·</span>
           <span className="text-text-secondary">
-            {selected} sélectionné{selected !== 1 ? "s" : ""}
+            {selected} {selected !== 1 ? t.selectedMany : t.selectedOne}
             {selectedSize > 0 && <span className="text-text-muted"> — {formatSize(selectedSize)}</span>}
           </span>
         </>
@@ -271,6 +273,44 @@ function EntryRow({
   );
 }
 
+// ─── Zip name modal ───────────────────────────────────────────────────────────
+function ZipNameModal({ defaultName, onConfirm, onClose }: {
+  defaultName: string;
+  onConfirm: (name: string) => void;
+  onClose: () => void;
+}) {
+  const t = useTranslation();
+  const [name, setName] = useState(defaultName);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    inputRef.current?.select();
+  }, []);
+  const confirm = () => { if (name.trim()) onConfirm(name.trim()); };
+  return (
+    <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/60">
+      <div className="bg-surface-1 border border-border rounded-xl shadow-2xl w-80 p-5 flex flex-col gap-4">
+        <p className="text-[13px] font-semibold text-text-primary">{t.archiveName}</p>
+        <div className="flex items-center gap-1">
+          <input
+            ref={inputRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") confirm(); if (e.key === "Escape") onClose(); }}
+            className="flex-1 h-7 px-2 rounded bg-surface-3 border border-accent text-[12px] text-text-primary outline-none font-mono"
+            spellCheck={false}
+            autoFocus
+          />
+          <span className="text-[12px] text-text-muted shrink-0">.zip</span>
+        </div>
+        <div className="flex gap-2 justify-end">
+          <button onClick={onClose} className="px-3 h-7 rounded text-[12px] text-text-secondary hover:bg-surface-3 transition-colors">{t.cancel}</button>
+          <button onClick={confirm} disabled={!name.trim()} className="px-3 h-7 rounded text-[12px] bg-accent text-white hover:bg-accent/80 disabled:opacity-40 transition-colors">{t.create}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 export function FileList() {
   const {
@@ -336,6 +376,10 @@ export function FileList() {
   const [deleteTargets, setDeleteTargets] = useState<ListEntry[] | null>(null);
   // Inline rename
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  // Archive extract-to picker
+  const [extractTarget, setExtractTarget] = useState<string | null>(null);
+  // Zip name prompt
+  const [zipPending, setZipPending] = useState<{ paths: string[]; defaultName: string } | null>(null);
 
   // ─── Derived: parent path for ".." row ─────────────────────────────────────
   const parentPath = useMemo(() => {
@@ -556,42 +600,42 @@ export function FileList() {
 
     if (!isMulti) {
       if (!entry.is_dir) {
-        items.push({ label: "Open with system", onClick: () => invoke("open_with_default", { path: entry.path }) });
-        items.push({ label: "Open in editor", onClick: () => handleOpen(entry) });
+        items.push({ label: t.openWithSystem, onClick: () => invoke("open_with_default", { path: entry.path }) });
+        items.push({ label: t.openInEditor, onClick: () => handleOpen(entry) });
         items.push({
-          label: "Open in new window",
+          label: t.openInNewWindow,
           onClick: () => invoke("open_new_window", {
             mode: "file", path: entry.path, name: entry.name, ext: entry.extension,
           }).catch(console.error),
         });
       } else {
-        items.push({ label: "Open folder", onClick: () => navigate(entry.path) });
-        items.push({ label: "Open in new tab", onClick: () => handleOpenFolderInNewTab(entry.path) });
+        items.push({ label: t.openFolder, onClick: () => navigate(entry.path) });
+        items.push({ label: t.openInNewTab, onClick: () => handleOpenFolderInNewTab(entry.path) });
         items.push({
-          label: "Open in new window",
+          label: t.openInNewWindow,
           onClick: () => invoke("open_new_window", { mode: "folder", path: entry.path }).catch(console.error),
         });
       }
       items.push({ separator: true });
-      items.push({ label: "Rename", shortcut: "F2", onClick: () => setRenamingPath(entry.path) });
+      items.push({ label: t.rename, shortcut: "F2", onClick: () => setRenamingPath(entry.path) });
       if (!entry.is_dir)
-        items.push({ label: "Duplicate", onClick: () => handleDuplicate(entry) });
+        items.push({ label: t.duplicate, onClick: () => handleDuplicate(entry) });
       items.push({ separator: true });
     }
 
-    const clipEntries = targets.map((t) => ({ path: t.path, name: t.name, is_dir: t.is_dir }));
-    items.push({ label: isMulti ? `Copy (${targets.length})` : "Copy", shortcut: "Ctrl+C", onClick: () => setClipboard({ action: "copy", paths: targets.map((t) => t.path), isRemote: isCurrentTabRemote, entries: clipEntries }) });
-    items.push({ label: isMulti ? `Cut (${targets.length})` : "Cut", shortcut: "Ctrl+X", onClick: () => setClipboard({ action: "cut", paths: targets.map((t) => t.path), isRemote: isCurrentTabRemote, entries: clipEntries }) });
-    if (clipboard) items.push({ label: "Paste", shortcut: "Ctrl+V", onClick: handlePaste });
+    const clipEntries = targets.map((e) => ({ path: e.path, name: e.name, is_dir: e.is_dir }));
+    items.push({ label: isMulti ? `${t.copy} (${targets.length})` : t.copy, shortcut: "Ctrl+C", onClick: () => setClipboard({ action: "copy", paths: targets.map((e) => e.path), isRemote: isCurrentTabRemote, entries: clipEntries }) });
+    items.push({ label: isMulti ? `${t.cut} (${targets.length})` : t.cut, shortcut: "Ctrl+X", onClick: () => setClipboard({ action: "cut", paths: targets.map((e) => e.path), isRemote: isCurrentTabRemote, entries: clipEntries }) });
+    if (clipboard) items.push({ label: t.paste, shortcut: "Ctrl+V", onClick: handlePaste });
     items.push({ separator: true });
 
     if (!isMulti) {
-      items.push({ label: "Copy path", onClick: () => navigator.clipboard.writeText(entry.path) });
-      items.push({ label: "Reveal in Explorer", onClick: () => invoke("reveal_in_explorer", { path: entry.path }) });
+      items.push({ label: t.copyPath, onClick: () => navigator.clipboard.writeText(entry.path) });
+      items.push({ label: t.revealInExplorer, onClick: () => invoke("reveal_in_explorer", { path: entry.path }) });
       const ctxId = activeContextId ?? 0;
       const isPinned = pinnedItems.some((p) => p.path === entry.path && p.context_id === ctxId);
       items.push({
-        label: isPinned ? "Unpin from sidebar" : "Pin to sidebar",
+        label: isPinned ? t.unpinFromSidebar : t.pinToSidebar,
         onClick: async () => {
           if (isPinned) {
             await invoke("unpin_item", { path: entry.path, contextId: ctxId });
@@ -606,11 +650,52 @@ export function FileList() {
     }
 
     if (isMulti && selectedPaths.length > 1) {
-      items.push({ label: `Bulk rename (${targets.length})`, onClick: () => setBulkRenameOpen(true) });
+      items.push({ label: `${t.bulkRename} (${targets.length})`, onClick: () => setBulkRenameOpen(true) });
       items.push({ separator: true });
     }
 
-    items.push({ label: isMulti ? `Delete (${targets.length})` : "Delete", shortcut: "Del", danger: true, onClick: () => setDeleteTargets(targets) });
+    // ── Archive operations ──────────────────────────────────────────────────
+    const ARCHIVE_EXTS_SET = new Set(["zip", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz", "7z", "rar"]);
+
+    if (!isMulti && !entry.is_dir && ARCHIVE_EXTS_SET.has(entry.extension.toLowerCase())) {
+      const archiveName = entry.name.replace(/\.(tar\.gz|tgz|tar|zip|gz|7z|rar|bz2|xz)$/i, "");
+      const archiveDir = entry.path.replace(/[/\\][^/\\]+$/, "");
+      items.push({ separator: true });
+      items.push({
+        label: t.archiveExtractHere,
+        onClick: async () => {
+          const dest = `${archiveDir}\\${archiveName}`;
+          try {
+            await invoke("extract_archive", { path: entry.path, dest });
+            await refreshList();
+          } catch (e) { console.error(e); }
+        },
+      });
+      items.push({
+        label: t.archiveExtractTo,
+        onClick: () => setExtractTarget(entry.path),
+      });
+    }
+
+    // Compress selection to zip
+    if (currentPath) {
+      const compressTargets = targets.map((e) => e.path);
+      const defaultName = isMulti
+        ? "archive"
+        : targets[0].name.replace(/\.[^.]+$/, "");
+      items.push({
+        label: isMulti ? `${t.compressToZip} (${targets.length})` : t.compressToZip,
+        onClick: () => setZipPending({ paths: compressTargets, defaultName }),
+      });
+    }
+
+    items.push({ separator: true });
+    if (isCurrentTabRemote) {
+      items.push({ label: isMulti ? `${t.delete} (${targets.length})` : t.delete, shortcut: "Del", danger: true, onClick: () => setDeleteTargets(targets) });
+    } else {
+      items.push({ label: isMulti ? `${t.trashMoveToTrash} (${targets.length})` : t.trashMoveToTrash, shortcut: "Del", onClick: () => handleTrash(targets) });
+      items.push({ label: isMulti ? `${t.trashDeletePermanently} (${targets.length})` : t.trashDeletePermanently, shortcut: "Shift+Del", danger: true, onClick: () => setDeleteTargets(targets) });
+    }
     return items;
   };
 
@@ -620,6 +705,16 @@ export function FileList() {
       await invoke("duplicate_file", { path: entry.path });
       await refreshList();
     } catch (e) { console.error(e); }
+  };
+
+  const handleTrash = async (targets: ListEntry[]) => {
+    const paths = targets.map((t) => t.path);
+    try {
+      await invoke("move_to_trash", { paths });
+    } catch (e) { console.error(e); }
+    setSelectedPaths([]);
+    selectEntry(null);
+    await refreshList();
   };
 
   const handleDelete = async (targets: ListEntry[]) => {
@@ -738,7 +833,11 @@ export function FileList() {
       if (e.key === "Delete" && selectedPaths.length > 0) {
         e.preventDefault();
         const targets = visibleEntries.filter((x) => selectedPaths.includes(x.path));
-        setDeleteTargets(targets);
+        if (e.shiftKey || isRemoteRef.current) {
+          setDeleteTargets(targets);
+        } else {
+          handleTrash(targets);
+        }
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "a") {
         e.preventDefault();
@@ -793,13 +892,13 @@ export function FileList() {
 
   // ─── Early returns ──────────────────────────────────────────────────────────
   if (isScanning) {
-    return <div className="flex-1 flex items-center justify-center text-text-muted"><span className="text-[12px]">Scanning…</span></div>;
+    return <div className="flex-1 flex items-center justify-center text-text-muted"><span className="text-[12px]">{t.scanning}</span></div>;
   }
-  if (!currentPath && !folderTabs.some((t) => t.isRemote)) {
+  if (!currentPath && !folderTabs.some((tab) => tab.isRemote)) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
         <Folder size={28} className="opacity-20" />
-        <span className="text-[12px]">Navigate to a folder to start</span>
+        <span className="text-[12px]">{t.navigateToStart}</span>
       </div>
     );
   }
@@ -812,8 +911,8 @@ export function FileList() {
       <>
         {deleteTargets && (
           <ConfirmDialog
-            message={`Delete ${deleteTargets.length === 1 ? `"${deleteTargets[0].name}"` : `${deleteTargets.length} items`}?`}
-            detail="This action cannot be undone."
+            message={`${t.trashDeletePermanently} ${deleteTargets.length === 1 ? `"${deleteTargets[0].name}"` : `${deleteTargets.length} ${t.elements}`} ?`}
+            detail={t.trashCannotUndo}
             onConfirm={() => { handleDelete(deleteTargets); setDeleteTargets(null); }}
             onCancel={() => setDeleteTargets(null)}
           />
@@ -829,7 +928,7 @@ export function FileList() {
           )}
           {dirs.length > 0 && (
             <div>
-              <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">Folders</p>
+              <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">{t.folders}</p>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-2">
                 {dirs.map((e) => (
                   <button key={e.path}
@@ -847,7 +946,7 @@ export function FileList() {
           )}
           {files.length > 0 && (
             <div>
-              {dirs.length > 0 && <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">Files</p>}
+              {dirs.length > 0 && <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">{t.files}</p>}
               <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-2">
                 {files.map((e) => (
                   <button key={e.path}
@@ -867,7 +966,7 @@ export function FileList() {
           {dirs.length === 0 && files.length === 0 && (
             <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
               <File size={28} className="opacity-20" />
-              <span className="text-[12px]">Empty folder</span>
+              <span className="text-[12px]">{t.emptyFolder}</span>
             </div>
           )}
         </div>
@@ -917,11 +1016,11 @@ export function FileList() {
           <div className="flex items-center gap-0.5 justify-end">
             {currentPath && (<>
               <button onClick={() => { setShowNewFile(true); setTimeout(() => newFileRef.current?.focus(), 50); }}
-                className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors" title="New file">
+                className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors" title={t.newFile}>
                 <File size={11} />
               </button>
               <button onClick={() => { setShowNewFolder(true); setTimeout(() => newFolderRef.current?.focus(), 50); }}
-                className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors" title="New folder">
+                className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors" title={t.newFolder}>
                 <FolderPlus size={11} />
               </button>
             </>)}
@@ -935,7 +1034,7 @@ export function FileList() {
             <input ref={newFileRef} value={newFileName} onChange={(e) => setNewFileName(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") handleCreateFile(); if (e.key === "Escape") { setShowNewFile(false); setNewFileName(""); } }}
               onBlur={() => { if (!newFileName.trim()) setShowNewFile(false); }}
-              placeholder="filename.txt…"
+              placeholder={`${t.newFile}…`}
               className="flex-1 bg-transparent text-[12px] text-text-primary outline-none placeholder-text-muted" />
           </div>
         )}
@@ -947,7 +1046,7 @@ export function FileList() {
             <input ref={newFolderRef} value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") handleCreateFolder(); if (e.key === "Escape") { setShowNewFolder(false); setNewFolderName(""); } }}
               onBlur={() => { if (!newFolderName.trim()) setShowNewFolder(false); }}
-              placeholder="Folder name…"
+              placeholder={`${t.newFolder}…`}
               className="flex-1 bg-transparent text-[12px] text-text-primary outline-none placeholder-text-muted" />
           </div>
         )}
@@ -1016,6 +1115,36 @@ export function FileList() {
             { label: "New folder", onClick: () => { setEmptyCtxMenu(null); setShowNewFolder(true); setTimeout(() => newFolderRef.current?.focus(), 50); } },
             ...(clipboard ? [{ separator: true as const }, { label: "Paste", shortcut: "Ctrl+V", onClick: () => { setEmptyCtxMenu(null); handlePaste(); } }] : []),
           ]}
+        />
+      )}
+
+      {zipPending && currentPath && (
+        <ZipNameModal
+          defaultName={zipPending.defaultName}
+          onConfirm={async (name) => {
+            const dest = `${currentPath}\\${name.endsWith(".zip") ? name : `${name}.zip`}`;
+            setZipPending(null);
+            try {
+              await invoke("create_zip", { sourcePaths: zipPending.paths, dest });
+              await refreshList();
+            } catch (e) { console.error(e); }
+          }}
+          onClose={() => setZipPending(null)}
+        />
+      )}
+
+      {extractTarget && currentPath && (
+        <FolderPickerModal
+          title="Extraire vers…"
+          initialPath={currentPath}
+          onSelect={async (dest) => {
+            setExtractTarget(null);
+            try {
+              await invoke("extract_archive", { path: extractTarget, dest });
+              await refreshList();
+            } catch (e) { console.error(e); }
+          }}
+          onClose={() => setExtractTarget(null)}
         />
       )}
     </>
