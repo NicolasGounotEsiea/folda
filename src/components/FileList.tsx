@@ -4,7 +4,7 @@ import {
   ArrowDown, ArrowUp, ChevronUp,
   Code, File, FileImage, FileText, Film, Folder, FolderPlus, Music, Package,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { FolderPickerModal } from "./FolderPickerModal";
@@ -169,7 +169,7 @@ const ROW_GRID = "grid items-center gap-x-3 px-4" as const;
 const ROW_COLS = { gridTemplateColumns: "15px 1fr 64px 96px 42px" } as const;
 
 // ─── Entry row ────────────────────────────────────────────────────────────────
-function EntryRow({
+const EntryRow = memo(function EntryRow({
   entry, selected, cut,
   onClick, onDoubleClick, onNavigate, onContextMenu,
   renaming, onRenameSubmit, onRenameCancel,
@@ -271,7 +271,15 @@ function EntryRow({
       )}
     </div>
   );
-}
+// Only re-render when the data that actually affects display changes.
+// Callbacks change identity every render but always behave the same for a given entry.
+}, (prev, next) =>
+  prev.entry === next.entry &&
+  prev.selected === next.selected &&
+  prev.cut === next.cut &&
+  prev.renaming === next.renaming &&
+  prev.isDragTarget === next.isDragTarget
+);
 
 // ─── Zip name modal ───────────────────────────────────────────────────────────
 function ZipNameModal({ defaultName, onConfirm, onClose }: {

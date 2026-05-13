@@ -389,11 +389,13 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
     setTagInput("");
     setActiveTab("info");
     if (!selectedFile) return;
+    let cancelled = false;
     setLoadingPreview(true);
     invoke<string | null>("get_file_preview", { path: selectedFile.path })
-      .then(setTextPreview)
-      .catch(() => setTextPreview(null))
-      .finally(() => setLoadingPreview(false));
+      .then((v) => { if (!cancelled) setTextPreview(v); })
+      .catch(() => { if (!cancelled) setTextPreview(null); })
+      .finally(() => { if (!cancelled) setLoadingPreview(false); });
+    return () => { cancelled = true; };
   }, [selectedFile?.id]);
 
   if (selectedEntry?.kind === "folder") return (

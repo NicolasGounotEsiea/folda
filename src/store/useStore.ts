@@ -370,20 +370,15 @@ export const useStore = create<AppStore>((set, get) => ({
     const target = s.contexts.find((c) => c.id === contextId);
     if (!target) return null;
 
-    // Save current workspace state
+    // Snapshot current workspace state (will be merged into the single set() below)
     const current = s.contexts.find((c) => c.id === s.activeContextId);
-    if (current) {
-      const updated = {
-        ...current,
-        last_path: s.currentPath,
-        pinned_tag_ids: s.selectedTagIds,
-        open_tabs: s.folderTabs.map((t) => t.path),
-        open_file_tabs: s.tabs.map((t) => t.id),
-      };
-      set((st) => ({
-        contexts: st.contexts.map((c) => c.id === current.id ? updated : c),
-      }));
-    }
+    const updatedCurrent = current ? {
+      ...current,
+      last_path: s.currentPath,
+      pinned_tag_ids: s.selectedTagIds,
+      open_tabs: s.folderTabs.map((t) => t.path),
+      open_file_tabs: s.tabs.map((t) => t.id),
+    } : null;
 
     // Restore target workspace's folder tabs
     const tabPaths: string[] = target.open_tabs ?? [];
@@ -405,7 +400,11 @@ export const useStore = create<AppStore>((set, get) => ({
     // Restore target workspace's file tabs
     const restoredFileTabs: Tab[] = (target.open_file_tabs ?? []).map(pathToTab);
 
-    set({
+    // Single set() to save current + restore target — avoids double re-render
+    set((st) => ({
+      contexts: updatedCurrent
+        ? st.contexts.map((c) => c.id === updatedCurrent.id ? updatedCurrent : c)
+        : st.contexts,
       activeContextId: contextId,
       rootPaths: target.watched_paths,
       selectedTagIds: target.pinned_tag_ids,
@@ -415,7 +414,7 @@ export const useStore = create<AppStore>((set, get) => ({
       tabs: restoredFileTabs,
       activeTabId: null,
       openedFile: null,
-    });
+    }));
 
     return {
       paths: target.watched_paths,

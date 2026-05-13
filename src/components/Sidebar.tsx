@@ -5,7 +5,7 @@ import {
   Bookmark, BookmarkPlus, Check, ChevronDown, ChevronRight, ChevronUp,
   File, Folder, FolderPlus, Hash, LogIn, Plus, Share2, Tag, Trash2, Users, X, Zap,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import type { Context, FileEntry, ListEntry, PinnedItem, SavedView, Tag as TagType } from "../types";
 import { JoinModal } from "./JoinModal";
@@ -25,7 +25,7 @@ function folderName(path: string) {
 }
 
 // ─── Folder tree node ─────────────────────────────────────────────────────────
-function FolderNode({
+const FolderNode = memo(function FolderNode({
   path, name, depth, currentPath, onNavigate,
 }: {
   path: string; name: string; depth: number;
@@ -74,7 +74,7 @@ function FolderNode({
       ))}
     </>
   );
-}
+});
 
 const WORKSPACE_ICONS = ["📁","💼","🔬","🎨","📝","🚀","🏠","⚙️","🌿","🔥","🎯","💡","🔑","🌐","📦","🎵","🏗️","🔐","🧪","📊"];
 
@@ -363,18 +363,26 @@ export function Sidebar() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload stats + saved views when workspace changes
+  // Reload saved views when workspace changes
   useEffect(() => {
     const ctxId = activeContextId ?? 0;
-    Promise.all([
-      invoke("get_tag_stats"),
-      invoke<SavedView[]>("get_saved_views", { contextId: ctxId }),
-    ]).then(([stats, views]) => {
-      setTagStats(stats as Parameters<typeof setTagStats>[0]);
-      setSavedViews(views);
-    }).catch(console.error);
+    invoke<SavedView[]>("get_saved_views", { contextId: ctxId })
+      .then(setSavedViews)
+      .catch(console.error);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeContextId]);
+
+  // Refresh tag counts after navigation — debounced to avoid hammering the DB on rapid folder changes
+  useEffect(() => {
+    const ctxId = activeContextId ?? 0;
+    const tid = setTimeout(() => {
+      invoke("get_tag_stats", { contextId: ctxId })
+        .then((s) => setTagStats(s as Parameters<typeof setTagStats>[0]))
+        .catch(console.error);
+    }, 200);
+    return () => clearTimeout(tid);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPath, activeContextId]);
 
   // Reload pins whenever active workspace changes
   useEffect(() => {
@@ -384,7 +392,7 @@ export function Sidebar() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeContextId]);
 
-  const navigateTo = async (path: string) => {
+  const navigateTo = useCallback(async (path: string) => {
     setCurrentPath(path);
     pushNav(path);
     try {
@@ -392,7 +400,8 @@ export function Sidebar() {
       setListEntries(entries);
       selectFile(null);
     } catch (e) { console.error(e); }
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeContextId]);
 
   // ── Switch workspace ──────────────────────────────────────────────────────
   const handleSwitch = async (ctx: Context) => {
@@ -434,7 +443,9 @@ export function Sidebar() {
       await invoke("set_active_context", { contextId: id });
       const updated = await invoke<Context[]>("get_contexts");
       setContexts(updated);
-      // setContexts derives activeContextId from is_active — new workspace is now active
+      // New workspace has no folders — clear the file list view
+      setCurrentPath("");
+      setListEntries([]);
     } catch (e) { console.error(e); }
   };
 
@@ -532,7 +543,7 @@ export function Sidebar() {
       await invoke("create_tag", { name: newTagName.trim(), color: newTagColor });
       const [updated, stats] = await Promise.all([
         invoke<TagType[]>("get_tags"),
-        invoke("get_tag_stats"),
+        invoke("get_tag_stats", { contextId: activeContextId ?? 0 }),
       ]);
       setTags(updated);
       setTagStats(stats as Parameters<typeof setTagStats>[0]);
@@ -562,7 +573,7 @@ export function Sidebar() {
       await invoke("delete_tag", { id });
       const [updated, stats] = await Promise.all([
         invoke<TagType[]>("get_tags"),
-        invoke("get_tag_stats"),
+        invoke("get_tag_stats", { contextId: activeContextId ?? 0 }),
       ]);
       setTags(updated);
       setTagStats(stats as Parameters<typeof setTagStats>[0]);

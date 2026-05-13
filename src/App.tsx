@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { saveAndClose, isClosing } from "./utils/appClose";
 import { BulkRename } from "./components/BulkRename";
 import { CommandPalette } from "./components/CommandPalette";
@@ -269,7 +269,10 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const selectedEntries = listEntries.filter((e) => selectedPaths.includes(e.path));
+  const selectedEntries = useMemo(
+    () => listEntries.filter((e) => selectedPaths.includes(e.path)),
+    [listEntries, selectedPaths]
+  );
 
   return (
     <div className="flex flex-col h-full bg-surface-0">

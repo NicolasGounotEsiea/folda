@@ -71,6 +71,9 @@ fn create_tables(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS activity_timestamp_idx ON activity(timestamp DESC);
         CREATE INDEX IF NOT EXISTS activity_path_idx      ON activity(file_path);
+        CREATE INDEX IF NOT EXISTS idx_files_path         ON files(path);
+        CREATE INDEX IF NOT EXISTS idx_file_tags_file_id  ON file_tags(file_id);
+        CREATE INDEX IF NOT EXISTS idx_file_tags_tag_id   ON file_tags(tag_id);
 
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,

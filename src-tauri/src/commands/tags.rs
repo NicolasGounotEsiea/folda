@@ -78,17 +78,64 @@ pub fn delete_tag(id: i64, state: tauri::State<AppState>) -> Result<(), String> 
 }
 
 #[tauri::command]
-pub fn get_tag_stats(state: tauri::State<AppState>) -> Result<Vec<TagStat>, String> {
+pub fn get_tag_stats(context_id: Option<i64>, state: tauri::State<AppState>) -> Result<Vec<TagStat>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let mut stmt = db
-        .prepare("SELECT tag_id, COUNT(DISTINCT file_id) FROM file_tags GROUP BY tag_id")
-        .map_err(|e| e.to_string())?;
-    let stats = stmt
-        .query_map([], |row| Ok(TagStat { tag_id: row.get(0)?, count: row.get(1)? }))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
+    let ctx = context_id.unwrap_or(0);
+
+    if ctx == 0 {
+        // Global mode: count all tagged files regardless of path
+        let mut stmt = db
+            .prepare("SELECT tag_id, COUNT(DISTINCT file_id) FROM file_tags GROUP BY tag_id")
+            .map_err(|e| e.to_string())?;
+        let stats = stmt
+            .query_map([], |row| Ok(TagStat { tag_id: row.get(0)?, count: row.get(1)? }))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        return Ok(stats);
+    }
+
+    // Workspace mode: load watched_paths from the context row
+    let watched_json: String = db
+        .query_row("SELECT watched_paths FROM contexts WHERE id = ?1", [ctx], |r| r.get(0))
+        .unwrap_or_else(|_| "[]".to_string());
+    let watched_paths: Vec<String> = serde_json::from_str(&watched_json).unwrap_or_default();
+
+    if watched_paths.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Build LIKE patterns for every watched path (normalize to forward slashes)
+    let patterns: Vec<String> = watched_paths
+        .iter()
+        .map(|p| format!("{}%", p.replace('\\', "/")))
         .collect();
-    Ok(stats)
+
+    // Accumulate counts across all watched paths
+    use std::collections::HashMap;
+    let mut totals: HashMap<i64, i64> = HashMap::new();
+
+    for pattern in &patterns {
+        let mut stmt = db
+            .prepare(
+                "SELECT ft.tag_id, COUNT(DISTINCT ft.file_id)
+                 FROM file_tags ft
+                 JOIN files f ON f.id = ft.file_id
+                 WHERE replace(f.path, '\\', '/') LIKE ?1
+                 GROUP BY ft.tag_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<(i64, i64)> = stmt
+            .query_map(rusqlite::params![pattern], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        for (tag_id, count) in rows {
+            *totals.entry(tag_id).or_insert(0) += count;
+        }
+    }
+
+    Ok(totals.into_iter().map(|(tag_id, count)| TagStat { tag_id, count }).collect())
 }
 
 #[tauri::command]
