@@ -338,6 +338,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
     dualPaneActive, activePaneIndex, setActivePaneIndex,
     pane2Path, pane2Entries, pane2SelectedPaths,
     setPane2Path, setPane2Entries, setPane2SelectedPaths,
+    pushNav2,
   } = useStore();
   const addToast = useToastStore((s) => s.addToast);
 
@@ -360,6 +361,12 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   useEffect(() => { isRemoteRef.current = isCurrentTabRemote; });
   const listEntriesRef = useRef(paneEntries);
   useEffect(() => { listEntriesRef.current = paneEntries; });
+  // paneSelectedPaths is captured by EntryRow onClick/onPointerDown via memo'd closures.
+  // EntryRow only re-renders when its own props change (selected, entry…), so unselected entries
+  // hold a stale closure with paneSelectedPaths = []. Using a ref gives every handler the
+  // current selection regardless of when EntryRow last rendered.
+  const selectedPathsRef = useRef(paneSelectedPaths);
+  useEffect(() => { selectedPathsRef.current = paneSelectedPaths; });
 
   // Always-current list helper (used in callbacks and effects)
   const listDirRef = useRef((_path: string): Promise<ListEntry[]> => Promise.resolve([]));
@@ -465,6 +472,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   const navigate = async (path: string) => {
     setPanePath(path);
     if (pane === 0) pushNav(path);
+    else pushNav2(path);
     const folderName = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
     invoke("record_activity", { path, name: folderName, action: "navigated" }).catch(() => {});
     try {
@@ -480,7 +488,8 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
 
   const handleEntryPointerDown = (ev: React.PointerEvent, entry: ListEntry) => {
     if (ev.button !== 0 || renamingPath === entry.path) return;
-    const paths = paneSelectedPaths.includes(entry.path) ? [...paneSelectedPaths] : [entry.path];
+    const sel = selectedPathsRef.current;
+    const paths = sel.includes(entry.path) ? [...sel] : [entry.path];
     const label = paths.length === 1 ? entry.name : `${paths.length} éléments`;
     dragRef.current.pending = { startX: ev.clientX, startY: ev.clientY, paths, label };
     dragRef.current.sourceIsRemote = isCurrentTabRemote;
@@ -672,14 +681,13 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   const handleClick = (e: React.MouseEvent, entry: ListEntry) => {
     if (didDragRef.current) { didDragRef.current = false; return; }
     const path = entry.path;
+    const sel = selectedPathsRef.current;
     if (e.ctrlKey || e.metaKey) {
       setPaneSelectedPaths(
-        paneSelectedPaths.includes(path)
-          ? paneSelectedPaths.filter((p) => p !== path)
-          : [...paneSelectedPaths, path]
+        sel.includes(path) ? sel.filter((p) => p !== path) : [...sel, path]
       );
-    } else if (e.shiftKey && paneSelectedPaths.length > 0) {
-      const lastPath = paneSelectedPaths[paneSelectedPaths.length - 1];
+    } else if (e.shiftKey && sel.length > 0) {
+      const lastPath = sel[sel.length - 1];
       const lastIdx = visibleEntries.findIndex((x) => x.path === lastPath);
       const curIdx = visibleEntries.findIndex((x) => x.path === path);
       if (lastIdx >= 0 && curIdx >= 0) {
@@ -696,7 +704,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   // ─── Context menu builder ───────────────────────────────────────────────────
   const handleContextMenu = (e: React.MouseEvent, entry: ListEntry) => {
     e.preventDefault();
-    if (!paneSelectedPaths.includes(entry.path)) {
+    if (!selectedPathsRef.current.includes(entry.path)) {
       setPaneSelectedPaths([entry.path]);
       if (entry.is_dir) selectEntry({ kind: "folder", entry });
       else selectEntry({ kind: "file", entry: toFileEntry(entry) });

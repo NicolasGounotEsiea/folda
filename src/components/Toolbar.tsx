@@ -28,6 +28,7 @@ export function Toolbar({ onOpenSettings, onOpenDiskUsage }: { onOpenSettings: (
     showHidden, toggleShowHidden,
     activeContextId,
     dualPaneActive, setDualPaneActive,
+    activePaneIndex, pane2Path, setPane2Path, pushNav2, setPane2Entries,
   } = useStore();
 
   const t = useTranslation();
@@ -36,8 +37,11 @@ export function Toolbar({ onOpenSettings, onOpenDiskUsage }: { onOpenSettings: (
   const [pathInputMode, setPathInputMode] = useState(false);
   const [pathInputValue, setPathInputValue] = useState("");
 
+  const activePane2 = dualPaneActive && activePaneIndex === 1;
+  const activePath = activePane2 ? pane2Path : currentPath;
+
   const enterPathMode = () => {
-    setPathInputValue(currentPath ?? "");
+    setPathInputValue(activePath ?? "");
     setPathInputMode(true);
     setTimeout(() => { pathInputRef.current?.select(); }, 0);
   };
@@ -45,13 +49,11 @@ export function Toolbar({ onOpenSettings, onOpenDiskUsage }: { onOpenSettings: (
   const commitPath = async (raw: string) => {
     setPathInputMode(false);
     const p = raw.trim();
-    if (!p || p === currentPath) return;
+    if (!p || p === activePath) return;
     try {
       const entries = await invoke<import("../types").ListEntry[]>("list_directory", { path: p, contextId: activeContextId ?? 0 });
-      setCurrentPath(p);
-      pushNav(p);
-      setListEntries(entries);
-      selectFile(null);
+      if (activePane2) { setPane2Path(p); pushNav2(p); setPane2Entries(entries); }
+      else { setCurrentPath(p); pushNav(p); setListEntries(entries); selectFile(null); }
     } catch { /* invalid path — silently ignore */ }
   };
 
@@ -110,14 +112,14 @@ export function Toolbar({ onOpenSettings, onOpenDiskUsage }: { onOpenSettings: (
     if (searchQuery.trim()) runSearch(searchQuery, type);
   };
 
-  // Build breadcrumb: find the rootPath that is a prefix of currentPath
+  // Build breadcrumb from the active pane's path
   const breadcrumb = (() => {
-    if (!currentPath) return [];
-    const cur = currentPath.replace(/\\/g, "/");
+    if (!activePath) return [];
+    const cur = activePath.replace(/\\/g, "/");
     const root = rootPaths
       .map((p) => p.replace(/\\/g, "/"))
       .find((p) => cur === p || cur.startsWith(p + "/"));
-    if (!root) return [{ label: cur.split("/").pop() ?? cur, path: currentPath }];
+    if (!root) return [{ label: cur.split("/").pop() ?? cur, path: activePath }];
     const rootParts = root.split("/");
     const curParts = cur.split("/");
     return curParts.slice(rootParts.length - 1).map((label, i) => ({
@@ -127,13 +129,11 @@ export function Toolbar({ onOpenSettings, onOpenDiskUsage }: { onOpenSettings: (
   })();
 
   const navigateTo = async (path: string) => {
-    setCurrentPath(path);
-    pushNav(path);
     setSearchQuery("");
     try {
       const entries = await invoke<ListEntry[]>("list_directory", { path, contextId: activeContextId ?? 0 });
-      setListEntries(entries);
-      selectFile(null);
+      if (activePane2) { setPane2Path(path); pushNav2(path); setPane2Entries(entries); }
+      else { setCurrentPath(path); pushNav(path); setListEntries(entries); selectFile(null); }
     } catch (e) {
       console.error(e);
     }

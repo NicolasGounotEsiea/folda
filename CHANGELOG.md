@@ -2,6 +2,27 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.5] - 2026-05-28
+
+### Added
+
+- **Rubber-band selection** — click and drag on the empty area of the file list to draw a selection rectangle; all entries overlapping the rect are selected on pointer release.
+- **External drag-and-drop** — drag files and folders from nxs to any external Windows app (File Explorer, browser, desktop, etc.). Uses `tauri-plugin-drag` under the hood: pointer capture keeps tracking the cursor even after it leaves the window, and the native OS drag kicks in the moment the pointer crosses the window boundary.
+- **Windows shell integration** — "Open with nxs" entry now appears in the File Explorer right-click context menu for files, folders, and the folder background. Install/uninstall directly from **Settings → Explorer** with a single toggle (writes to HKCU — no admin required). Launching nxs with a `--path` argument or from the context menu navigates straight to that path.
+- **Command palette: recent files** — when the query is empty the palette lists the 10 most recently navigated or opened files (sourced from the activity log), so you can jump back to anything without typing.
+- **Command palette: recent searches** — previous search terms are persisted in localStorage and shown below recent files; clicking one restores it in the search field.
+- **Live filesystem search** — `search_live` runs a parallel walkdir scan (max depth 3, heavy dirs excluded) alongside the SQLite FTS query. Both results are merged and deduplicated in the palette for instant local results even for files not yet indexed.
+
+### Improved
+
+- **Disk usage modal** — computation now runs in a `spawn_blocking` thread so it never freezes the UI; skips `node_modules`, `.git`, `target`, `__pycache__`, `.cargo`, `vendor`, `dist`, `.next`, `.nuxt`, and `build` directories for speed and relevance. A note in the modal footer informs the user of excluded directories.
+- **Navigation history** — back / forward now correctly update the active tab name; previously the tab label stayed stuck on the child folder after pressing Back.
+- **Activity recording** — every folder navigation and every file open is logged to the SQLite activity table, feeding both the command palette recent list and the per-file activity feed.
+
+### Removed
+
+- **Folder size column** — the async per-row size computation caused hover transition jank. The column is removed; aggregate disk usage is still available through the dedicated Disk Usage modal.
+
 ## [0.1.4] - 2026-05-12
 
 ### Added

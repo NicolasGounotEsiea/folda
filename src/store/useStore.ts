@@ -166,11 +166,16 @@ interface AppStore {
   pane2Path: string;
   pane2Entries: ListEntry[];
   pane2SelectedPaths: string[];
+  pane2NavHistory: string[];
+  pane2NavIndex: number;
   setDualPaneActive: (v: boolean) => void;
   setActivePaneIndex: (i: 0 | 1) => void;
   setPane2Path: (p: string) => void;
   setPane2Entries: (e: ListEntry[]) => void;
   setPane2SelectedPaths: (p: string[]) => void;
+  pushNav2: (path: string) => void;
+  stepBack2: () => string | null;
+  stepForward2: () => string | null;
 
   // Tab reorder
   reorderFolderTabs: (fromIdx: number, toIdx: number) => void;
@@ -479,9 +484,17 @@ export const useStore = create<AppStore>((set, get) => ({
   pane2Path: "",
   pane2Entries: [],
   pane2SelectedPaths: [],
+  pane2NavHistory: [],
+  pane2NavIndex: -1,
   setDualPaneActive: (v) => set((s) => {
     if (v && !s.dualPaneActive) {
-      return { dualPaneActive: true, pane2Path: s.currentPath, pane2Entries: [...s.listEntries] };
+      return {
+        dualPaneActive: true,
+        pane2Path: s.currentPath,
+        pane2Entries: [...s.listEntries],
+        pane2NavHistory: s.currentPath ? [s.currentPath] : [],
+        pane2NavIndex: s.currentPath ? 0 : -1,
+      };
     }
     return { dualPaneActive: v };
   }),
@@ -489,6 +502,28 @@ export const useStore = create<AppStore>((set, get) => ({
   setPane2Path: (pane2Path) => set({ pane2Path }),
   setPane2Entries: (pane2Entries) => set({ pane2Entries }),
   setPane2SelectedPaths: (pane2SelectedPaths) => set({ pane2SelectedPaths }),
+  pushNav2: (path) =>
+    set((s) => {
+      const trimmed = s.pane2NavHistory.slice(0, s.pane2NavIndex + 1);
+      if (trimmed[trimmed.length - 1] === path) return {};
+      return { pane2NavHistory: [...trimmed, path], pane2NavIndex: trimmed.length };
+    }),
+  stepBack2: () => {
+    const { pane2NavHistory, pane2NavIndex } = get();
+    const newIndex = pane2NavIndex - 1;
+    if (newIndex < 0) return null;
+    const path = pane2NavHistory[newIndex];
+    set({ pane2NavIndex: newIndex, pane2Path: path });
+    return path;
+  },
+  stepForward2: () => {
+    const { pane2NavHistory, pane2NavIndex } = get();
+    const newIndex = pane2NavIndex + 1;
+    if (newIndex >= pane2NavHistory.length) return null;
+    const path = pane2NavHistory[newIndex];
+    set({ pane2NavIndex: newIndex, pane2Path: path });
+    return path;
+  },
 
   reorderFolderTabs: (fromIdx, toIdx) => set((s) => {
     const tabs = [...s.folderTabs];

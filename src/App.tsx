@@ -58,6 +58,7 @@ export function App() {
     sharingGuestArgs, setSharingJoined, setSharingReconnecting,
     updateSettings, setShowHidden, openFile, settings,
     dualPaneActive, setDualPaneActive,
+    activePaneIndex, stepBack2, stepForward2, setPane2Entries,
   } = useStore();
 
   const addToast = useToastStore((s) => s.addToast);
@@ -248,25 +249,27 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPath, sharingMode]);
 
-  // Mouse back / forward buttons
+  // Mouse back / forward buttons — pane-aware
   useEffect(() => {
     const handler = async (e: MouseEvent) => {
       let path: string | null = null;
-      if (e.button === 3) path = stepBack();
-      else if (e.button === 4) path = stepForward();
+      const usePane2 = dualPaneActive && activePaneIndex === 1;
+      if (e.button === 3) path = usePane2 ? stepBack2() : stepBack();
+      else if (e.button === 4) path = usePane2 ? stepForward2() : stepForward();
       if (!path) return;
       e.preventDefault();
       try {
         const cmd = sharingMode === "joined" ? "list_remote_dir" : "list_directory";
         const entries = await invoke<ListEntry[]>(cmd, { path });
-        setListEntries(entries);
+        if (usePane2) setPane2Entries(entries);
+        else setListEntries(entries);
         selectEntry(null);
       } catch { /* folder may no longer exist */ }
     };
     window.addEventListener("mousedown", handler);
     return () => window.removeEventListener("mousedown", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [dualPaneActive, activePaneIndex]);
 
   // File watching events
   useEffect(() => {
