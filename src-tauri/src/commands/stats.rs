@@ -48,7 +48,7 @@ pub async fn get_folder_sizes(path: String) -> Result<Vec<FolderSizeEntry>, Stri
                 FolderSizeEntry { name, path: ep.to_string_lossy().to_string(), size, is_dir }
             })
             .collect();
-        entries.sort_by(|a, b| b.size.cmp(&a.size));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.size));
         Ok(entries)
     })
     .await

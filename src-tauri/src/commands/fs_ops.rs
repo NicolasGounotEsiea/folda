@@ -152,7 +152,7 @@ pub async fn move_path(
                 return Err(human_io_error(e));
             }
             // Cross-device: copy with byte-level progress, then delete source
-            let meta = std::fs::metadata(&src).map_err(|e| human_io_error(e))?;
+            let meta = std::fs::metadata(&src).map_err(human_io_error)?;
             if meta.is_dir() {
                 let _ = app.emit("move-progress", serde_json::json!({
                     "name": name, "done": 0u64, "total": 1u64, "finished": false

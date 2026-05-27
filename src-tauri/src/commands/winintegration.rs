@@ -74,7 +74,7 @@ pub fn unregister_shell_extension() -> Result<(), String> {
 pub fn is_shell_extension_registered() -> bool {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     hkcu.open_subkey_with_flags(
-        &format!(r"Software\Classes\*\shell\{}", APP_NAME),
+        format!(r"Software\Classes\*\shell\{}", APP_NAME),
         KEY_READ,
     )
     .is_ok()
