@@ -19,6 +19,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_drag::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -39,8 +40,10 @@ pub fn run() {
             commands::files::get_file_preview,
             commands::files::read_file_full,
             commands::files::write_file,
+            commands::files::record_activity,
             commands::files::watch_directory,
             commands::files::get_home_dir,
+            commands::files::copy_with_progress,
             commands::folders::create_directory,
             commands::folders::get_folder_tags,
             commands::folders::add_tag_to_folder,
@@ -63,6 +66,7 @@ pub fn run() {
             commands::tags::delete_saved_view,
             commands::search::search_files,
             commands::search::search_folders,
+            commands::search::search_live,
             commands::fs_ops::rename_path,
             commands::fs_ops::delete_path,
             commands::fs_ops::copy_path,
@@ -93,6 +97,7 @@ pub fn run() {
             commands::pinned::unpin_item,
             commands::pinned::promote_pin_to_global,
             commands::stats::get_folder_stats,
+            commands::stats::get_folder_sizes,
             commands::settings::get_all_settings,
             commands::settings::set_setting,
             commands::settings::purge_old_activity,
@@ -106,6 +111,13 @@ pub fn run() {
             commands::trash::empty_trash,
             commands::windowing::open_new_window,
             commands::windowing::get_window_init_data,
+            commands::winintegration::register_shell_extension,
+            commands::winintegration::unregister_shell_extension,
+            commands::winintegration::is_shell_extension_registered,
+            commands::winintegration::get_launch_path,
+            commands::log::write_log,
+            commands::log::get_log_path,
+            commands::log::clear_log,
             // Sharing
             commands::sharing::start_sharing,
             commands::sharing::stop_sharing,

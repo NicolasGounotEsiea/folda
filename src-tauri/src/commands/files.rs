@@ -575,6 +575,13 @@ pub fn get_file_preview(path: String) -> Result<Option<String>, String> {
     }
 }
 
+#[tauri::command]
+pub fn record_activity(path: String, name: String, action: String, state: tauri::State<AppState>) {
+    if let Ok(db) = state.db.lock() {
+        log_activity(&db, &path, &name, &action);
+    }
+}
+
 fn log_activity(db: &rusqlite::Connection, file_path: &str, file_name: &str, action: &str) {
     let norm = file_path.replace('\\', "/");
     let _ = db.execute(
@@ -616,4 +623,63 @@ pub fn get_home_dir() -> String {
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| "C:\\Users".to_string())
+}
+
+#[tauri::command]
+pub async fn copy_with_progress(
+    src: String,
+    dst_dir: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    use std::io::{Read, Write};
+
+    let src_path = std::path::Path::new(&src);
+    let name = src_path.file_name()
+        .ok_or("Invalid source")?
+        .to_string_lossy()
+        .to_string();
+    let dst_path = std::path::Path::new(&dst_dir).join(&name);
+
+    let meta = std::fs::metadata(&src).map_err(|e| e.to_string())?;
+    let total = meta.len();
+
+    if meta.is_dir() {
+        fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+            std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+            for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let ft = entry.file_type().map_err(|e| e.to_string())?;
+                if ft.is_dir() {
+                    copy_dir(&entry.path(), &dst.join(entry.file_name()))?;
+                } else {
+                    std::fs::copy(entry.path(), dst.join(entry.file_name())).map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(())
+        }
+        let _ = app.emit("copy-progress", serde_json::json!({ "name": name, "done": 0u64, "total": 1u64, "finished": false }));
+        copy_dir(src_path, &dst_path)?;
+        let _ = app.emit("copy-progress", serde_json::json!({ "name": name, "done": 1u64, "total": 1u64, "finished": true }));
+        return Ok(());
+    }
+
+    let mut src_file = std::fs::File::open(&src).map_err(|e| e.to_string())?;
+    let mut dst_file = std::fs::File::create(&dst_path).map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut copied: u64 = 0;
+
+    loop {
+        let n = src_file.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 { break; }
+        dst_file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        copied += n as u64;
+        let _ = app.emit("copy-progress", serde_json::json!({
+            "name": name, "done": copied, "total": total, "finished": false
+        }));
+    }
+    let _ = app.emit("copy-progress", serde_json::json!({
+        "name": name, "done": total, "total": total, "finished": true
+    }));
+    Ok(())
 }

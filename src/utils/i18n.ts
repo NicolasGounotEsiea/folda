@@ -86,6 +86,16 @@ type AppStrings = {
   // ── folder picker ─────────────────────────────────────────────────────────
   chooseFolder: string;
   newFolderName: string;
+
+  // sharing
+  sharingReconnecting: string;
+  sharingConnectedAsGuest: string;
+  sharingManageConnection: string;
+  sharingActiveShare: string;
+  sharingGuest: string;
+  sharingGuests: string;
+  sharingShare: string;
+  sharingJoin: string;
 };
 
 const translations: Record<string, AppStrings> = {
@@ -167,6 +177,15 @@ const translations: Record<string, AppStrings> = {
 
     chooseFolder: "Choose a folder",
     newFolderName: "New folder name",
+
+    sharingReconnecting: "Reconnecting…",
+    sharingConnectedAsGuest: "Connected as guest",
+    sharingManageConnection: "Manage connection",
+    sharingActiveShare: "Active share",
+    sharingGuest: "guest",
+    sharingGuests: "guests",
+    sharingShare: "Share",
+    sharingJoin: "Join",
   },
 
   fr: {
@@ -247,6 +266,15 @@ const translations: Record<string, AppStrings> = {
 
     chooseFolder: "Choisir un dossier",
     newFolderName: "Nom du nouveau dossier",
+
+    sharingReconnecting: "Reconnexion…",
+    sharingConnectedAsGuest: "Connecté en tant qu'invité",
+    sharingManageConnection: "Gérer la connexion",
+    sharingActiveShare: "Partage actif",
+    sharingGuest: "invité",
+    sharingGuests: "invités",
+    sharingShare: "Partager",
+    sharingJoin: "Rejoindre",
   },
 };
 

@@ -7,13 +7,6 @@ import { PdfViewer } from "./PdfViewer";
 import { SnapshotPanel } from "./SnapshotPanel";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
 
-export const DOC_EXTS = [
-  "pdf",
-  "doc", "docx", "odt", "rtf",
-  "xlsx", "xls", "csv", "ods",
-  "pptx", "ppt",
-];
-
 const TYPE_LABELS: Record<string, string> = {
   pdf: "PDF",
   doc: "Word", docx: "Word", odt: "OpenDocument", rtf: "Rich Text",

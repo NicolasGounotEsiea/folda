@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
 import {
   ArrowDown, ArrowUp, ChevronUp,
@@ -7,10 +7,13 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
+import { QuickLookModal } from "./QuickLookModal";
 import { FolderPickerModal } from "./FolderPickerModal";
 import { useStore } from "../store/useStore";
+import { useToastStore } from "../store/useToastStore";
 import type { FileEntry, ListEntry } from "../types";
 import { useTranslation } from "../utils/i18n";
+import { humanizeError } from "../utils/humanizeError";
 
 // ─── Cross-transfer helpers ───────────────────────────────────────────────────
 
@@ -127,7 +130,7 @@ function StatusBar({ total, selected, selectedSize }: { total: number; selected:
   );
 }
 
-function FileIcon({ entry }: { entry: ListEntry }) {
+export function FileIcon({ entry }: { entry: ListEntry }) {
   if (entry.is_dir) return <Folder size={15} className="shrink-0 text-yellow-400" />;
   const e = entry.extension.toLowerCase();
   if (["png","jpg","jpeg","gif","webp","svg","ico","bmp","avif"].includes(e)) return <FileImage size={15} className="shrink-0 text-pink-400" />;
@@ -173,7 +176,7 @@ const EntryRow = memo(function EntryRow({
   entry, selected, cut,
   onClick, onDoubleClick, onNavigate, onContextMenu,
   renaming, onRenameSubmit, onRenameCancel,
-  isDragTarget, onMouseDown, onMouseEnter, onMouseLeave,
+  isDragTarget, onPointerDown,
 }: {
   entry: ListEntry;
   selected: boolean;
@@ -186,9 +189,7 @@ const EntryRow = memo(function EntryRow({
   onRenameSubmit: (name: string) => void;
   onRenameCancel: () => void;
   isDragTarget?: boolean;
-  onMouseDown?: (e: React.MouseEvent) => void;
-  onMouseEnter?: () => void;
-  onMouseLeave?: () => void;
+  onPointerDown?: (e: React.PointerEvent) => void;
 }) {
   const [renameVal, setRenameVal] = useState(entry.name);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -207,13 +208,14 @@ const EntryRow = memo(function EntryRow({
   return (
     <div
       data-is-entry="true"
+      data-entry-path={entry.path}
+      data-drop-path={entry.is_dir ? entry.path : undefined}
+      data-is-dir={entry.is_dir ? "true" : undefined}
       style={ROW_COLS}
       onContextMenu={(e) => onContextMenu(e, entry)}
       onClick={renaming ? undefined : onClick}
       onDoubleClick={renaming ? undefined : () => entry.is_dir ? onNavigate(entry.path) : onDoubleClick()}
-      onMouseDown={onMouseDown}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
+      onPointerDown={onPointerDown}
       className={clsx(
         ROW_GRID,
         "w-full h-9 transition-colors group cursor-pointer select-none",
@@ -320,7 +322,7 @@ function ZipNameModal({ defaultName, onConfirm, onClose }: {
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export function FileList() {
+export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   const {
     listEntries, selectEntry, layoutMode,
     pinnedItems, addPinnedItem, removePinnedItem,
@@ -333,7 +335,19 @@ export function FileList() {
     showHidden,
     folderTabs, activeFolderTabId,
     activeContextId,
+    dualPaneActive, activePaneIndex, setActivePaneIndex,
+    pane2Path, pane2Entries, pane2SelectedPaths,
+    setPane2Path, setPane2Entries, setPane2SelectedPaths,
   } = useStore();
+  const addToast = useToastStore((s) => s.addToast);
+
+  const pane = paneIndex ?? 0;
+  const panePath = pane === 0 ? currentPath : pane2Path;
+  const paneEntries = pane === 0 ? listEntries : pane2Entries;
+  const paneSelectedPaths = pane === 0 ? selectedPaths : pane2SelectedPaths;
+  const setPanePath = pane === 0 ? setCurrentPath : setPane2Path;
+  const setPaneEntries = pane === 0 ? setListEntries : setPane2Entries;
+  const setPaneSelectedPaths = pane === 0 ? setSelectedPaths : setPane2SelectedPaths;
 
   const t = useTranslation();
 
@@ -344,8 +358,8 @@ export function FileList() {
   // Refs so global handlers (inside empty-dep useEffect) always see fresh values
   const isRemoteRef = useRef(isCurrentTabRemote);
   useEffect(() => { isRemoteRef.current = isCurrentTabRemote; });
-  const listEntriesRef = useRef(listEntries);
-  useEffect(() => { listEntriesRef.current = listEntries; });
+  const listEntriesRef = useRef(paneEntries);
+  useEffect(() => { listEntriesRef.current = paneEntries; });
 
   // Always-current list helper (used in callbacks and effects)
   const listDirRef = useRef((_path: string): Promise<ListEntry[]> => Promise.resolve([]));
@@ -357,6 +371,14 @@ export function FileList() {
   });
   const listDir = (path: string) => listDirRef.current(path);
 
+  // ─── Quick Look ───────────────────────────────────────────────────────────────
+  const [quickLookEntry, setQuickLookEntry] = useState<ListEntry | null>(null);
+
+
+  // ─── Rubber-band selection ────────────────────────────────────────────────────
+  const [rubberBand, setRubberBand] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  const rubberBandActive = useRef<{ startX: number; startY: number } | null>(null);
+
   // ─── Drag state (mouse-event based, avoids WebView2 HTML5 DnD issues) ───────
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number; label: string } | null>(null);
@@ -364,11 +386,14 @@ export function FileList() {
     pending: { startX: number; startY: number; paths: string[]; label: string } | null;
     active: boolean;
     paths: string[];
+    label: string;
     dropTarget: string | null;
+    highlightEl: Element | null;
     sourceIsRemote: boolean;
     dropTargetIsRemote: boolean;
-  }>({ pending: null, active: false, paths: [], dropTarget: null, sourceIsRemote: false, dropTargetIsRemote: false });
+  }>({ pending: null, active: false, paths: [], label: "", dropTarget: null, highlightEl: null, sourceIsRemote: false, dropTargetIsRemote: false });
   const didDragRef = useRef(false);
+  const listContainerRef = useRef<HTMLDivElement>(null);
 
   const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolder, setShowNewFolder] = useState(false);
@@ -391,16 +416,16 @@ export function FileList() {
 
   // ─── Derived: parent path for ".." row ─────────────────────────────────────
   const parentPath = useMemo(() => {
-    if (!currentPath) return null;
-    const norm = currentPath.replace(/\\/g, "/");
+    if (!panePath) return null;
+    const norm = panePath.replace(/\\/g, "/");
     if (rootPaths.some((r) => r.replace(/\\/g, "/") === norm)) return null;
     const parts = norm.split("/");
     return parts.length <= 1 ? null : parts.slice(0, -1).join("/");
-  }, [currentPath, rootPaths]);
+  }, [panePath, rootPaths]);
 
   // ─── Filtered + sorted entries ─────────────────────────────────────────────
   const visibleEntries = useMemo(() => {
-    let entries = listEntries;
+    let entries = paneEntries;
     if (!showHidden) entries = entries.filter((e) => !e.name.startsWith("."));
     if (selectedTagIds.length > 0)
       entries = entries.filter((e) => e.is_dir || selectedTagIds.every((tid) => e.tags.some((t) => t.id === tid)));
@@ -415,150 +440,231 @@ export function FileList() {
       else if (sortBy === "type") cmp = a.extension.localeCompare(b.extension);
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [listEntries, showHidden, selectedTagIds, sortBy, sortDir]);
+  }, [paneEntries, showHidden, selectedTagIds, sortBy, sortDir]);
 
   const selectedSize = useMemo(() =>
     visibleEntries
-      .filter((e) => !e.is_dir && selectedPaths.includes(e.path))
+      .filter((e) => !e.is_dir && paneSelectedPaths.includes(e.path))
       .reduce((s, e) => s + e.size, 0),
-  [visibleEntries, selectedPaths]);
+  [visibleEntries, paneSelectedPaths]);
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
   const refreshList = useCallback(async (path?: string) => {
-    const target = path ?? currentPath;
+    const target = path ?? panePath;
     if (!target) return;
     try {
       const entries = await listDirRef.current(target);
-      setListEntries(entries);
+      setPaneEntries(entries);
     } catch (e) { console.error(e); }
-  }, [currentPath, setListEntries]);
+  }, [panePath, setPaneEntries]);
 
   // Stable ref so the drag mouseup handler (empty-dep useEffect) can call it
   const refreshListRef = useRef(refreshList);
   useEffect(() => { refreshListRef.current = refreshList; }, [refreshList]);
 
   const navigate = async (path: string) => {
-    setCurrentPath(path);
-    pushNav(path);
+    setPanePath(path);
+    if (pane === 0) pushNav(path);
+    const folderName = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
+    invoke("record_activity", { path, name: folderName, action: "navigated" }).catch(() => {});
     try {
       const entries = await listDir(path);
-      setListEntries(entries);
+      setPaneEntries(entries);
       selectEntry(null);
-      setSelectedPaths([]);
+      setPaneSelectedPaths([]);
     } catch (e) { console.error("navigate error:", e); }
   };
 
-  // Global mouse handlers for drag-and-drop (run once — all state via refs)
-  useEffect(() => {
-    const THRESHOLD = 6;
-    const onMove = (ev: MouseEvent) => {
-      const d = dragRef.current;
-      if (d.pending && !d.active) {
-        const dx = ev.clientX - d.pending.startX;
-        const dy = ev.clientY - d.pending.startY;
-        if (Math.sqrt(dx * dx + dy * dy) > THRESHOLD) {
-          d.active = true;
-          const { paths, label } = d.pending;
-          d.paths = paths;
-          d.pending = null;
-          setGhostPos({ x: ev.clientX, y: ev.clientY, label });
-        }
-      } else if (d.active) {
-        setGhostPos((p) => p ? { ...p, x: ev.clientX, y: ev.clientY } : null);
-      }
-    };
-    const onUp = async () => {
-      const d = dragRef.current;
-      d.pending = null;
-      if (d.active) {
-        d.active = false;
-        didDragRef.current = true;
-        setGhostPos(null);
-        const target = d.dropTarget;
-        const paths = [...d.paths];
-        const srcRemote = d.sourceIsRemote;
-        const dstRemote = d.dropTargetIsRemote;
-        d.dropTarget = null;
-        d.paths = [];
-        d.sourceIsRemote = false;
-        d.dropTargetIsRemote = false;
-        setDropTarget(null);
+  // ─── Pointer-Events based drag-and-drop ───────────────────────────────────
+  const DRAG_THRESHOLD = 5;
 
-        if (target && paths.length > 0) {
-          const entries = listEntriesRef.current;
-          if (srcRemote === dstRemote) {
-            // Same-side move
-            for (const src of paths) {
-              if (src === target) continue;
-              try {
-                if (srcRemote) {
-                  const name = src.replace(/\\/g, "/").split("/").pop()!;
-                  await invoke("rename_remote_path", { fromPath: src, toPath: target.replace(/\\/g, "/") + "/" + name });
-                } else {
-                  await invoke("move_path", { src, dstDir: target });
-                }
-              } catch (err) { console.error(err); }
-            }
-          } else {
-            // Cross-transfer (always copy — don't delete source during DnD)
-            for (const src of paths) {
-              const entry = entries.find((e) => e.path === src)
-                ?? { path: src, name: src.replace(/\\/g, "/").split("/").pop()!, is_dir: false };
-              try {
-                if (srcRemote) {
-                  await downloadEntry({ path: entry.path, name: entry.name, is_dir: entry.is_dir }, target);
-                } else {
-                  await uploadEntry({ path: entry.path, name: entry.name, is_dir: entry.is_dir }, target);
-                }
-              } catch (err) { console.error(err); }
-            }
-          }
-          setSelectedPaths([]);
-          await refreshListRef.current();
-        }
-      }
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const startDrag = (ev: React.MouseEvent, entry: ListEntry) => {
+  const handleEntryPointerDown = (ev: React.PointerEvent, entry: ListEntry) => {
     if (ev.button !== 0 || renamingPath === entry.path) return;
-    const paths = selectedPaths.includes(entry.path) ? [...selectedPaths] : [entry.path];
+    const paths = paneSelectedPaths.includes(entry.path) ? [...paneSelectedPaths] : [entry.path];
     const label = paths.length === 1 ? entry.name : `${paths.length} éléments`;
     dragRef.current.pending = { startX: ev.clientX, startY: ev.clientY, paths, label };
-    dragRef.current.sourceIsRemote = isCurrentTabRemote; // capture source tab remoteness
+    dragRef.current.sourceIsRemote = isCurrentTabRemote;
   };
 
-  const handleDragEnter = (entry: ListEntry) => {
+  // Activate drag: capture pointer so pointermove fires even outside the window,
+  // then detect out-of-bounds coordinates to trigger the native OS drag.
+  const activateDrag = (pointerId: number, clientX: number, clientY: number) => {
     const d = dragRef.current;
-    if (!d.active || !entry.is_dir || d.paths.includes(entry.path)) return;
-    d.dropTarget = entry.path;
-    d.dropTargetIsRemote = isCurrentTabRemote; // capture target tab remoteness
-    setDropTarget(entry.path);
+    d.paths = d.pending?.paths ?? [];
+    d.label = d.pending?.label ?? "";
+    d.active = true;
+    d.pending = null;
+    listContainerRef.current?.setPointerCapture(pointerId);
+    setGhostPos({ x: clientX, y: clientY, label: d.label });
   };
 
-  const handleDragLeave = (entry: ListEntry) => {
-    if (dragRef.current.dropTarget === entry.path) {
-      dragRef.current.dropTarget = null;
+  const handlePointerMove = (ev: React.PointerEvent) => {
+    if (rubberBandActive.current) {
+      const { startX, startY } = rubberBandActive.current;
+      setRubberBand({ x1: startX, y1: startY, x2: ev.clientX, y2: ev.clientY });
+      return;
+    }
+    const d = dragRef.current;
+
+    if (d.active) {
+      setGhostPos({ x: ev.clientX, y: ev.clientY, label: d.label });
+
+      // With pointer capture, clientX/Y go negative or past innerWidth/Height when
+      // the mouse is outside the WebView2 window — use that to trigger native OS drag.
+      const outside =
+        ev.clientX < 0 || ev.clientY < 0 ||
+        ev.clientX >= window.innerWidth || ev.clientY >= window.innerHeight;
+      if (outside && !d.sourceIsRemote && d.paths.length > 0) {
+        listContainerRef.current?.releasePointerCapture(ev.pointerId);
+        if (d.highlightEl) { (d.highlightEl as HTMLElement).removeAttribute("data-drag-over"); d.highlightEl = null; }
+        d.active = false;
+        const paths = [...d.paths];
+        d.paths = []; d.dropTarget = null;
+        setGhostPos(null); setDropTarget(null);
+        const icon = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        const onEvent = new Channel();
+        invoke("plugin:drag|start_drag", { item: paths, image: icon, onEvent })
+          .catch((e) => addToast({ type: "error", message: "Drag failed", detail: String(e) }));
+        return;
+      }
+
+      // Update drop target while inside the window
+      const els = document.elementsFromPoint(ev.clientX, ev.clientY);
+      let newTarget: string | null = null;
+      let newTargetEl: Element | null = null;
+      for (const el of els) {
+        const dropPath = (el as HTMLElement).dataset?.dropPath;
+        if (dropPath && !d.paths.includes(dropPath)) {
+          newTarget = dropPath;
+          newTargetEl = el;
+          break;
+        }
+      }
+      if (newTarget !== d.dropTarget) {
+        if (d.highlightEl) (d.highlightEl as HTMLElement).removeAttribute("data-drag-over");
+        d.dropTarget = newTarget;
+        d.highlightEl = newTargetEl;
+        d.dropTargetIsRemote = isRemoteRef.current;
+        setDropTarget(newTarget);
+        if (newTargetEl) (newTargetEl as HTMLElement).setAttribute("data-drag-over", "true");
+      }
+      return;
+    }
+
+    if (!d.pending) return;
+    const dx = ev.clientX - d.pending.startX;
+    const dy = ev.clientY - d.pending.startY;
+    if (Math.sqrt(dx * dx + dy * dy) > DRAG_THRESHOLD) {
+      activateDrag(ev.pointerId, ev.clientX, ev.clientY);
+    }
+  };
+
+  const handlePointerUp = async (ev: React.PointerEvent) => {
+    if (rubberBandActive.current) {
+      rubberBandActive.current = null;
+      listContainerRef.current?.releasePointerCapture(ev.pointerId);
+      setRubberBand((rb) => {
+        if (!rb) return null;
+        const left = Math.min(rb.x1, rb.x2);
+        const top = Math.min(rb.y1, rb.y2);
+        const right = Math.max(rb.x1, rb.x2);
+        const bottom = Math.max(rb.y1, rb.y2);
+        if (right - left > 4 || bottom - top > 4) {
+          const selected: string[] = [];
+          listContainerRef.current?.querySelectorAll("[data-entry-path]").forEach((el) => {
+            const r = el.getBoundingClientRect();
+            if (r.right > left && r.left < right && r.bottom > top && r.top < bottom) {
+              const path = (el as HTMLElement).dataset.entryPath;
+              if (path) selected.push(path);
+            }
+          });
+          if (selected.length > 0) setPaneSelectedPaths(selected);
+        }
+        return null;
+      });
+      return;
+    }
+    listContainerRef.current?.releasePointerCapture(ev.pointerId);
+    const d = dragRef.current;
+    if (d.highlightEl) { (d.highlightEl as HTMLElement).removeAttribute("data-drag-over"); d.highlightEl = null; }
+    d.pending = null;
+    if (!d.active) return;
+    d.active = false;
+    didDragRef.current = true;
+    setGhostPos(null);
+    const target = d.dropTarget;
+    const paths = [...d.paths];
+    const srcRemote = d.sourceIsRemote;
+    const dstRemote = d.dropTargetIsRemote;
+    d.dropTarget = null;
+    d.paths = [];
+    d.sourceIsRemote = false;
+    d.dropTargetIsRemote = false;
+    setDropTarget(null);
+
+    if (target && paths.length > 0) {
+      const entries = listEntriesRef.current;
+      if (srcRemote === dstRemote) {
+        for (const src of paths) {
+          if (src === target) continue;
+          try {
+            if (srcRemote) {
+              const name = src.replace(/\\/g, "/").split("/").pop()!;
+              await invoke("rename_remote_path", { fromPath: src, toPath: target.replace(/\\/g, "/") + "/" + name });
+            } else {
+              await invoke("move_path", { src, dstDir: target });
+            }
+          } catch (err) { console.error(err); }
+        }
+      } else {
+        for (const src of paths) {
+          const entry = entries.find((e) => e.path === src)
+            ?? { path: src, name: src.replace(/\\/g, "/").split("/").pop()!, is_dir: false };
+          try {
+            if (srcRemote) {
+              await downloadEntry({ path: entry.path, name: entry.name, is_dir: entry.is_dir }, target);
+            } else {
+              await uploadEntry({ path: entry.path, name: entry.name, is_dir: entry.is_dir }, target);
+            }
+          } catch (err) { console.error(err); }
+        }
+      }
+      setPaneSelectedPaths([]);
+      await refreshListRef.current();
+    }
+  };
+
+  const handlePointerCancel = (ev: React.PointerEvent) => {
+    if (rubberBandActive.current) {
+      rubberBandActive.current = null;
+      setRubberBand(null);
+      return;
+    }
+    const d = dragRef.current;
+    if (d.highlightEl) { (d.highlightEl as HTMLElement).removeAttribute("data-drag-over"); d.highlightEl = null; }
+    d.pending = null;
+    if (d.active) {
+      listContainerRef.current?.releasePointerCapture(ev.pointerId);
+      d.active = false;
+      d.dropTarget = null;
+      d.paths = [];
+      setGhostPos(null);
       setDropTarget(null);
     }
   };
 
-  const handleOpen = (e: ListEntry) => openFile(toFileEntry(e));
+  const handleOpen = (e: ListEntry) => {
+    invoke("record_activity", { path: e.path, name: e.name, action: "opened" }).catch(() => {});
+    openFile(toFileEntry(e));
+  };
 
   const handleOpenFolderInNewTab = async (path: string) => {
     openFolderTab(path);
     try {
       const entries = await listDir(path);
-      setListEntries(entries);
+      setPaneEntries(entries);
       selectEntry(null);
-      setSelectedPaths([]);
+      setPaneSelectedPaths([]);
     } catch (e) { console.error(e); }
   };
 
@@ -567,21 +673,21 @@ export function FileList() {
     if (didDragRef.current) { didDragRef.current = false; return; }
     const path = entry.path;
     if (e.ctrlKey || e.metaKey) {
-      setSelectedPaths(
-        selectedPaths.includes(path)
-          ? selectedPaths.filter((p) => p !== path)
-          : [...selectedPaths, path]
+      setPaneSelectedPaths(
+        paneSelectedPaths.includes(path)
+          ? paneSelectedPaths.filter((p) => p !== path)
+          : [...paneSelectedPaths, path]
       );
-    } else if (e.shiftKey && selectedPaths.length > 0) {
-      const lastPath = selectedPaths[selectedPaths.length - 1];
+    } else if (e.shiftKey && paneSelectedPaths.length > 0) {
+      const lastPath = paneSelectedPaths[paneSelectedPaths.length - 1];
       const lastIdx = visibleEntries.findIndex((x) => x.path === lastPath);
       const curIdx = visibleEntries.findIndex((x) => x.path === path);
       if (lastIdx >= 0 && curIdx >= 0) {
         const [from, to] = lastIdx < curIdx ? [lastIdx, curIdx] : [curIdx, lastIdx];
-        setSelectedPaths(visibleEntries.slice(from, to + 1).map((x) => x.path));
+        setPaneSelectedPaths(visibleEntries.slice(from, to + 1).map((x) => x.path));
       }
     } else {
-      setSelectedPaths([path]);
+      setPaneSelectedPaths([path]);
       if (entry.is_dir) selectEntry({ kind: "folder", entry });
       else selectEntry({ kind: "file", entry: toFileEntry(entry) });
     }
@@ -590,8 +696,8 @@ export function FileList() {
   // ─── Context menu builder ───────────────────────────────────────────────────
   const handleContextMenu = (e: React.MouseEvent, entry: ListEntry) => {
     e.preventDefault();
-    if (!selectedPaths.includes(entry.path)) {
-      setSelectedPaths([entry.path]);
+    if (!paneSelectedPaths.includes(entry.path)) {
+      setPaneSelectedPaths([entry.path]);
       if (entry.is_dir) selectEntry({ kind: "folder", entry });
       else selectEntry({ kind: "file", entry: toFileEntry(entry) });
     }
@@ -599,9 +705,9 @@ export function FileList() {
   };
 
   const buildMenuItems = (entry: ListEntry): ContextMenuEntry[] => {
-    const isMulti = selectedPaths.length > 1;
+    const isMulti = paneSelectedPaths.length > 1;
     const targets = isMulti
-      ? visibleEntries.filter((x) => selectedPaths.includes(x.path))
+      ? visibleEntries.filter((x) => paneSelectedPaths.includes(x.path))
       : [entry];
 
     const items: ContextMenuEntry[] = [];
@@ -657,7 +763,7 @@ export function FileList() {
       items.push({ separator: true });
     }
 
-    if (isMulti && selectedPaths.length > 1) {
+    if (isMulti && paneSelectedPaths.length > 1) {
       items.push({ label: `${t.bulkRename} (${targets.length})`, onClick: () => setBulkRenameOpen(true) });
       items.push({ separator: true });
     }
@@ -686,7 +792,7 @@ export function FileList() {
     }
 
     // Compress selection to zip
-    if (currentPath) {
+    if (panePath) {
       const compressTargets = targets.map((e) => e.path);
       const defaultName = isMulti
         ? "archive"
@@ -719,26 +825,32 @@ export function FileList() {
     const paths = targets.map((t) => t.path);
     try {
       await invoke("move_to_trash", { paths });
-    } catch (e) { console.error(e); }
-    setSelectedPaths([]);
+    } catch (e) {
+      addToast({ type: "error", message: "Could not move to trash", detail: humanizeError(e) });
+    }
+    setPaneSelectedPaths([]);
     selectEntry(null);
     await refreshList();
   };
 
   const handleDelete = async (targets: ListEntry[]) => {
+    const errors: string[] = [];
     for (const t of targets) {
       try {
         if (isCurrentTabRemote) await invoke("delete_remote_path", { path: t.path });
         else await invoke("delete_path", { path: t.path });
-      } catch (e) { console.error(e); }
+      } catch (e) { errors.push(`${t.name}: ${humanizeError(e)}`); }
     }
-    setSelectedPaths([]);
+    if (errors.length) {
+      addToast({ type: "error", message: `Failed to delete ${errors.length} item(s)`, detail: errors[0] });
+    }
+    setPaneSelectedPaths([]);
     selectEntry(null);
     await refreshList();
   };
 
   const handlePaste = async () => {
-    if (!clipboard || !currentPath) return;
+    if (!clipboard || !panePath) return;
     const srcRemote = clipboard.isRemote;
     const dstRemote = isCurrentTabRemote;
 
@@ -750,25 +862,29 @@ export function FileList() {
             // remote → remote copy: read + write (best-effort for text files)
             if (clipboard.action === "copy") {
               const entry = clipboard.entries.find((e) => e.path === src) ?? { path: src, name: src.replace(/\\/g, "/").split("/").pop()!, is_dir: false };
-              await uploadRemoteEntry(entry, currentPath);
+              await uploadRemoteEntry(entry, panePath);
             } else {
               const name = src.replace(/\\/g, "/").split("/").pop()!;
-              await invoke("rename_remote_path", { fromPath: src, toPath: currentPath.replace(/\\/g, "/") + "/" + name });
+              await invoke("rename_remote_path", { fromPath: src, toPath: panePath.replace(/\\/g, "/") + "/" + name });
             }
           } else {
             // local → local
-            if (clipboard.action === "copy") await invoke("copy_path", { src, dstDir: currentPath });
-            else await invoke("move_path", { src, dstDir: currentPath });
+            if (clipboard.action === "copy") await invoke("copy_path", { src, dstDir: panePath });
+            else await invoke("move_path", { src, dstDir: panePath });
           }
-        } catch (e) { console.error(e); }
+        } catch (e) {
+          addToast({ type: "error", message: `Failed to ${clipboard.action} file`, detail: humanizeError(e) });
+        }
       }
     } else {
       // Cross-transfer copy
       for (const entry of clipboard.entries) {
         try {
-          if (srcRemote) await downloadEntry(entry, currentPath);
-          else await uploadEntry(entry, currentPath);
-        } catch (e) { console.error(e); }
+          if (srcRemote) await downloadEntry(entry, panePath);
+          else await uploadEntry(entry, panePath);
+        } catch (e) {
+          addToast({ type: "error", message: `Failed to transfer "${entry.name}"`, detail: humanizeError(e) });
+        }
       }
       // Cut: delete source after transfer
       if (clipboard.action === "cut") {
@@ -776,7 +892,9 @@ export function FileList() {
           try {
             if (srcRemote) await invoke("delete_remote_path", { path: src });
             else await invoke("delete_path", { path: src });
-          } catch (e) { console.error(e); }
+          } catch (e) {
+            addToast({ type: "warning", message: "Transfer done but source could not be deleted", detail: humanizeError(e) });
+          }
         }
       }
     }
@@ -789,39 +907,43 @@ export function FileList() {
     setRenamingPath(null);
     const trimmed = newName.trim();
     if (!trimmed || trimmed === entry.name) return;
-    const parent = entry.path.replace(/\\/g, "/").split("/").slice(0, -1).join("\\") || currentPath;
+    const parent = entry.path.replace(/\\/g, "/").split("/").slice(0, -1).join("\\") || panePath;
     const newPath = (parent ? parent + "\\" : "") + trimmed;
     try {
       if (isCurrentTabRemote) await invoke("rename_remote_path", { fromPath: entry.path, toPath: newPath });
       else await invoke("rename_path", { oldPath: entry.path, newPath });
       await refreshList();
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      addToast({ type: "error", message: `Could not rename "${entry.name}"`, detail: humanizeError(e) });
+    }
   };
 
   // ─── Create folder ──────────────────────────────────────────────────────────
   const handleCreateFolder = async () => {
     const name = newFolderName.trim();
-    if (!name || !currentPath) return;
-    const newPath = currentPath.replace(/\\/g, "/").replace(/\/$/, "") + "/" + name;
+    if (!name || !panePath) return;
+    const newPath = panePath.replace(/\\/g, "/").replace(/\/$/, "") + "/" + name;
     try {
       if (isCurrentTabRemote) await invoke("create_remote_dir", { path: newPath });
       else await invoke("create_directory", { path: newPath });
       await refreshList();
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      addToast({ type: "error", message: `Could not create folder "${name}"`, detail: humanizeError(e) });
+    }
     setNewFolderName(""); setShowNewFolder(false);
   };
 
   // ─── Create file ───────────────────────────────────────────────────────────
   const handleCreateFile = async () => {
     const name = newFileName.trim();
-    if (!name || !currentPath) return;
+    if (!name || !panePath) return;
     try {
       if (isCurrentTabRemote) {
-        const newPath = currentPath.replace(/\\/g, "/").replace(/\/$/, "") + "/" + name;
+        const newPath = panePath.replace(/\\/g, "/").replace(/\/$/, "") + "/" + name;
         await invoke("create_remote_file", { path: newPath });
       } else {
         // Pass dir + name separately so Rust builds the path with OS-native separators
-        await invoke("create_file", { dir: currentPath, name });
+        await invoke("create_file", { dir: panePath, name });
       }
       await refreshList();
     } catch (e) { console.error(e); }
@@ -831,16 +953,18 @@ export function FileList() {
   // ─── Keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Only the active pane handles keyboard shortcuts in dual pane mode
+      if (activePaneIndex !== pane) return;
       const active = document.activeElement;
       if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
 
-      if (e.key === "F2" && selectedPaths.length === 1) {
+      if (e.key === "F2" && paneSelectedPaths.length === 1) {
         e.preventDefault();
-        setRenamingPath(selectedPaths[0]);
+        setRenamingPath(paneSelectedPaths[0]);
       }
-      if (e.key === "Delete" && selectedPaths.length > 0) {
+      if (e.key === "Delete" && paneSelectedPaths.length > 0) {
         e.preventDefault();
-        const targets = visibleEntries.filter((x) => selectedPaths.includes(x.path));
+        const targets = visibleEntries.filter((x) => paneSelectedPaths.includes(x.path));
         if (e.shiftKey || isRemoteRef.current) {
           setDeleteTargets(targets);
         } else {
@@ -849,64 +973,114 @@ export function FileList() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "a") {
         e.preventDefault();
-        setSelectedPaths(visibleEntries.map((x) => x.path));
+        setPaneSelectedPaths(visibleEntries.map((x) => x.path));
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === "c" && selectedPaths.length > 0) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "c" && paneSelectedPaths.length > 0) {
         e.preventDefault();
-        const sel = selectedPaths.map((p) => listEntriesRef.current.find((x) => x.path === p)).filter(Boolean) as ListEntry[];
-        setClipboard({ action: "copy", paths: [...selectedPaths], isRemote: isRemoteRef.current, entries: sel.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })) });
+        const sel = paneSelectedPaths.map((p) => listEntriesRef.current.find((x) => x.path === p)).filter(Boolean) as ListEntry[];
+        setClipboard({ action: "copy", paths: [...paneSelectedPaths], isRemote: isRemoteRef.current, entries: sel.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })) });
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === "x" && selectedPaths.length > 0) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "x" && paneSelectedPaths.length > 0) {
         e.preventDefault();
-        const sel = selectedPaths.map((p) => listEntriesRef.current.find((x) => x.path === p)).filter(Boolean) as ListEntry[];
-        setClipboard({ action: "cut", paths: [...selectedPaths], isRemote: isRemoteRef.current, entries: sel.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })) });
+        const sel = paneSelectedPaths.map((p) => listEntriesRef.current.find((x) => x.path === p)).filter(Boolean) as ListEntry[];
+        setClipboard({ action: "cut", paths: [...paneSelectedPaths], isRemote: isRemoteRef.current, entries: sel.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })) });
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "v" && clipboard) {
         e.preventDefault();
         handlePaste();
       }
       if (e.key === "Escape") {
-        setSelectedPaths([]);
+        if (quickLookEntry) { setQuickLookEntry(null); return; }
+        setPaneSelectedPaths([]);
         selectEntry(null);
+      }
+
+      if (e.key === " " && paneSelectedPaths.length === 1) {
+        e.preventDefault();
+        const entry = visibleEntries.find((x) => x.path === paneSelectedPaths[0]);
+        if (entry && !entry.is_dir) {
+          setQuickLookEntry(quickLookEntry?.path === entry.path ? null : entry);
+        }
       }
 
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         if (visibleEntries.length === 0) return;
         e.preventDefault();
-        const lastPath = selectedPaths[selectedPaths.length - 1];
+        const lastPath = paneSelectedPaths[paneSelectedPaths.length - 1];
         const curIdx = lastPath ? visibleEntries.findIndex((x) => x.path === lastPath) : -1;
         const newIdx = e.key === "ArrowDown"
           ? Math.min(curIdx + 1, visibleEntries.length - 1)
           : Math.max(curIdx - 1, 0);
         if (newIdx < 0 || newIdx >= visibleEntries.length) return;
         const entry = visibleEntries[newIdx];
-        setSelectedPaths([entry.path]);
-        selectEntry(entry.is_dir ? { kind: "folder", entry } : { kind: "file", entry: toFileEntry(entry) });
+        if (e.shiftKey) {
+          // Extend selection range
+          const anchorPath = paneSelectedPaths[0];
+          const anchorIdx = anchorPath ? visibleEntries.findIndex((x) => x.path === anchorPath) : curIdx;
+          const lo = Math.min(anchorIdx < 0 ? newIdx : anchorIdx, newIdx);
+          const hi = Math.max(anchorIdx < 0 ? newIdx : anchorIdx, newIdx);
+          setPaneSelectedPaths(visibleEntries.slice(lo, hi + 1).map((x) => x.path));
+        } else {
+          setPaneSelectedPaths([entry.path]);
+          selectEntry(entry.is_dir ? { kind: "folder", entry } : { kind: "file", entry: toFileEntry(entry) });
+        }
       }
 
-      if (e.key === "Enter" && selectedPaths.length === 1) {
+      // Letter-key type-ahead jump
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1 && /\S/.test(e.key)) {
         e.preventDefault();
-        const entry = visibleEntries.find((x) => x.path === selectedPaths[0]);
+        const char = e.key.toLowerCase();
+        const curIdx = paneSelectedPaths.length > 0
+          ? visibleEntries.findIndex((x) => x.path === paneSelectedPaths[paneSelectedPaths.length - 1])
+          : -1;
+        // Search from next entry, wrapping around
+        const found = visibleEntries.findIndex((x, i) =>
+          i > curIdx && x.name.toLowerCase().startsWith(char)
+        ) ?? -1;
+        const idx = found >= 0 ? found : visibleEntries.findIndex((x) => x.name.toLowerCase().startsWith(char));
+        if (idx >= 0) {
+          const entry = visibleEntries[idx];
+          setPaneSelectedPaths([entry.path]);
+          selectEntry(entry.is_dir ? { kind: "folder", entry } : { kind: "file", entry: toFileEntry(entry) });
+          // Scroll the row into view
+          document.querySelector(`[data-entry-path="${CSS.escape(entry.path)}"]`)
+            ?.scrollIntoView({ block: "nearest" });
+        }
+      }
+
+      if (e.key === "Enter" && paneSelectedPaths.length === 1) {
+        e.preventDefault();
+        const entry = visibleEntries.find((x) => x.path === paneSelectedPaths[0]);
         if (entry) {
           if (entry.is_dir) navigate(entry.path);
           else handleOpen(entry);
         }
       }
+
+      // Backspace → navigate up one level
+      if (e.key === "Backspace" && !e.ctrlKey) {
+        e.preventDefault();
+        const parent = panePath.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
+        if (parent) navigate(parent);
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPaths, visibleEntries, clipboard]);
+  }, [paneSelectedPaths, visibleEntries, clipboard, activePaneIndex, pane, panePath]);
 
   // ─── Early returns ──────────────────────────────────────────────────────────
-  if (isScanning) {
+  if (isScanning && pane === 0) {
     return <div className="flex-1 flex items-center justify-center text-text-muted"><span className="text-[12px]">{t.scanning}</span></div>;
   }
-  if (!currentPath && !folderTabs.some((tab) => tab.isRemote)) {
+  if (!panePath && (pane === 0 ? !folderTabs.some((tab) => tab.isRemote) : true)) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
+      <div
+        className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted"
+        onPointerDown={() => setActivePaneIndex(pane)}
+      >
         <Folder size={28} className="opacity-20" />
-        <span className="text-[12px]">{t.navigateToStart}</span>
+        <span className="text-[12px]">{pane === 1 ? "Click to activate pane" : t.navigateToStart}</span>
       </div>
     );
   }
@@ -925,7 +1099,10 @@ export function FileList() {
             onCancel={() => setDeleteTargets(null)}
           />
         )}
-        <div className="flex-1 flex flex-col min-h-0">
+        <div
+          className={clsx("flex-1 flex flex-col min-h-0", dualPaneActive && activePaneIndex === pane && "border-t-2 border-accent")}
+          onPointerDown={() => setActivePaneIndex(pane)}
+        >
         <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
           {parentPath && (
             <button onClick={() => navigate(parentPath)} onDoubleClick={() => navigate(parentPath)}
@@ -944,7 +1121,7 @@ export function FileList() {
                     onClick={(ev) => handleClick(ev, e)}
                     onContextMenu={(ev) => handleContextMenu(ev, e)}
                     className={clsx("flex flex-col items-start gap-1.5 p-3 rounded-lg border text-left transition-colors",
-                      selectedPaths.includes(e.path) ? "border-yellow-400/50 bg-yellow-400/5" : "border-border hover:border-yellow-400/30 hover:bg-surface-2")}>
+                      paneSelectedPaths.includes(e.path) ? "border-yellow-400/50 bg-yellow-400/5" : "border-border hover:border-yellow-400/30 hover:bg-surface-2")}>
                     <Folder size={20} className="text-yellow-400" />
                     <span className="text-[12px] text-text-primary truncate w-full">{e.name}</span>
                   </button>
@@ -962,7 +1139,7 @@ export function FileList() {
                     onClick={(ev) => handleClick(ev, e)}
                     onContextMenu={(ev) => handleContextMenu(ev, e)}
                     className={clsx("flex flex-col items-start gap-1.5 p-2 rounded-lg border text-left transition-colors overflow-hidden",
-                      selectedPaths.includes(e.path) ? "border-accent/50 bg-accent/5" : "border-border hover:bg-surface-2")}>
+                      paneSelectedPaths.includes(e.path) ? "border-accent/50 bg-accent/5" : "border-border hover:bg-surface-2")}>
                     <GridThumbnail entry={e} />
                     <span className="text-[12px] text-text-primary truncate w-full">{e.name}</span>
                     <span className="text-[10px] text-text-muted">{formatSize(e.size)}</span>
@@ -978,7 +1155,7 @@ export function FileList() {
             </div>
           )}
         </div>
-        <StatusBar total={visibleEntries.length} selected={selectedPaths.length} selectedSize={selectedSize} />
+        <StatusBar total={visibleEntries.length} selected={paneSelectedPaths.length} selectedSize={selectedSize} />
         </div>
         {ctxMenu && (
           <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={buildMenuItems(ctxMenu.entry)} onClose={() => setCtxMenu(null)} />
@@ -999,9 +1176,25 @@ export function FileList() {
         />
       )}
 
-      <div className="flex-1 flex flex-col min-h-0">
       <div
-        className="flex-1 overflow-y-auto flex flex-col"
+        className={clsx("flex-1 flex flex-col min-h-0", dualPaneActive && activePaneIndex === pane && "border-t-2 border-accent")}
+        onPointerDown={() => setActivePaneIndex(pane)}
+      >
+      <div
+        ref={listContainerRef}
+        className="flex-1 overflow-y-auto flex flex-col relative"
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          const target = e.target as HTMLElement;
+          if (target.closest("[data-is-entry]")) return;
+          rubberBandActive.current = { startX: e.clientX, startY: e.clientY };
+          listContainerRef.current?.setPointerCapture(e.pointerId);
+          setRubberBand({ x1: e.clientX, y1: e.clientY, x2: e.clientX, y2: e.clientY });
+          if (!e.shiftKey && !e.ctrlKey) setPaneSelectedPaths([]);
+        }}
         onContextMenu={(e) => {
           const target = e.target as HTMLElement;
           if (!target.closest("[data-is-entry]")) {
@@ -1022,7 +1215,7 @@ export function FileList() {
           <SortHeader col="modified" label={t.modified} width="w-full justify-end" sortBy={sortBy} sortDir={sortDir} onSort={setSortBy} />
           {/* col 5: actions */}
           <div className="flex items-center gap-0.5 justify-end">
-            {currentPath && (<>
+            {panePath && (<>
               <button onClick={() => { setShowNewFile(true); setTimeout(() => newFileRef.current?.focus(), 50); }}
                 className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors" title={t.newFile}>
                 <File size={11} />
@@ -1080,7 +1273,7 @@ export function FileList() {
           <EntryRow
             key={e.path}
             entry={e}
-            selected={selectedPaths.includes(e.path)}
+            selected={paneSelectedPaths.includes(e.path)}
             cut={clipboard?.action === "cut" && clipboard.paths.includes(e.path)}
             renaming={renamingPath === e.path}
             onClick={(ev) => handleClick(ev, e)}
@@ -1090,11 +1283,23 @@ export function FileList() {
             onRenameSubmit={(name) => handleRenameSubmit(e, name)}
             onRenameCancel={() => setRenamingPath(null)}
             isDragTarget={dropTarget === e.path}
-            onMouseDown={(ev) => startDrag(ev, e)}
-            onMouseEnter={() => handleDragEnter(e)}
-            onMouseLeave={() => handleDragLeave(e)}
+            onPointerDown={(ev) => handleEntryPointerDown(ev, e)}
           />
         ))}
+
+        {/* Rubber-band selection rect */}
+        {rubberBand && (() => {
+          const left = Math.min(rubberBand.x1, rubberBand.x2);
+          const top = Math.min(rubberBand.y1, rubberBand.y2);
+          const width = Math.abs(rubberBand.x2 - rubberBand.x1);
+          const height = Math.abs(rubberBand.y2 - rubberBand.y1);
+          return (
+            <div
+              style={{ position: "fixed", left, top, width, height, pointerEvents: "none", zIndex: 200 }}
+              className="bg-accent/10 border border-accent/50 rounded-sm"
+            />
+          );
+        })()}
 
         {/* Drag ghost */}
         {ghostPos && (
@@ -1106,7 +1311,7 @@ export function FileList() {
           </div>
         )}
       </div>
-      <StatusBar total={visibleEntries.length} selected={selectedPaths.length} selectedSize={selectedSize} />
+      <StatusBar total={visibleEntries.length} selected={paneSelectedPaths.length} selectedSize={selectedSize} />
       </div>
 
       {ctxMenu && (
@@ -1126,11 +1331,11 @@ export function FileList() {
         />
       )}
 
-      {zipPending && currentPath && (
+      {zipPending && panePath && (
         <ZipNameModal
           defaultName={zipPending.defaultName}
           onConfirm={async (name) => {
-            const dest = `${currentPath}\\${name.endsWith(".zip") ? name : `${name}.zip`}`;
+            const dest = `${panePath}\\${name.endsWith(".zip") ? name : `${name}.zip`}`;
             setZipPending(null);
             try {
               await invoke("create_zip", { sourcePaths: zipPending.paths, dest });
@@ -1141,10 +1346,18 @@ export function FileList() {
         />
       )}
 
-      {extractTarget && currentPath && (
+      {quickLookEntry && (
+        <QuickLookModal
+          entry={quickLookEntry}
+          siblings={visibleEntries}
+          onClose={() => setQuickLookEntry(null)}
+        />
+      )}
+
+      {extractTarget && panePath && (
         <FolderPickerModal
           title="Extraire vers…"
-          initialPath={currentPath}
+          initialPath={panePath}
           onSelect={async (dest) => {
             setExtractTarget(null);
             try {

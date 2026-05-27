@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search, Settings } from "lucide-react";
+import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search, Settings, Columns2, BarChart2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import type { FileEntry, ListEntry } from "../types";
@@ -16,7 +16,7 @@ function useDebounce(fn: (...args: unknown[]) => void, delay: number) {
   };
 }
 
-export function Toolbar({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function Toolbar({ onOpenSettings, onOpenDiskUsage }: { onOpenSettings: () => void; onOpenDiskUsage?: () => void }) {
   const {
     searchQuery, setSearchQuery,
     searchType, setSearchType,
@@ -27,6 +27,7 @@ export function Toolbar({ onOpenSettings }: { onOpenSettings: () => void }) {
     isWatching, selectFile, pushNav,
     showHidden, toggleShowHidden,
     activeContextId,
+    dualPaneActive, setDualPaneActive,
   } = useStore();
 
   const t = useTranslation();
@@ -259,9 +260,25 @@ export function Toolbar({ onOpenSettings }: { onOpenSettings: () => void }) {
           className={clsx("w-7 h-7 flex items-center justify-center rounded transition-colors",
             layoutMode === "grid" ? "text-text-primary bg-surface-4" : "text-text-muted hover:text-text-secondary hover:bg-surface-3")}
         ><LayoutGrid size={13} /></button>
+        <button
+          onClick={() => setDualPaneActive(!dualPaneActive)}
+          title="Toggle dual pane (F5)"
+          className={clsx("w-7 h-7 flex items-center justify-center rounded transition-colors",
+            dualPaneActive ? "bg-accent/20 text-accent" : "text-text-muted hover:text-text-secondary hover:bg-surface-3")}
+        ><Columns2 size={13} /></button>
       </div>
 
       <div className="w-px h-5 bg-border mx-1" />
+
+      {currentPath && onOpenDiskUsage && (
+        <button
+          onClick={onOpenDiskUsage}
+          title="Disk usage"
+          className="w-7 h-7 flex items-center justify-center rounded text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
+        >
+          <BarChart2 size={13} />
+        </button>
+      )}
 
       <button
         onClick={onOpenSettings}

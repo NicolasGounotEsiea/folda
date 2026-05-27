@@ -1,4 +1,5 @@
 use crate::{models::FileEntry, AppState};
+use walkdir::WalkDir;
 
 fn load_file_tags(
     db: &rusqlite::Connection,
@@ -116,4 +117,63 @@ pub fn search_folders(
         .collect();
 
     Ok(results)
+}
+
+/// Real-time filesystem search — walks `path` up to 3 levels deep and returns
+/// files whose name contains `query` (case-insensitive).  Bounded to 50 results
+/// so it can't block for long.  Complements the DB-backed search for files that
+/// haven't been indexed yet.
+#[tauri::command]
+pub async fn search_live(query: String, path: String) -> Vec<FileEntry> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() || path.is_empty() {
+        return vec![];
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut results = Vec::new();
+        for entry in WalkDir::new(&path)
+            .max_depth(3)
+            .into_iter()
+            .filter_entry(|e| {
+                let name = e.file_name().to_string_lossy();
+                !matches!(name.as_ref(), "node_modules" | "target" | ".git" | "__pycache__")
+            })
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+        {
+            let name = entry.file_name().to_string_lossy();
+            if name.to_lowercase().contains(&q) {
+                let path_str = entry.path().to_string_lossy().to_string();
+                let meta = entry.metadata().ok();
+                let size = meta.as_ref().map(|m| m.len() as i64).unwrap_or(0);
+                let modified = meta.as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let ext = entry.path()
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default()
+                    .to_string();
+                results.push(FileEntry {
+                    id: -1,
+                    path: path_str,
+                    name: name.to_string(),
+                    extension: ext,
+                    size,
+                    created_at: 0,
+                    modified_at: modified,
+                    accessed_at: 0,
+                    tags: vec![],
+                });
+                if results.len() >= 50 {
+                    break;
+                }
+            }
+        }
+        results
+    })
+    .await
+    .unwrap_or_default()
 }

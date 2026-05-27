@@ -9,7 +9,6 @@ import { useStore } from "../store/useStore";
 import { useTranslation } from "../utils/i18n";
 import { FolderPickerModal } from "./FolderPickerModal";
 
-export const ARCHIVE_EXTS = ["zip", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz", "7z", "rar"];
 
 interface ArchiveEntry {
   path: string;

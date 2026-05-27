@@ -21,9 +21,11 @@ flate2 = "1"
 notify = "6"
 indexmap = "2"
 anyhow = "1"
+winreg = "0.52"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
 tokio-tungstenite = "0.23"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+tauri-plugin-drag = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

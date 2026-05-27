@@ -52,6 +52,7 @@ const FolderNode = memo(function FolderNode({
   return (
     <>
       <div
+        data-drop-path={path}
         className={clsx(
           "group flex items-center gap-0.5 h-6 rounded transition-colors cursor-pointer select-none",
           isActive ? "bg-surface-3 text-text-primary" : "text-text-secondary hover:bg-surface-3"
@@ -293,10 +294,13 @@ function PinnedRow({ item, currentPath, onNavigate, onUnpin }: {
 }) {
   const isActive = currentPath.replace(/\\/g, "/") === item.path.replace(/\\/g, "/");
   return (
-    <div className={clsx(
-      "group flex items-center gap-1.5 h-6 px-2 rounded cursor-pointer select-none transition-colors",
-      isActive ? "bg-surface-3 text-text-primary" : "text-text-secondary hover:bg-surface-3"
-    )}>
+    <div
+      data-drop-path={item.is_dir ? item.path : undefined}
+      className={clsx(
+        "group flex items-center gap-1.5 h-6 px-2 rounded cursor-pointer select-none transition-colors",
+        isActive ? "bg-surface-3 text-text-primary" : "text-text-secondary hover:bg-surface-3"
+      )}
+    >
       <button onClick={() => onNavigate(item.path)}
         className="flex items-center gap-1.5 flex-1 min-w-0">
         {item.is_dir
@@ -334,7 +338,7 @@ export function Sidebar() {
     pinnedItems, setPinnedItems, removePinnedItem,
     folderTabs, tabs,
     sharingMode, sharingClients, sharingContextId, sharingWorkspaceName, sharingWorkspaceIcon, remoteWorkspaceName,
-    shareModalOpen, joinModalOpen, setShareModalOpen, setJoinModalOpen,
+    shareModalOpen, joinModalOpen, setShareModalOpen, setJoinModalOpen, sharingReconnecting,
   } = useStore();
 
   const tSidebar = useTranslation();
@@ -940,16 +944,21 @@ export function Sidebar() {
 
       {/* ── Sharing ── */}
       <div className="shrink-0 border-t border-border-subtle px-3 py-2 flex flex-col gap-1">
-        {sharingMode === "joined" ? (
+        {sharingReconnecting ? (
+          <div className="flex items-center gap-1.5 px-2 h-6 rounded bg-yellow-500/10 text-yellow-400 text-[11px]">
+            <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse shrink-0" />
+            <span className="truncate flex-1">{tSidebar.sharingReconnecting}</span>
+          </div>
+        ) : sharingMode === "joined" ? (
           <div className="flex items-center gap-1.5 px-2 h-6 rounded bg-accent/10 text-accent text-[11px]">
             <Users size={11} className="shrink-0" />
             <span className="truncate flex-1">
-              {remoteWorkspaceName ? `↔ ${remoteWorkspaceName}` : "Connecté en tant qu'invité"}
+              {remoteWorkspaceName ? `↔ ${remoteWorkspaceName}` : tSidebar.sharingConnectedAsGuest}
             </span>
             <button
               onClick={() => setJoinModalOpen(true)}
               className="text-text-muted hover:text-text-primary transition-colors"
-              title="Gérer la connexion"
+              title={tSidebar.sharingManageConnection}
             >
               <X size={11} />
             </button>
@@ -963,25 +972,25 @@ export function Sidebar() {
             <span className="flex-1 text-left truncate">
               {sharingWorkspaceIcon && sharingWorkspaceName
                 ? `${sharingWorkspaceIcon} ${sharingWorkspaceName}`
-                : "Partage actif"}
-              {sharingClients.length > 0 && ` · ${sharingClients.length} invité${sharingClients.length > 1 ? "s" : ""}`}
+                : tSidebar.sharingActiveShare}
+              {sharingClients.length > 0 && ` · ${sharingClients.length} ${sharingClients.length > 1 ? tSidebar.sharingGuests : tSidebar.sharingGuest}`}
             </span>
           </button>
         ) : (
           <div className="flex gap-1">
             <button
               onClick={() => setShareModalOpen(true)}
-              title="Partager ce workspace"
+              title={tSidebar.sharingShare}
               className="flex-1 flex items-center justify-center gap-1 h-6 rounded text-[11px] text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
             >
-              <Share2 size={11} /> Partager
+              <Share2 size={11} /> {tSidebar.sharingShare}
             </button>
             <button
               onClick={() => setJoinModalOpen(true)}
-              title="Rejoindre un workspace partagé"
+              title={tSidebar.sharingJoin}
               className="flex-1 flex items-center justify-center gap-1 h-6 rounded text-[11px] text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
             >
-              <LogIn size={11} /> Rejoindre
+              <LogIn size={11} /> {tSidebar.sharingJoin}
             </button>
           </div>
         )}

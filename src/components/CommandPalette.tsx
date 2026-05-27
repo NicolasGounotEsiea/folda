@@ -32,6 +32,20 @@ function score(text: string, query: string): number {
   return qi === q.length ? 20 : 0;
 }
 
+const RECENT_QUERIES_KEY = "nxs_recent_queries";
+const MAX_RECENT = 8;
+
+function loadRecentQueries(): string[] {
+  try { return JSON.parse(localStorage.getItem(RECENT_QUERIES_KEY) ?? "[]"); } catch { return []; }
+}
+
+function saveRecentQuery(q: string) {
+  const trimmed = q.trim();
+  if (!trimmed || trimmed.length < 2) return;
+  const prev = loadRecentQueries().filter((x) => x !== trimmed);
+  localStorage.setItem(RECENT_QUERIES_KEY, JSON.stringify([trimmed, ...prev].slice(0, MAX_RECENT)));
+}
+
 export function CommandPalette({ onClose }: { onClose: () => void }) {
   const {
     rootPaths, setCurrentPath, setListEntries, pushNav, selectFile,
@@ -43,6 +57,45 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Recent items from activity DB (folders + files, deduplicated, newest first)
+  const [recentFiles, setRecentFiles] = useState<Command[]>([]);
+  useEffect(() => {
+    const now = Math.floor(Date.now() / 1000);
+    invoke<Array<{ file_path: string; file_name: string; action: string }>>("get_timeline", {
+      from: now - 30 * 86400, to: now, folder: null,
+    }).then((entries) => {
+      const seen = new Set<string>();
+      const cmds: Command[] = [];
+      for (const e of entries) {
+        if (seen.has(e.file_path) || !e.file_name) continue;
+        seen.add(e.file_path);
+        const isDir = e.action === "navigated";
+        const target = isDir
+          ? e.file_path
+          : e.file_path.replace(/\\/g, "/").split("/").slice(0, -1).join("\\");
+        cmds.push({
+          id: `recent:${e.file_path}`,
+          label: e.file_name,
+          description: e.file_path,
+          group: "Recent",
+          icon: isDir
+            ? <Folder size={13} className="text-yellow-400" />
+            : <File size={13} className="text-text-muted" />,
+          action: async () => {
+            if (target) await navigateTo(target);
+            else onClose();
+          },
+        });
+        if (cmds.length >= 10) break;
+      }
+      setRecentFiles(cmds);
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Recent search queries from localStorage
+  const [recentQueries, setRecentQueries] = useState<string[]>(() => loadRecentQueries());
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
@@ -113,31 +166,63 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootPaths, pinnedItems, showHidden, viewMode, layoutMode]);
 
-  // ── File search results ────────────────────────────────────────────────────
+  // ── File search results (DB FTS + live filesystem fallback) ──────────────
   const [searchResults, setSearchResults] = useState<Command[]>([]);
+  const { currentPath } = useStore();
   useEffect(() => {
     if (query.length < 2) { setSearchResults([]); return; }
     const timer = setTimeout(async () => {
+      const q = query;
+      const toCmd = (f: FileEntry, group: string): Command => ({
+        id: `file:${f.path}`, label: f.name, description: f.path, group,
+        icon: <File size={13} className="text-text-muted" />,
+        action: async () => {
+          saveRecentQuery(q);
+          setRecentQueries(loadRecentQueries());
+          const parent = f.path.replace(/\\/g, "/").split("/").slice(0, -1).join("\\");
+          await navigateTo(parent);
+        },
+      });
+
       try {
-        const results = await invoke<FileEntry[]>("search_files", { query });
-        setSearchResults(results.slice(0, 8).map((f) => ({
-          id: `file:${f.path}`, label: f.name, description: f.path, group: "Files",
-          icon: <File size={13} className="text-text-muted" />,
-          action: async () => {
-            const parent = f.path.replace(/\\/g, "/").split("/").slice(0, -1).join("\\");
-            await navigateTo(parent);
-          },
-        })));
+        // Run DB search and live search in parallel
+        const [dbResults, liveResults] = await Promise.all([
+          invoke<FileEntry[]>("search_files", { query: q }).catch(() => [] as FileEntry[]),
+          currentPath
+            ? invoke<FileEntry[]>("search_live", { query: q, path: currentPath }).catch(() => [] as FileEntry[])
+            : Promise.resolve([] as FileEntry[]),
+        ]);
+
+        const dbPaths = new Set(dbResults.map((f) => f.path));
+        // Live results that aren't already in DB results go in a separate group
+        const liveOnly = liveResults.filter((f) => !dbPaths.has(f.path));
+
+        setSearchResults([
+          ...dbResults.slice(0, 8).map((f) => toCmd(f, "Files")),
+          ...liveOnly.slice(0, 5).map((f) => toCmd(f, "Here")),
+        ]);
       } catch { setSearchResults([]); }
     }, 150);
     return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
+  }, [query, currentPath]);
+
+  // ── Recent query commands (shown only when query is empty) ────────────────
+  const recentQueryCommands = useMemo<Command[]>(() => {
+    if (recentQueries.length === 0) return [];
+    return recentQueries.map((q) => ({
+      id: `recent-query:${q}`, label: q, group: "Recent searches",
+      icon: <Search size={13} className="text-text-muted" />,
+      action: () => setQuery(q),
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recentQueries]);
 
   // ── Filtered + scored commands ─────────────────────────────────────────────
   const allCommands = useMemo(() => {
+    if (!query) return [...recentFiles, ...recentQueryCommands, ...staticCommands];
     return [...staticCommands, ...searchResults];
-  }, [staticCommands, searchResults]);
+  }, [staticCommands, searchResults, recentFiles, recentQueryCommands, query]);
 
   const filtered = useMemo(() => {
     if (!query) return allCommands;
@@ -158,7 +243,13 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") { e.preventDefault(); setActiveIdx((i) => Math.min(i + 1, filtered.length - 1)); }
     if (e.key === "ArrowUp") { e.preventDefault(); setActiveIdx((i) => Math.max(i - 1, 0)); }
-    if (e.key === "Enter" && filtered[activeIdx]) { filtered[activeIdx].action(); }
+    if (e.key === "Enter" && filtered[activeIdx]) {
+      if (query.length >= 2) {
+        saveRecentQuery(query);
+        setRecentQueries(loadRecentQueries());
+      }
+      filtered[activeIdx].action();
+    }
     if (e.key === "Escape") onClose();
   };
 

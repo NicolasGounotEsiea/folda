@@ -160,6 +160,24 @@ interface AppStore {
   settings: AppSettings;
   updateSettings: (patch: Partial<AppSettings>) => void;
 
+  // Dual pane
+  dualPaneActive: boolean;
+  activePaneIndex: 0 | 1;
+  pane2Path: string;
+  pane2Entries: ListEntry[];
+  pane2SelectedPaths: string[];
+  setDualPaneActive: (v: boolean) => void;
+  setActivePaneIndex: (i: 0 | 1) => void;
+  setPane2Path: (p: string) => void;
+  setPane2Entries: (e: ListEntry[]) => void;
+  setPane2SelectedPaths: (p: string[]) => void;
+
+  // Tab reorder
+  reorderFolderTabs: (fromIdx: number, toIdx: number) => void;
+  reorderTabs: (fromIdx: number, toIdx: number) => void;
+  tabOrder: Array<{ type: "folder" | "file"; id: string }>;
+  reorderAllTabs: (from: number, to: number) => void;
+
   // Sharing
   sharingMode: "idle" | "hosting" | "joined";
   sharingCode: string | null;
@@ -179,6 +197,11 @@ interface AppStore {
   removeSharingClient: (name: string) => void;
   setShareModalOpen: (v: boolean) => void;
   setJoinModalOpen: (v: boolean) => void;
+  // Guest reconnection
+  sharingGuestArgs: { code: string; password: string; displayName: string } | null;
+  sharingReconnecting: boolean;
+  setSharingGuestArgs: (args: { code: string; password: string; displayName: string } | null) => void;
+  setSharingReconnecting: (v: boolean) => void;
 }
 
 function deriveOpenedFile(tabs: Tab[], activeTabId: string | null): FileEntry | null {
@@ -216,18 +239,26 @@ export const useStore = create<AppStore>((set, get) => ({
       return { navHistory: [...trimmed, path], navIndex: trimmed.length };
     }),
   stepBack: () => {
-    const { navHistory, navIndex } = get();
+    const { navHistory, navIndex, activeFolderTabId, folderTabs } = get();
     const newIndex = navIndex - 1;
     if (newIndex < 0) return null;
-    set({ navIndex: newIndex, currentPath: navHistory[newIndex] });
-    return navHistory[newIndex];
+    const path = navHistory[newIndex];
+    const updatedTabs = activeFolderTabId
+      ? folderTabs.map((t) => (t.id === activeFolderTabId ? { ...t, path } : t))
+      : folderTabs;
+    set({ navIndex: newIndex, currentPath: path, folderTabs: updatedTabs });
+    return path;
   },
   stepForward: () => {
-    const { navHistory, navIndex } = get();
+    const { navHistory, navIndex, activeFolderTabId, folderTabs } = get();
     const newIndex = navIndex + 1;
     if (newIndex >= navHistory.length) return null;
-    set({ navIndex: newIndex, currentPath: navHistory[newIndex] });
-    return navHistory[newIndex];
+    const path = navHistory[newIndex];
+    const updatedTabs = activeFolderTabId
+      ? folderTabs.map((t) => (t.id === activeFolderTabId ? { ...t, path } : t))
+      : folderTabs;
+    set({ navIndex: newIndex, currentPath: path, folderTabs: updatedTabs });
+    return path;
   },
   files: [],
   selectedFile: null,
@@ -255,6 +286,7 @@ export const useStore = create<AppStore>((set, get) => ({
   tabs: [],
   activeTabId: null,
   openedFile: null,
+  tabOrder: [],
 
   addRootPath: (path) =>
     set((s) => ({
@@ -267,7 +299,7 @@ export const useStore = create<AppStore>((set, get) => ({
     set((s) => {
       if (s.folderTabs.length === 0) {
         const id = `ft-${Date.now()}`;
-        return { currentPath: path, folderTabs: [{ id, path }], activeFolderTabId: id };
+        return { currentPath: path, folderTabs: [{ id, path }], activeFolderTabId: id, tabOrder: [...s.tabOrder, { type: "folder" as const, id }] };
       }
       return {
         currentPath: path,
@@ -281,23 +313,24 @@ export const useStore = create<AppStore>((set, get) => ({
   openFolderTab: (path) =>
     set((s) => {
       const id = `ft-${Date.now()}`;
-      return { folderTabs: [...s.folderTabs, { id, path }], activeFolderTabId: id, currentPath: path };
+      return { folderTabs: [...s.folderTabs, { id, path }], activeFolderTabId: id, currentPath: path, tabOrder: [...s.tabOrder, { type: "folder" as const, id }] };
     }),
 
   closeFolderTab: (id) => {
     const s = get();
     const idx = s.folderTabs.findIndex((t) => t.id === id);
     const newTabs = s.folderTabs.filter((t) => t.id !== id);
+    const newTabOrder = s.tabOrder.filter((e) => !(e.type === "folder" && e.id === id));
     if (newTabs.length === 0) {
-      set({ folderTabs: [], activeFolderTabId: null, currentPath: "" });
+      set({ folderTabs: [], activeFolderTabId: null, currentPath: "", tabOrder: newTabOrder });
       return null;
     }
     if (s.activeFolderTabId !== id) {
-      set({ folderTabs: newTabs });
+      set({ folderTabs: newTabs, tabOrder: newTabOrder });
       return null;
     }
     const nextTab = newTabs[idx] ?? newTabs[idx - 1];
-    set({ folderTabs: newTabs, activeFolderTabId: nextTab.id, currentPath: nextTab.path });
+    set({ folderTabs: newTabs, activeFolderTabId: nextTab.id, currentPath: nextTab.path, tabOrder: newTabOrder });
     return nextTab.path;
   },
 
@@ -414,6 +447,10 @@ export const useStore = create<AppStore>((set, get) => ({
       tabs: restoredFileTabs,
       activeTabId: null,
       openedFile: null,
+      tabOrder: [
+        ...finalFolderTabs.map((t) => ({ type: "folder" as const, id: t.id })),
+        ...restoredFileTabs.map((t) => ({ type: "file" as const, id: t.id })),
+      ],
     }));
 
     return {
@@ -435,6 +472,47 @@ export const useStore = create<AppStore>((set, get) => ({
   clearTagFilters: () => set({ selectedTagIds: [] }),
   setIsScanning: (isScanning) => set({ isScanning }),
   setIsWatching: (isWatching) => set({ isWatching }),
+
+  // Dual pane state
+  dualPaneActive: false,
+  activePaneIndex: 0,
+  pane2Path: "",
+  pane2Entries: [],
+  pane2SelectedPaths: [],
+  setDualPaneActive: (v) => set((s) => {
+    if (v && !s.dualPaneActive) {
+      return { dualPaneActive: true, pane2Path: s.currentPath, pane2Entries: [...s.listEntries] };
+    }
+    return { dualPaneActive: v };
+  }),
+  setActivePaneIndex: (activePaneIndex) => set({ activePaneIndex }),
+  setPane2Path: (pane2Path) => set({ pane2Path }),
+  setPane2Entries: (pane2Entries) => set({ pane2Entries }),
+  setPane2SelectedPaths: (pane2SelectedPaths) => set({ pane2SelectedPaths }),
+
+  reorderFolderTabs: (fromIdx, toIdx) => set((s) => {
+    const tabs = [...s.folderTabs];
+    const [moved] = tabs.splice(fromIdx, 1);
+    tabs.splice(toIdx, 0, moved);
+    return { folderTabs: tabs };
+  }),
+
+  reorderTabs: (fromIdx, toIdx) => set((s) => {
+    const tabs = [...s.tabs];
+    const [moved] = tabs.splice(fromIdx, 1);
+    tabs.splice(toIdx, 0, moved);
+    return { tabs };
+  }),
+
+  reorderAllTabs: (from, to) => set((s) => {
+    const order = [...s.tabOrder];
+    const [moved] = order.splice(from, 1);
+    order.splice(to, 0, moved);
+    // Keep folderTabs and tabs arrays in the same relative order as tabOrder
+    const folderTabs = order.filter((e) => e.type === "folder").map((e) => s.folderTabs.find((t) => t.id === e.id)!).filter(Boolean);
+    const tabs = order.filter((e) => e.type === "file").map((e) => s.tabs.find((t) => t.id === e.id)!).filter(Boolean);
+    return { tabOrder: order, folderTabs, tabs };
+  }),
 
   setPinnedItems: (pinnedItems) => set({ pinnedItems }),
   addPinnedItem: (item) =>
@@ -458,15 +536,19 @@ export const useStore = create<AppStore>((set, get) => ({
         path,
         isRemote: true,
       }));
-      // Remove stale remote tabs before adding fresh ones
       const localTabs = s.folderTabs.filter((t) => !t.isRemote);
       const allTabs = [...localTabs, ...newTabs];
-      // Activate first remote tab
       const firstRemote = newTabs[0];
+      const oldRemoteIds = new Set(s.folderTabs.filter((t) => t.isRemote).map((t) => t.id));
+      const newTabOrder = [
+        ...s.tabOrder.filter((e) => !(e.type === "folder" && oldRemoteIds.has(e.id))),
+        ...newTabs.map((t) => ({ type: "folder" as const, id: t.id })),
+      ];
       return {
         folderTabs: allTabs,
         activeFolderTabId: firstRemote?.id ?? s.activeFolderTabId,
         currentPath: firstRemote?.path ?? s.currentPath,
+        tabOrder: newTabOrder,
       };
     }),
   setSortBy: (col) =>
@@ -484,31 +566,39 @@ export const useStore = create<AppStore>((set, get) => ({
         return { activeTabId: id, openedFile: file };
       }
       const newTabs = [...s.tabs, { id, file, isDirty: false, draftContent: null, originalContent: null }];
-      return { tabs: newTabs, activeTabId: id, openedFile: file };
+      return { tabs: newTabs, activeTabId: id, openedFile: file, tabOrder: [...s.tabOrder, { type: "file" as const, id }] };
     }),
 
   navigateFile: (file) =>
     set((s) => {
       if (s.activeTabId === null) return {};
+      const oldId = s.activeTabId;
       const tabs = s.tabs.map((t) =>
         t.id === s.activeTabId ? { ...t, id: file.path, file } : t
       );
-      return { tabs, activeTabId: file.path, openedFile: file };
+      return {
+        tabs,
+        activeTabId: file.path,
+        openedFile: file,
+        tabOrder: s.tabOrder.map((e) => e.type === "file" && e.id === oldId ? { ...e, id: file.path } : e),
+      };
     }),
 
   closeFile: () =>
     set((s) => {
       if (!s.activeTabId) return {};
+      const removedId = s.activeTabId;
       const result = closeTabLogic(s.tabs, s.activeTabId, s.activeTabId);
       const contexts = s.activeContextId !== null
         ? s.contexts.map((c) => c.id === s.activeContextId
             ? { ...c, open_file_tabs: result.tabs.map((t) => t.id) }
             : c)
         : s.contexts;
-      return { ...result, contexts };
+      return { ...result, contexts, tabOrder: s.tabOrder.filter((e) => !(e.type === "file" && e.id === removedId)) };
     }),
 
-  closeTab: (id) =>
+  closeTab: (id) => {
+    try { localStorage.removeItem(`nxs_draft:${id}`); } catch { /* ignore */ }
     set((s) => {
       const result = closeTabLogic(s.tabs, s.activeTabId, id);
       const contexts = s.activeContextId !== null
@@ -516,8 +606,9 @@ export const useStore = create<AppStore>((set, get) => ({
             ? { ...c, open_file_tabs: result.tabs.map((t) => t.id) }
             : c)
         : s.contexts;
-      return { ...result, contexts };
-    }),
+      return { ...result, contexts, tabOrder: s.tabOrder.filter((e) => !(e.type === "file" && e.id === id)) };
+    });
+  },
 
   setActiveTab: (id) =>
     set((s) => ({
@@ -527,21 +618,40 @@ export const useStore = create<AppStore>((set, get) => ({
 
   goToExplorer: () => set({ activeTabId: null, openedFile: null }),
 
-  setTabDirty: (id, dirty) =>
+  setTabDirty: (id, dirty) => {
+    if (!dirty) {
+      try { localStorage.removeItem(`nxs_draft:${id}`); } catch { /* ignore */ }
+    }
     set((s) => ({
       tabs: s.tabs.map((t) => (t.id === id ? { ...t, isDirty: dirty } : t)),
-    })),
+    }));
+  },
 
-  updateTabCache: (id, draft, original) =>
+  updateTabCache: (id, draft, original) => {
+    // Persist unsaved draft so it survives crashes
+    if (draft !== original) {
+      try { localStorage.setItem(`nxs_draft:${id}`, draft); } catch { /* quota */ }
+    } else {
+      try { localStorage.removeItem(`nxs_draft:${id}`); } catch { /* ignore */ }
+    }
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.id === id
           ? { ...t, draftContent: draft, originalContent: original, isDirty: draft !== original }
           : t
       ),
-    })),
+    }));
+  },
 
-  setTabs: (tabs) => set({ tabs, activeTabId: null, openedFile: null }),
+  setTabs: (tabs) => set((s) => ({
+    tabs,
+    activeTabId: null,
+    openedFile: null,
+    tabOrder: [
+      ...s.tabOrder.filter((e) => e.type === "folder"),
+      ...tabs.map((t) => ({ type: "file" as const, id: t.id })),
+    ],
+  })),
 
   addFileTabToContext: (contextId, path) =>
     set((s) => ({
@@ -598,13 +708,17 @@ export const useStore = create<AppStore>((set, get) => ({
   setSharingJoined: (workspaceName, rootPaths) =>
     set({ sharingMode: "joined", remoteWorkspaceName: workspaceName, remoteRootPaths: rootPaths }),
   resetSharing: () =>
-    set({ sharingMode: "idle", sharingCode: null, sharingPassword: null, sharingClients: [], sharingContextId: null, sharingWorkspaceName: null, sharingWorkspaceIcon: null, remoteWorkspaceName: null, remoteRootPaths: [] }),
+    set({ sharingMode: "idle", sharingCode: null, sharingPassword: null, sharingClients: [], sharingContextId: null, sharingWorkspaceName: null, sharingWorkspaceIcon: null, remoteWorkspaceName: null, remoteRootPaths: [], sharingGuestArgs: null, sharingReconnecting: false }),
   addSharingClient: (name) =>
     set((s) => ({ sharingClients: s.sharingClients.includes(name) ? s.sharingClients : [...s.sharingClients, name] })),
   removeSharingClient: (name) =>
     set((s) => ({ sharingClients: s.sharingClients.filter((n) => n !== name) })),
   setShareModalOpen: (shareModalOpen) => set({ shareModalOpen }),
   setJoinModalOpen: (joinModalOpen) => set({ joinModalOpen }),
+  sharingGuestArgs: null,
+  sharingReconnecting: false,
+  setSharingGuestArgs: (sharingGuestArgs) => set({ sharingGuestArgs }),
+  setSharingReconnecting: (sharingReconnecting) => set({ sharingReconnecting }),
 
   updateFileTags: (fileId, tags) =>
     set((s) => ({

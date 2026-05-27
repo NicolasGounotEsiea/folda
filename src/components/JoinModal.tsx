@@ -1,11 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { LogIn, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 
 export function JoinModal({ onClose }: { onClose: () => void }) {
-  const { setSharingJoined, resetSharing, setListEntries, pushNav, addRemoteFolderTabs } = useStore();
+  const { setSharingJoined, resetSharing, setListEntries, pushNav, addRemoteFolderTabs,
+          setSharingGuestArgs, sharingReconnecting } = useStore();
 
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
@@ -23,14 +23,11 @@ export function JoinModal({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("mousedown", handler, true);
   }, [onClose, isConnecting]);
 
-  // Listen for host disconnect
+  // Reconnection is handled globally in App.tsx; just reflect the state here
   useEffect(() => {
-    const u = listen("sharing://disconnected", () => {
-      resetSharing();
-      setConnected(false);
-    });
-    return () => { u.then((f) => f()); };
-  }, [resetSharing]);
+    if (!sharingReconnecting) return;
+    setConnected(false);
+  }, [sharingReconnecting]);
 
   const handleConnect = async () => {
     const trimCode = code.trim();
@@ -48,6 +45,7 @@ export function JoinModal({ onClose }: { onClose: () => void }) {
         { code: trimCode, password: trimPw, displayName: trimName },
       );
       setSharingJoined(info.name, info.root_paths);
+      setSharingGuestArgs({ code: trimCode, password: trimPw, displayName: trimName });
       addRemoteFolderTabs(info.root_paths);
 
       if (info.root_paths.length > 0) {
@@ -65,6 +63,7 @@ export function JoinModal({ onClose }: { onClose: () => void }) {
   };
 
   const handleLeave = async () => {
+    setSharingGuestArgs(null); // prevent auto-reconnect
     await invoke("leave_shared_workspace").catch(console.error);
     resetSharing();
     onClose();

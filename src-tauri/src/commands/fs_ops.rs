@@ -3,6 +3,19 @@ use std::time::UNIX_EPOCH;
 use crate::AppState;
 use crate::commands::files::{auto_tag_for_ext, ensure_auto_tag};
 
+fn human_io_error(e: std::io::Error) -> String {
+    match e.raw_os_error() {
+        Some(5)   => "Permission denied".to_string(),
+        Some(32)  => "File is in use by another application".to_string(),
+        Some(2)   => "File not found".to_string(),
+        Some(3)   => "Path not found".to_string(),
+        Some(112) => "Disk is full".to_string(),
+        Some(183) => "A file with that name already exists".to_string(),
+        Some(17)  => "Cannot move between drives (cross-device)".to_string(),
+        _         => e.to_string(),
+    }
+}
+
 fn log_activity(db: &rusqlite::Connection, file_path: &str, file_name: &str, action: &str) {
     let norm = file_path.replace('\\', "/");
     let _ = db.execute(
@@ -30,19 +43,39 @@ pub fn rename_path(
 }
 
 #[tauri::command]
-pub fn delete_path(path: String, state: tauri::State<AppState>) -> Result<(), String> {
+pub async fn delete_path(
+    path: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    use tauri::Emitter;
     let file_name = Path::new(&path)
         .file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-    // Log before deleting so the DB row still has a chance to match
     if let Ok(db) = state.db.lock() {
         log_activity(&db, &path, &file_name, "deleted");
     }
     let p = Path::new(&path);
     if p.is_dir() {
-        std::fs::remove_dir_all(p).map_err(|e| e.to_string())
+        // Count items so the UI can show a progress bar for large directories
+        let total = walkdir::WalkDir::new(p)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .count() as u64;
+        if total > 50 {
+            let _ = app.emit("delete-progress", serde_json::json!({
+                "name": file_name, "done": 0u64, "total": total, "finished": false
+            }));
+        }
+        std::fs::remove_dir_all(p).map_err(human_io_error)?;
+        if total > 50 {
+            let _ = app.emit("delete-progress", serde_json::json!({
+                "name": file_name, "done": total, "total": total, "finished": true
+            }));
+        }
     } else {
-        std::fs::remove_file(p).map_err(|e| e.to_string())
+        std::fs::remove_file(p).map_err(human_io_error)?;
     }
+    Ok(())
 }
 
 fn unique_dst(dst: &Path) -> std::path::PathBuf {
@@ -98,18 +131,66 @@ pub fn copy_path(
 }
 
 #[tauri::command]
-pub fn move_path(
+pub async fn move_path(
     src: String, dst_dir: String,
-    state: tauri::State<AppState>,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
+    use tauri::Emitter;
+    use std::io::{Read, Write};
     let src_path = Path::new(&src);
     let file_name = src_path.file_name().ok_or("Invalid source path")?;
+    let name = file_name.to_string_lossy().to_string();
     let dst = unique_dst(&Path::new(&dst_dir).join(file_name));
-    std::fs::rename(&src, &dst).map_err(|e| e.to_string())?;
+
+    match std::fs::rename(&src, &dst) {
+        Ok(_) => {} // Same-device rename: instant, no progress needed
+        Err(e) => {
+            let is_cross_device = e.kind() == std::io::ErrorKind::CrossesDevices
+                || e.raw_os_error() == Some(17);
+            if !is_cross_device {
+                return Err(human_io_error(e));
+            }
+            // Cross-device: copy with byte-level progress, then delete source
+            let meta = std::fs::metadata(&src).map_err(|e| human_io_error(e))?;
+            if meta.is_dir() {
+                let _ = app.emit("move-progress", serde_json::json!({
+                    "name": name, "done": 0u64, "total": 1u64, "finished": false
+                }));
+                copy_recursive(src_path, &dst)?;
+                std::fs::remove_dir_all(&src).map_err(human_io_error)?;
+                let _ = app.emit("move-progress", serde_json::json!({
+                    "name": name, "done": 1u64, "total": 1u64, "finished": true
+                }));
+            } else {
+                let total = meta.len();
+                let mut src_file = std::fs::File::open(&src).map_err(human_io_error)?;
+                let mut dst_file = std::fs::File::create(&dst).map_err(human_io_error)?;
+                let mut buf = vec![0u8; 256 * 1024];
+                let mut copied: u64 = 0;
+                loop {
+                    let n = src_file.read(&mut buf).map_err(|e| e.to_string())?;
+                    if n == 0 { break; }
+                    dst_file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+                    copied += n as u64;
+                    let _ = app.emit("move-progress", serde_json::json!({
+                        "name": name, "done": copied, "total": total, "finished": false
+                    }));
+                }
+                drop(src_file);
+                drop(dst_file);
+                std::fs::remove_file(&src).map_err(human_io_error)?;
+                let _ = app.emit("move-progress", serde_json::json!({
+                    "name": name, "done": total, "total": total, "finished": true
+                }));
+            }
+        }
+    }
+
     let dst_str = dst.to_string_lossy().to_string();
     if let Ok(db) = state.db.lock() {
-        let name = dst.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        log_activity(&db, &dst_str, name, "renamed");
+        let n = dst.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        log_activity(&db, &dst_str, n, "renamed");
     }
     Ok(dst_str)
 }

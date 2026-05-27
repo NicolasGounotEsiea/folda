@@ -1,16 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { saveAndClose, isClosing } from "./utils/appClose";
 import { BulkRename } from "./components/BulkRename";
 import { CommandPalette } from "./components/CommandPalette";
-import { DocumentViewer, DOC_EXTS } from "./components/DocumentViewer";
+import { DocumentViewer } from "./components/DocumentViewer";
 import { EditorView } from "./components/EditorView";
 import { FileList } from "./components/FileList";
-import { AUDIO_EXTS, IMAGE_EXTS, MediaViewer, VIDEO_EXTS } from "./components/MediaViewer";
-import { ARCHIVE_EXTS, ArchiveViewer } from "./components/ArchiveViewer";
+import { MediaViewer } from "./components/MediaViewer";
+import { ArchiveViewer } from "./components/ArchiveViewer";
+import { AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS, DOC_EXTS, ARCHIVE_EXTS } from "./utils/fileExtensions";
 import { PreviewPanel } from "./components/PreviewPanel";
+import { ProgressOverlay } from "./components/ProgressOverlay";
+import { DiskUsageModal } from "./components/DiskUsageModal";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
 import { Titlebar } from "./components/Titlebar";
@@ -20,6 +23,11 @@ import type { Context, FileEntry, ListEntry, Tag } from "./types";
 import { TimelineView } from "./views/TimelineView";
 import { SettingsModal } from "./components/SettingsModal";
 import { deserializeSettings, applySettings } from "./utils/settings";
+import { telemetryInit } from "./utils/telemetry";
+import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
+import { OnboardingModal } from "./components/OnboardingModal";
+import { ToastContainer } from "./components/ToastContainer";
+import { useToastStore } from "./store/useToastStore";
 
 interface FileChangedPayload {
   path: string;
@@ -47,10 +55,17 @@ export function App() {
     selectedPaths, listEntries,
     setContexts, setTabs,
     sharingMode, addSharingClient, removeSharingClient, resetSharing,
-    updateSettings, setShowHidden, openFile,
+    sharingGuestArgs, setSharingJoined, setSharingReconnecting,
+    updateSettings, setShowHidden, openFile, settings,
+    dualPaneActive, setDualPaneActive,
   } = useStore();
 
+  const addToast = useToastStore((s) => s.addToast);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Null = main window, set = popup window with init data.
   // IS_POPUP is stable: the window label never changes after creation.
   const IS_POPUP = getCurrentWindow().label !== "main";
@@ -127,6 +142,7 @@ export function App() {
       updateSettings(loadedSettings);
       applySettings(loadedSettings);
       if (loadedSettings.showHiddenDefault) setShowHidden(true);
+      if (!loadedSettings.hasSeenOnboarding) setOnboardingOpen(true);
 
       setContexts(ctxs); // sets activeContextId + rootPaths from DB-active workspace
 
@@ -143,9 +159,37 @@ export function App() {
         return;
       }
 
-      // Restore active workspace's file tabs
+      // Restore active workspace's file tabs, hydrating any crash-saved drafts
       if (activeCtx?.open_file_tabs?.length) {
-        setTabs(activeCtx.open_file_tabs.map(pathToTab));
+        const restoredTabs = activeCtx.open_file_tabs.map((path) => {
+          const tab = pathToTab(path);
+          try {
+            const saved = localStorage.getItem(`nxs_draft:${path}`);
+            if (saved) return { ...tab, draftContent: saved, isDirty: true };
+          } catch { /* ignore */ }
+          return tab;
+        });
+        setTabs(restoredTabs);
+        const recovered = restoredTabs.filter((t) => t.isDirty).length;
+        if (recovered > 0) {
+          addToast({
+            type: "warning",
+            message: `${recovered} unsaved file${recovered > 1 ? "s" : ""} recovered`,
+            detail: "Your changes from the last session were restored.",
+          });
+        }
+      }
+
+      // If launched from Windows shell context menu, navigate there directly
+      const launchPath = await invoke<string | null>("get_launch_path").catch(() => null);
+      if (launchPath) {
+        const isDir = !launchPath.includes(".") || launchPath.endsWith("\\") || launchPath.endsWith("/");
+        const targetDir = isDir ? launchPath : launchPath.replace(/[/\\][^/\\]+$/, "");
+        setCurrentPath(targetDir);
+        pushNav(targetDir);
+        const entries = await invoke<ListEntry[]>("list_directory", { path: targetDir, contextId: ctxId }).catch(() => [] as ListEntry[]);
+        setListEntries(entries);
+        return;
       }
 
       // Find the best starting path: last_path of active context, or first folder
@@ -241,19 +285,80 @@ export function App() {
     return () => { unlisten.then((fn) => fn()); };
   }, [currentPath, setListEntries, setTags, removeFile, markFileModified]);
 
-  // Global Ctrl+K → command palette
+  // Init telemetry once settings are loaded
+  useEffect(() => {
+    telemetryInit(settings.telemetryEnabled);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Global hotkeys: Ctrl+K → palette, ? → shortcuts, F5 → dual pane toggle
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      const inInput = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable;
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
         setCommandPaletteOpen(true);
       }
+      if (e.key === "?" && !inInput && !e.ctrlKey && !e.metaKey) {
+        setShortcutsOpen((v) => !v);
+      }
+      if (e.key === "F5" && !inInput) {
+        e.preventDefault();
+        setDualPaneActive(!dualPaneActive);
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [setCommandPaletteOpen]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setCommandPaletteOpen, dualPaneActive, setDualPaneActive]);
+
+  // Auto-reconnect when sharing session drops
+  useEffect(() => {
+    const unlisten = listen("sharing://disconnected", async () => {
+      const args = sharingGuestArgs;
+      if (!args) return; // intentional disconnect — no reconnect
+
+      const MAX_ATTEMPTS = 4;
+      if (reconnectAttemptsRef.current >= MAX_ATTEMPTS) {
+        resetSharing();
+        reconnectAttemptsRef.current = 0;
+        return;
+      }
+
+      const delay = Math.min(3 * 2 ** reconnectAttemptsRef.current, 24); // 3, 6, 12, 24s
+      reconnectAttemptsRef.current++;
+      setSharingReconnecting(true);
+
+      reconnectTimerRef.current = setTimeout(async () => {
+        try {
+          const info = await invoke<{ name: string; icon: string; root_paths: string[] }>(
+            "join_shared_workspace",
+            { code: args.code, password: args.password, displayName: args.displayName },
+          );
+          setSharingJoined(info.name, info.root_paths);
+          reconnectAttemptsRef.current = 0;
+          setSharingReconnecting(false);
+        } catch {
+          // Will trigger sharing://disconnected again → retry
+        }
+      }, delay * 1000);
+    });
+    return () => {
+      unlisten.then((f) => f());
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharingGuestArgs]);
+
+  const handleOnboardingClose = async () => {
+    setOnboardingOpen(false);
+    updateSettings({ hasSeenOnboarding: true });
+    await invoke("set_setting", { key: "hasSeenOnboarding", value: "true" }).catch(console.error);
+  };
 
   const [previewOpen, setPreviewOpen] = useState(true);
+  const [diskUsageOpen, setDiskUsageOpen] = useState(false);
 
   // Save workspace state on OS-level close (Alt+F4, taskbar right-click, etc.)
   // Popup windows use native OS decorations so the OS handles close naturally.
@@ -278,7 +383,7 @@ export function App() {
     <div className="flex flex-col h-full bg-surface-0">
       {/* Custom titlebar only for the main window — popup windows use native OS chrome */}
       {!IS_POPUP && <Titlebar />}
-      <Toolbar onOpenSettings={() => setSettingsOpen(true)} />
+      <Toolbar onOpenSettings={() => setSettingsOpen(true)} onOpenDiskUsage={() => setDiskUsageOpen(true)} />
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar hidden in popup windows for a focused, distraction-free view */}
         {!IS_POPUP && <Sidebar />}
@@ -291,26 +396,43 @@ export function App() {
             if (ARCHIVE_EXTS.includes(ext)) return <ArchiveViewer />;
             return <EditorView />;
           })() : viewMode === "explorer" ? (
-            <div className="flex flex-1 overflow-hidden">
-              <FileList />
-              {previewOpen
-                ? <PreviewPanel onClose={() => setPreviewOpen(false)} />
-                : <button
-                    onClick={() => setPreviewOpen(true)}
-                    title="Open preview panel"
-                    className="flex items-center justify-center w-6 shrink-0 bg-surface-1 border-l border-border-subtle text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
-                  >
-                    <span className="text-[9px] [writing-mode:vertical-rl] tracking-widest uppercase select-none">Preview</span>
-                  </button>
-              }
-            </div>
+            dualPaneActive ? (
+              <div className="flex flex-1 overflow-hidden">
+                <FileList paneIndex={0} />
+                <div className="w-[1px] bg-border-subtle shrink-0" />
+                <FileList paneIndex={1} />
+              </div>
+            ) : (
+              <div className="flex flex-1 overflow-hidden">
+                <FileList />
+                {previewOpen
+                  ? <PreviewPanel onClose={() => setPreviewOpen(false)} />
+                  : <button
+                      onClick={() => setPreviewOpen(true)}
+                      title="Open preview panel"
+                      className="flex items-center justify-center w-6 shrink-0 bg-surface-1 border-l border-border-subtle text-text-muted hover:text-text-secondary hover:bg-surface-2 transition-colors"
+                    >
+                      <span className="text-[9px] [writing-mode:vertical-rl] tracking-widest uppercase select-none">Preview</span>
+                    </button>
+                }
+              </div>
+            )
           ) : (
             <TimelineView />
           )}
         </div>
       </div>
+      <ProgressOverlay />
+      <ToastContainer />
 
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          onShowGuide={() => { setSettingsOpen(false); setOnboardingOpen(true); }}
+        />
+      )}
+      {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+      {onboardingOpen && <OnboardingModal onClose={handleOnboardingClose} />}
 
       {commandPaletteOpen && (
         <CommandPalette onClose={() => setCommandPaletteOpen(false)} />
@@ -328,6 +450,21 @@ export function App() {
                 setListEntries(entries);
               } catch { /* ignore */ }
             }
+          }}
+        />
+      )}
+
+      {diskUsageOpen && currentPath && (
+        <DiskUsageModal
+          path={currentPath}
+          onClose={() => setDiskUsageOpen(false)}
+          onNavigate={(p) => {
+            setCurrentPath(p);
+            pushNav(p);
+            invoke<ListEntry[]>("list_directory", { path: p, contextId: 0 })
+              .then(setListEntries)
+              .catch(console.error);
+            setDiskUsageOpen(false);
           }}
         />
       )}

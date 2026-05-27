@@ -15,6 +15,8 @@ export interface AppSettings {
   activityTracking: boolean;
   activityRetention: 7 | 30 | 90 | 0;
   language: "en" | "fr";
+  telemetryEnabled: boolean;
+  hasSeenOnboarding: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -34,6 +36,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   activityTracking: true,
   activityRetention: 30,
   language: "en",
+  telemetryEnabled: false,
+  hasSeenOnboarding: false,
 };
 
 export interface AccentPreset {
@@ -106,6 +110,8 @@ export function deserializeSettings(raw: Record<string, string>): AppSettings {
     snapshotMaxCount:  raw.snapshotMaxCount !== undefined ? Math.max(2, Math.min(50, Number(raw.snapshotMaxCount))) : d.snapshotMaxCount,
     activityTracking:  raw.activityTracking  !== undefined ? raw.activityTracking  === "true" : d.activityTracking,
     activityRetention: (Number(raw.activityRetention) as AppSettings["activityRetention"]) ?? d.activityRetention,
-    language:          (raw.language as AppSettings["language"])         ?? d.language,
+    language:           (raw.language as AppSettings["language"])         ?? d.language,
+    telemetryEnabled:   raw.telemetryEnabled   !== undefined ? raw.telemetryEnabled   === "true" : d.telemetryEnabled,
+    hasSeenOnboarding:  raw.hasSeenOnboarding  !== undefined ? raw.hasSeenOnboarding  === "true" : d.hasSeenOnboarding,
   };
 }

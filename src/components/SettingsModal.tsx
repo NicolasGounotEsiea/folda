@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
-import { Activity, Eye, FileText, Info, LayoutList, Palette, X } from "lucide-react";
-import { useState } from "react";
+import { Activity, BookOpen, Eye, FileText, FolderOpen, Info, LayoutList, Palette, Trash2, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { clearLog, getLogPath } from "../utils/errorLog";
 import { useStore } from "../store/useStore";
 import { ACCENT_PRESETS, serializeSettings, type AppSettings } from "../utils/settings";
 
@@ -42,6 +43,14 @@ const T = {
     about: {
       version: "Version", builtWith: "Built with Tauri 2 + React + Rust",
       changelog: "View changelog",
+      telemetry: "Anonymous telemetry & crash reports",
+      telemetryDesc: "Help improve nxs by sharing anonymous usage data and crash reports.",
+      guide: "View onboarding guide",
+      logFile: "Error log",
+      logFileDesc: "Crashes and errors are saved locally in a plain text file.",
+      openLog: "Open log file",
+      clearLog: "Clear",
+      logCleared: "Log cleared",
     },
   },
   fr: {
@@ -79,6 +88,14 @@ const T = {
     about: {
       version: "Version", builtWith: "Construit avec Tauri 2 + React + Rust",
       changelog: "Voir le changelog",
+      telemetry: "Télémétrie anonyme & rapports de plantage",
+      telemetryDesc: "Aidez à améliorer nxs en partageant des données d'utilisation anonymes.",
+      guide: "Voir le guide de démarrage",
+      logFile: "Journal d'erreurs",
+      logFileDesc: "Les plantages et erreurs sont enregistrés localement dans un fichier texte.",
+      openLog: "Ouvrir le fichier journal",
+      clearLog: "Effacer",
+      logCleared: "Journal effacé",
     },
   },
 } as const;
@@ -151,11 +168,18 @@ function SegmentedControl<T extends string | number>({
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export function SettingsModal({ onClose }: { onClose: () => void }) {
+export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; onShowGuide?: () => void }) {
   const { settings, updateSettings, setShowHidden } = useStore();
   const [section, setSection] = useState<Section>("appearance");
   const [saveFlash, setSaveFlash] = useState(false);
   const [purgeMsg, setPurgeMsg] = useState<string | null>(null);
+  const [logClearedMsg, setLogClearedMsg] = useState(false);
+  const [shellRegistered, setShellRegistered] = useState<boolean | null>(null);
+  const [shellMsg, setShellMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<boolean>("is_shell_extension_registered").then(setShellRegistered).catch(() => setShellRegistered(false));
+  }, []);
 
   const lang = settings.language as Lang;
   const t = T[lang] ?? T.en;
@@ -344,6 +368,38 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                     onChange={(v) => patch({ defaultLayout: v })}
                   />
                 </Row>
+
+                {/* Windows shell integration */}
+                <div className="mt-4 pt-4 border-t border-border-subtle">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-[12px] text-text-primary">"Open with nxs" in Explorer</span>
+                      <span className="text-[11px] text-text-muted">
+                        Adds nxs to the Windows right-click menu for files and folders
+                      </span>
+                      {shellMsg && <span className="text-[11px] text-accent mt-0.5">{shellMsg}</span>}
+                    </div>
+                    <Toggle
+                      checked={shellRegistered === true}
+                      onChange={async (v) => {
+                        try {
+                          if (v) {
+                            await invoke("register_shell_extension");
+                            setShellRegistered(true);
+                            setShellMsg("Registered ✓");
+                          } else {
+                            await invoke("unregister_shell_extension");
+                            setShellRegistered(false);
+                            setShellMsg("Removed");
+                          }
+                          setTimeout(() => setShellMsg(null), 3000);
+                        } catch (e) {
+                          setShellMsg(`Error: ${e}`);
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
               </div>
             )}
 
@@ -464,6 +520,56 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                     <span className="text-[11px] text-text-muted bg-surface-3 px-2 py-1 rounded">
                       {t.about.version} 0.1.2
                     </span>
+                  </div>
+                </div>
+
+                <Row label={t.about.telemetry}>
+                  <Toggle
+                    checked={settings.telemetryEnabled}
+                    onChange={(v) => patch({ telemetryEnabled: v })}
+                  />
+                </Row>
+                <p className="text-[11px] text-text-muted -mt-1 mb-2">{t.about.telemetryDesc}</p>
+
+                {onShowGuide && (
+                  <button
+                    onClick={onShowGuide}
+                    className="flex items-center gap-2 h-8 px-3 rounded-lg border border-border text-[12px] text-text-secondary hover:bg-surface-3 hover:text-text-primary transition-colors self-start mb-2"
+                  >
+                    <BookOpen size={13} /> {t.about.guide}
+                  </button>
+                )}
+
+                <div className="flex flex-col gap-2 p-3 rounded-lg bg-surface-2 border border-border-subtle mb-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[12px] text-text-primary font-medium">{t.about.logFile}</p>
+                      <p className="text-[11px] text-text-muted mt-0.5">{t.about.logFileDesc}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={async () => {
+                        const path = await getLogPath().catch(() => null);
+                        if (path) invoke("reveal_in_explorer", { path }).catch(() => {});
+                      }}
+                      className="flex items-center gap-1.5 h-7 px-3 rounded bg-surface-3 border border-border text-[11px] text-text-secondary hover:text-text-primary hover:bg-surface-4 transition-colors"
+                    >
+                      <FolderOpen size={11} /> {t.about.openLog}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await clearLog().catch(() => {});
+                        setLogClearedMsg(true);
+                        setTimeout(() => setLogClearedMsg(false), 2000);
+                      }}
+                      className="flex items-center gap-1.5 h-7 px-3 rounded bg-surface-3 border border-border text-[11px] text-text-secondary hover:text-red-400 hover:border-red-500/30 transition-colors"
+                    >
+                      <Trash2 size={11} /> {t.about.clearLog}
+                    </button>
+                    {logClearedMsg && (
+                      <span className="text-[11px] text-emerald-400">{t.about.logCleared} ✓</span>
+                    )}
                   </div>
                 </div>
 

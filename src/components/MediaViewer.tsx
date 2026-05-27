@@ -5,9 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import { SnapshotPanel } from "./SnapshotPanel";
 
-export const IMAGE_EXTS = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "ico"];
-export const VIDEO_EXTS = ["mp4", "webm", "mov", "mkv", "m4v", "avi"];
-export const AUDIO_EXTS = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "opus"];
+import { IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS } from "../utils/fileExtensions";
 
 
 export function MediaViewer() {

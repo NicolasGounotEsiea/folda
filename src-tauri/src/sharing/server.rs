@@ -1,8 +1,9 @@
 use std::sync::{Arc, Mutex};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot};
+use tokio::time;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::protocol::{GuestMsg, HostMsg};
@@ -135,6 +136,9 @@ async fn handle_client(
     let _ = event_tx.send(HostMsg::ClientJoined { name: display_name.clone() });
 
     let mut ev_rx = event_tx.subscribe();
+    let start = time::Instant::now() + Duration::from_secs(30);
+    let mut heartbeat = time::interval_at(start, Duration::from_secs(30));
+    let mut missed_pings: u32 = 0;
 
     loop {
         tokio::select! {
@@ -152,6 +156,7 @@ async fn handle_client(
                             Err(_) => continue,
                         }
                     }
+                    Some(Ok(Message::Pong(_))) => { missed_pings = 0; }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
                 }
@@ -159,6 +164,11 @@ async fn handle_client(
             Ok(ev) = ev_rx.recv() => {
                 let out = serde_json::to_string(&ev)?;
                 if sink.send(Message::Text(out)).await.is_err() { break; }
+            }
+            _ = heartbeat.tick() => {
+                if missed_pings >= 2 { break; }
+                missed_pings += 1;
+                if sink.send(Message::Ping(vec![])).await.is_err() { break; }
             }
         }
     }
