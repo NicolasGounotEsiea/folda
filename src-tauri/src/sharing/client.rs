@@ -143,8 +143,7 @@ pub async fn connect(
                 }
 
                 Some(Ok(Message::Ping(data))) => {
-                    let pong = Message::Pong(data);
-                    if sink.send(pong).await.is_err() {
+                    if sink.send(Message::Pong(data.clone())).await.is_err() {
                         break;
                     }
                 }
