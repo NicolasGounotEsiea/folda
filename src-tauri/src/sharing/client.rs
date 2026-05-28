@@ -77,7 +77,7 @@ pub async fn connect(
 
                     match serde_json::to_string(&msg) {
                         Ok(txt) => {
-                            if let Err(_) = sink.send(Message::Text(txt)).await {
+                            if sink.send(Message::Text(txt)).await.is_err() {
                                 let _ = reply.send(Err("Connection lost".to_string()));
                                 break;
                             }
