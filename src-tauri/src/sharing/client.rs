@@ -125,8 +125,11 @@ pub async fn connect(
                                 }
                             }
                         }
-                        Some(Ok(Message::Ping(data)))
-                            if sink.send(Message::Pong(data)).await.is_err() => { break; }
+                        Some(Ok(Message::Ping(data))) => {
+                            if sink.send(Message::Pong(data)).await.is_err() {
+                                break;
+                            }
+                        }
                         Some(Ok(Message::Close(_))) | None => break,
                         _ => {}
                     }
