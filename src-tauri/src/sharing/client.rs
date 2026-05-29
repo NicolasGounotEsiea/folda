@@ -67,63 +67,27 @@ pub async fn connect(
             HashMap::new();
 
         loop {
-            tokio::select! {
-                _ = &mut disconnect_rx => break,
+    tokio::select! {
+        _ = &mut disconnect_rx => break,
 
-                cmd = cmd_rx.recv() => {
-                    match cmd {
-                        Some(GuestCmd { msg, reply }) => {
-                            let id = msg_id(&msg);
-                            match serde_json::to_string(&msg) {
-                                Ok(txt) => {
-                                    if sink.send(Message::Text(txt)).await.is_err() {
-                                        let _ = reply.send(Err("Connection lost".to_string()));
-                                        break;
-                                    }
-                                    if id != 0 {
-                                        pending.insert(id, reply);
-                                    }
-                                }
-                                Err(e) => { let _ = reply.send(Err(e.to_string())); }
+        cmd = cmd_rx.recv() => {
+            match cmd {
+                Some(GuestCmd { msg, reply }) => {
+                    let id = msg_id(&msg);
+
+                    match serde_json::to_string(&msg) {
+                        Ok(txt) => {
+                            if sink.send(Message::Text(txt)).await.is_err() {
+                                let _ = reply.send(Err("Connection lost".to_string()));
+                                break;
+                            }
+
+                            if id != 0 {
+                                pending.insert(id, reply);
                             }
                         }
-                        None => break,
-                    }
-                }
-
-                msg = source.next() => {
-                    match msg {
-                        Some(Ok(Message::Text(txt))) => {
-                            if let Ok(host_msg) = serde_json::from_str::<HostMsg>(&txt) {
-                                match host_msg {
-                                    HostMsg::Response { id, ok, payload } => {
-                                        if let Some(tx) = pending.remove(&id) {
-                                            let _ = tx.send(if ok { Ok(payload) } else {
-                                                Err(payload.as_str().unwrap_or("Error").to_string())
-                                            });
-                                        }
-                                    }
-                                    HostMsg::FsEvent { kind, path } => {
-                                        let _ = app_clone.emit(
-                                            "sharing://fs-event",
-                                            serde_json::json!({ "kind": kind, "path": path }),
-                                        );
-                                    }
-                                    HostMsg::ClientJoined { name } => {
-                                        let _ = app_clone.emit(
-                                            "sharing://client-joined",
-                                            serde_json::json!({ "name": name }),
-                                        );
-                                    }
-                                    HostMsg::ClientLeft { name } => {
-                                        let _ = app_clone.emit(
-                                            "sharing://client-left",
-                                            serde_json::json!({ "name": name }),
-                                        );
-                                    }
-                                    _ => {}
-                                }
-                            }
+                        Err(e) => {
+                            let _ = reply.send(Err(e.to_string()));
                         }
                         Some(Ok(Message::Ping(data)))
                             if sink.send(Message::Pong(data.clone())).await.is_err() => { break; }
@@ -131,8 +95,73 @@ pub async fn connect(
                         _ => {}
                     }
                 }
+                None => break,
             }
         }
+
+        msg = source.next() => {
+            match msg {
+                Some(Ok(Message::Text(txt))) => {
+                    if let Ok(host_msg) = serde_json::from_str::<HostMsg>(&txt) {
+                        match host_msg {
+                            HostMsg::Response { id, ok, payload } => {
+                                if let Some(tx) = pending.remove(&id) {
+                                    let result = if ok {
+                                        Ok(payload)
+                                    } else {
+                                        Err(
+                                            payload
+                                                .as_str()
+                                                .map(ToString::to_string)
+                                                .unwrap_or_else(|| payload.to_string())
+                                        )
+                                    };
+                                    let _ = tx.send(result);
+                                }
+                            }
+
+                            HostMsg::FsEvent { kind, path } => {
+                                let _ = app_clone.emit(
+                                    "sharing://fs-event",
+                                    serde_json::json!({ "kind": kind, "path": path }),
+                                );
+                            }
+
+                            HostMsg::ClientJoined { name } => {
+                                let _ = app_clone.emit(
+                                    "sharing://client-joined",
+                                    serde_json::json!({ "name": name }),
+                                );
+                            }
+
+                            HostMsg::ClientLeft { name } => {
+                                let _ = app_clone.emit(
+                                    "sharing://client-left",
+                                    serde_json::json!({ "name": name }),
+                                );
+                            }
+
+                            _ => {}
+                        }
+                    }
+                }
+
+                Some(Ok(Message::Ping(data))) => {
+                    match sink.send(Message::Pong(data)).await {
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+
+                Some(Ok(Message::Close(_))) => break,
+                Some(Err(_)) => break,
+                None => break,
+
+                _ => {}
+            }
+        }
+    }
+}
 
         // Drain pending requests with error
         for (_, tx) in pending.drain() {
