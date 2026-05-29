@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search, Settings, Columns2, BarChart2, Sparkles } from "lucide-react";
+import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search, Settings, Columns2, BarChart2, Sparkles, StickyNote } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import type { FileEntry, ListEntry } from "../types";
@@ -16,7 +16,18 @@ function useDebounce(fn: (...args: unknown[]) => void, delay: number) {
   };
 }
 
-export function Toolbar({ onOpenSettings, onOpenDiskUsage, onOpenAi, aiActive }: { onOpenSettings: () => void; onOpenDiskUsage?: () => void; onOpenAi?: () => void; aiActive?: boolean }) {
+export function Toolbar({
+  onOpenSettings, onOpenDiskUsage, onOpenAi, aiActive,
+  onOpenNotes, notesActive, notesPendingCount,
+}: {
+  onOpenSettings: () => void;
+  onOpenDiskUsage?: () => void;
+  onOpenAi?: () => void;
+  aiActive?: boolean;
+  onOpenNotes?: () => void;
+  notesActive?: boolean;
+  notesPendingCount?: number;
+}) {
   const {
     searchQuery, setSearchQuery,
     searchType, setSearchType,
@@ -290,6 +301,28 @@ export function Toolbar({ onOpenSettings, onOpenDiskUsage, onOpenAi, aiActive }:
           )}
         >
           <Sparkles size={13} />
+        </button>
+      )}
+
+      {onOpenNotes && (
+        <button
+          onClick={onOpenNotes}
+          title={notesPendingCount && notesPendingCount > 0
+            ? `Workspace notes — ${notesPendingCount} task${notesPendingCount === 1 ? "" : "s"} pending`
+            : "Workspace notes"}
+          className={clsx(
+            "relative w-7 h-7 flex items-center justify-center rounded transition-colors",
+            notesActive ? "bg-accent/20 text-accent" : "text-text-muted hover:text-text-secondary hover:bg-surface-3"
+          )}
+        >
+          <StickyNote size={13} />
+          {!!notesPendingCount && notesPendingCount > 0 && (
+            <span
+              className="absolute -top-1 -right-1 min-w-[15px] h-[15px] px-1 rounded-full bg-amber-500 text-[10px] font-bold text-black flex items-center justify-center ring-2 ring-surface-1 pointer-events-none leading-none"
+            >
+              {notesPendingCount > 99 ? "99+" : notesPendingCount}
+            </span>
+          )}
         </button>
       )}
 

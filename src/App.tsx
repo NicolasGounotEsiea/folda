@@ -1,19 +1,34 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { saveAndClose, isClosing } from "./utils/appClose";
 import { BulkRename } from "./components/BulkRename";
 import { CommandPalette } from "./components/CommandPalette";
-import { DocumentViewer } from "./components/DocumentViewer";
-import { EditorView } from "./components/EditorView";
 import { FileList } from "./components/FileList";
-import { MediaViewer } from "./components/MediaViewer";
-import { ArchiveViewer } from "./components/ArchiveViewer";
 import { AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS, DOC_EXTS, ARCHIVE_EXTS } from "./utils/fileExtensions";
+import { invalidateFolderCacheForPath } from "./utils/folderSizeCache";
+
+// Heavy viewers are lazy-loaded: pdfjs (~2 MB), docx-preview (~300 KB), xlsx (~1 MB),
+// CodeMirror language packs (~500 KB total) are deferred until the user actually
+// opens a file of the matching type. Cuts the initial JS bundle significantly and
+// trims startup time. Each lazy import becomes its own webpack/vite chunk.
+const DocumentViewer = lazy(() =>
+  import("./components/DocumentViewer").then((m) => ({ default: m.DocumentViewer }))
+);
+const EditorView = lazy(() =>
+  import("./components/EditorView").then((m) => ({ default: m.EditorView }))
+);
+const MediaViewer = lazy(() =>
+  import("./components/MediaViewer").then((m) => ({ default: m.MediaViewer }))
+);
+const ArchiveViewer = lazy(() =>
+  import("./components/ArchiveViewer").then((m) => ({ default: m.ArchiveViewer }))
+);
 import { PreviewPanel } from "./components/PreviewPanel";
 import { ProgressOverlay } from "./components/ProgressOverlay";
 import { AiPanel } from "./components/AiPanel";
+import { NotesPanel } from "./components/NotesPanel";
 import { DiskUsageModal } from "./components/DiskUsageModal";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
@@ -188,11 +203,15 @@ export function App() {
         }
       }
 
-      // If launched from Windows shell context menu, navigate there directly
-      const launchPath = await invoke<string | null>("get_launch_path").catch(() => null);
-      if (launchPath) {
-        const isDir = !launchPath.includes(".") || launchPath.endsWith("\\") || launchPath.endsWith("/");
-        const targetDir = isDir ? launchPath : launchPath.replace(/[/\\][^/\\]+$/, "");
+      // If launched from Windows shell context menu, navigate there directly.
+      // The backend now returns { path, is_dir } via fs::metadata — far more
+      // reliable than the previous string heuristic that broke on dotted folder
+      // names and extension-less files.
+      const launchPath = await invoke<{ path: string; is_dir: boolean } | null>("get_launch_path").catch(() => null);
+      if (launchPath && launchPath.path) {
+        const targetDir = launchPath.is_dir
+          ? launchPath.path
+          : launchPath.path.replace(/[/\\][^/\\]+$/, "");
         setCurrentPath(targetDir);
         pushNav(targetDir);
         const entries = await invoke<ListEntry[]>("list_directory", { path: targetDir, contextId: ctxId }).catch(() => [] as ListEntry[]);
@@ -282,6 +301,10 @@ export function App() {
   useEffect(() => {
     const unlisten = listen<FileChangedPayload>("file-changed", (event) => {
       const { action, path, timestamp } = event.payload;
+      // Any change invalidates the folder-size cache for the affected branch.
+      // Parent path = strip the file name component.
+      const parent = path.replace(/[\\/][^\\/]+$/, "");
+      if (parent) invalidateFolderCacheForPath(parent);
       if (action === "deleted") { removeFile(path); return; }
       if (!currentPath) return;
       if (watcherDebounceRef.current) clearTimeout(watcherDebounceRef.current);
@@ -305,6 +328,117 @@ export function App() {
     telemetryInit(settings.telemetryEnabled);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Windows shell second-instance handler — fired by tauri-plugin-single-instance
+  // when the user double-clicks the exe or uses the context menu while nxs is
+  // already running. The duplicate process exits cleanly; we receive the launch
+  // path here and navigate the existing window instead of opening a new one.
+  useEffect(() => {
+    if (IS_POPUP) return; // popups don't handle global shell launches
+    const unlisten = listen<{ path: string; is_dir: boolean }>("shell-launch", async (event) => {
+      const p = event.payload;
+      if (!p?.path) return;
+      const targetDir = p.is_dir ? p.path : p.path.replace(/[/\\][^/\\]+$/, "");
+      try {
+        const entries = await invoke<ListEntry[]>("list_directory", {
+          path: targetDir,
+          contextId: activeContextIdRef.current ?? 0,
+        });
+        setCurrentPath(targetDir);
+        pushNav(targetDir);
+        setListEntries(entries);
+      } catch { /* path may have moved — ignore */ }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Workspace notes — load count of pending tasks + show a toast if any tasks
+  // are overdue or due today. The stored content is JSON (`{ tasks, notes }`);
+  // we keep a tolerant migration path for raw markdown saved by older sessions.
+  // Re-runs on workspace switch. The `notes-updated` custom event is dispatched
+  // by NotesPanel after each save so the counter stays live without polling.
+  useEffect(() => {
+    if (IS_POPUP) return;
+    const ctxId = activeContextId ?? 0;
+    let cancelled = false;
+
+    type Task = { done: boolean; text: string; due?: string };
+
+    const parse = (raw: string): Task[] => {
+      if (!raw || !raw.trim()) return [];
+      try {
+        const j = JSON.parse(raw);
+        if (j && Array.isArray(j.tasks)) {
+          return j.tasks.filter((t: unknown): t is Task =>
+            !!t && typeof t === "object" && typeof (t as Task).text === "string"
+          );
+        }
+      } catch { /* not JSON — old markdown format, treat as no tasks */ }
+      return [];
+    };
+
+    const todayStr = (() => {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    })();
+
+    const refreshCount = (raw: string) => {
+      const tasks = parse(raw);
+      const pending = tasks.filter((t) => !t.done).length;
+      if (!cancelled) setNotesPendingCount(pending);
+    };
+
+    const checkOverdue = (raw: string) => {
+      const tasks = parse(raw);
+      const overdue: string[] = [];
+      const dueToday: string[] = [];
+      for (const t of tasks) {
+        if (t.done || !t.due) continue;
+        const txt = t.text.trim().slice(0, 60) || "(untitled)";
+        // Compare DATE part only — a task due "today at 17:00" is still "due today"
+        // even if the current clock has passed 17:00.
+        const dateOnly = t.due.slice(0, 10);
+        if (dateOnly < todayStr) overdue.push(txt);
+        else if (dateOnly === todayStr) dueToday.push(txt);
+      }
+      if (overdue.length || dueToday.length) {
+        const parts: string[] = [];
+        if (overdue.length) parts.push(`${overdue.length} overdue`);
+        if (dueToday.length) parts.push(`${dueToday.length} due today`);
+        const detail = [...overdue, ...dueToday].slice(0, 3).join(" • ");
+        addToast({
+          type: overdue.length ? "warning" : "info",
+          message: `Notes: ${parts.join(", ")}`,
+          detail: detail.length > 100 ? detail.slice(0, 100) + "…" : detail,
+        });
+      }
+    };
+
+    invoke<string>("get_workspace_note", { contextId: ctxId })
+      .then((content) => {
+        if (cancelled) return;
+        refreshCount(content);
+        // Only run the toast once per workspace per session.
+        const sessionKey = `notes-toast-shown-${ctxId}`;
+        if (!sessionStorage.getItem(sessionKey)) {
+          checkOverdue(content);
+          sessionStorage.setItem(sessionKey, "1");
+        }
+      })
+      .catch(() => {});
+
+    const onUpdate = (e: Event) => {
+      const detail = (e as CustomEvent<{ contextId: number; content: string }>).detail;
+      if (detail && detail.contextId === ctxId) refreshCount(detail.content);
+    };
+    window.addEventListener("notes-updated", onUpdate);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("notes-updated", onUpdate);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeContextId]);
 
   // Global hotkeys: Ctrl+K → palette, ? → shortcuts, F5 → dual pane toggle
   useEffect(() => {
@@ -379,6 +513,11 @@ export function App() {
   const [previewOpen, setPreviewOpen] = useState(true);
   const [diskUsageOpen, setDiskUsageOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [notesPanelOpen, setNotesPanelOpen] = useState(false);
+  // Pending unchecked tasks for the active workspace's note. Counted on workspace
+  // switch and refreshed periodically while the notes panel is open (it auto-saves
+  // and dispatches a "notes-updated" custom event that we listen for here).
+  const [notesPendingCount, setNotesPendingCount] = useState(0);
 
   // Save workspace state on OS-level close (Alt+F4, taskbar right-click, etc.)
   // Popup windows use native OS decorations so the OS handles close naturally.
@@ -408,6 +547,9 @@ export function App() {
         onOpenDiskUsage={() => setDiskUsageOpen(true)}
         onOpenAi={settings.claudeEnabled ? () => setAiPanelOpen((v) => !v) : undefined}
         aiActive={aiPanelOpen}
+        onOpenNotes={IS_POPUP ? undefined : () => setNotesPanelOpen((v) => !v)}
+        notesActive={notesPanelOpen}
+        notesPendingCount={notesPendingCount}
       />
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar hidden in popup windows for a focused, distraction-free view */}
@@ -415,13 +557,21 @@ export function App() {
         <div className="flex flex-1 overflow-hidden min-w-0">
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
           <TabBar />
-          {openedFile ? (() => {
-            const ext = openedFile.extension.toLowerCase();
-            if (IMAGE_EXTS.includes(ext) || VIDEO_EXTS.includes(ext) || AUDIO_EXTS.includes(ext)) return <MediaViewer />;
-            if (DOC_EXTS.includes(ext)) return <DocumentViewer />;
-            if (ARCHIVE_EXTS.includes(ext)) return <ArchiveViewer />;
-            return <EditorView />;
-          })() : viewMode === "explorer" ? (
+          {openedFile ? (
+            <Suspense fallback={
+              <div className="flex-1 flex items-center justify-center text-text-muted text-[12px]">
+                Loading viewer…
+              </div>
+            }>
+              {(() => {
+                const ext = openedFile.extension.toLowerCase();
+                if (IMAGE_EXTS.includes(ext) || VIDEO_EXTS.includes(ext) || AUDIO_EXTS.includes(ext)) return <MediaViewer />;
+                if (DOC_EXTS.includes(ext)) return <DocumentViewer />;
+                if (ARCHIVE_EXTS.includes(ext)) return <ArchiveViewer />;
+                return <EditorView />;
+              })()}
+            </Suspense>
+          ) : viewMode === "explorer" ? (
             dualPaneActive ? (
               <div className="flex flex-1 overflow-hidden">
                 <FileList paneIndex={0} />
@@ -465,6 +615,9 @@ export function App() {
               } catch { /* ignore */ }
             }}
           />
+        )}
+        {notesPanelOpen && !IS_POPUP && (
+          <NotesPanel onClose={() => setNotesPanelOpen(false)} />
         )}
         </div>
       </div>

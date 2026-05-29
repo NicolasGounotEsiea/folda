@@ -16,3 +16,5 @@ pub mod settings;
 pub mod windowing;
 pub mod winintegration;
 pub mod memory;
+pub mod ai_ops;
+pub mod notes;

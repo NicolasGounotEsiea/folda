@@ -38,6 +38,24 @@ fn install_quiet_panic_hook() {
 pub fn run() {
     install_quiet_panic_hook();
     tauri::Builder::default()
+        // tauri-plugin-single-instance MUST be registered before any other plugin
+        // so that the duplicate-launch detection happens before the rest of the
+        // builder runs. The callback fires in the EXISTING instance whenever a
+        // second nxs.exe is launched; the new process exits cleanly.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            use tauri::{Emitter, Manager};
+            // Pop the main window to the foreground.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            // If the second-launch argv contains a path, forward it to the frontend.
+            if let Some(raw) = commands::winintegration::parse_launch_path_from_args(&args) {
+                let payload = commands::winintegration::classify_launch_path(raw);
+                let _ = app.emit("shell-launch", payload);
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_drag::init())
@@ -51,6 +69,15 @@ pub fn run() {
                 sharing: tokio::sync::Mutex::new(sharing::SharingState::Idle),
                 window_init: Mutex::new(std::collections::HashMap::new()),
             });
+
+            // Self-heal shell-extension registration in case the user updated nxs
+            // and the registry still points at the old exe. No-op if the user
+            // never opted in. Best-effort; runs in a background thread to avoid
+            // delaying startup if the registry is slow.
+            std::thread::spawn(|| {
+                commands::winintegration::self_heal_registration();
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -159,8 +186,16 @@ pub fn run() {
             commands::sharing::create_remote_dir,
             // AI memory
             commands::memory::get_ai_memories,
+            commands::memory::count_ai_memories,
             commands::memory::add_ai_memory,
             commands::memory::delete_ai_memory,
+            // AI composite tools
+            commands::ai_ops::tag_files_matching,
+            commands::ai_ops::find_duplicates,
+            commands::ai_ops::find_unused,
+            // Workspace notes
+            commands::notes::get_workspace_note,
+            commands::notes::save_workspace_note,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

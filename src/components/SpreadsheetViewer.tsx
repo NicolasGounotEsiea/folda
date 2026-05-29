@@ -1,9 +1,10 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
-import { History, Save, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Filter, History, ListFilter, Save, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { useStore } from "../store/useStore";
+import { useTranslation } from "../utils/i18n";
 import { SnapshotPanel } from "./SnapshotPanel";
 
 const MAX_ROWS = 50_000;
@@ -42,12 +43,15 @@ function serializeCSV(rows: string[][]): string {
   ).join("\n");
 }
 
-function fmtNum(n: number) {
-  return n.toLocaleString("fr-FR");
+function fmtNum(n: number, lang: string) {
+  // "fr" → French digit grouping (1 234), "en" → English (1,234). Default to user-locale.
+  const tag = lang === "fr" ? "fr-FR" : lang === "en" ? "en-US" : undefined;
+  return n.toLocaleString(tag);
 }
 
 export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
   const { settings } = useStore();
+  const t = useTranslation();
   const [sheets, setSheets] = useState<SheetData[]>([]);
   const [activeIdx, setActiveIdx] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -63,6 +67,32 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
   const tbodyRef = useRef<HTMLTableSectionElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(500);
+
+  // ── View controls (header-row, sort, filter) ──────────────────────────────
+  // Auto-on by default. Most CSVs and small spreadsheets have a header row.
+  const [useHeader, setUseHeader] = useState(true);
+  // sortCol: column index in DISPLAYED columns (matches header order). null = no sort.
+  const [sortCol, setSortCol] = useState<number | null>(null);
+  // null = ascending, "desc" = descending. Click cycles asc → desc → off.
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [filter, setFilter] = useState("");
+  const [showFilter, setShowFilter] = useState(false);
+  // Per-column filters: keyed by column index, value is the substring to match.
+  // Multiple column filters are AND'd; the global filter (above) is also AND'd.
+  // Empty / whitespace-only entries are ignored.
+  const [columnFilters, setColumnFilters] = useState<Record<number, string>>({});
+  const [showColumnFilters, setShowColumnFilters] = useState(false);
+
+  // Reset view controls when switching sheet
+  useEffect(() => {
+    setSortCol(null); setSortDir("asc");
+    setColumnFilters({});
+  }, [activeIdx]);
+
+  const activeColumnFilters = useMemo(
+    () => Object.entries(columnFilters).filter(([, v]) => v.trim().length > 0),
+    [columnFilters]
+  );
 
   const isCSV = ext === "csv";
 
@@ -150,14 +180,95 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
   };
 
   const sheet = sheets[activeIdx];
-  const numRows = sheet?.rows.length ?? 0;
+  const totalRows = sheet?.rows.length ?? 0;
   const numCols = sheet ? Math.max(0, ...sheet.rows.map((r) => r.length)) : 0;
+
+  // ── Header detection ─────────────────────────────────────────────────────
+  // When useHeader is on AND the sheet has at least one row, use row[0] as labels.
+  // Edit mode always shows the original column letters and ALL rows, so the user
+  // can't accidentally save reordered data.
+  const headerActive = useHeader && !editMode && totalRows > 0;
+  const headerLabels: string[] = useMemo(() => {
+    if (!sheet) return [];
+    if (headerActive) {
+      const first = sheet.rows[0];
+      return Array.from({ length: numCols }, (_, i) => {
+        const v = first?.[i];
+        const s = v == null ? "" : String(v).trim();
+        return s || COL_LETTER(i); // fallback to A/B/C for empty header cells
+      });
+    }
+    return Array.from({ length: numCols }, (_, i) => COL_LETTER(i));
+  }, [sheet, headerActive, numCols]);
+
+  // ── Displayed body rows (after header strip + filter + sort) ─────────────
+  // We keep the ORIGINAL row index alongside each row so the leftmost column
+  // shows the file's true row number, even when sorted/filtered.
+  type IndexedRow = { idx: number; row: CellValue[] };
+  const bodyRows: IndexedRow[] = useMemo(() => {
+    if (!sheet) return [];
+    if (editMode) {
+      // Edit mode: untouched order, no filter, no sort. All rows.
+      return sheet.rows.map((row, i) => ({ idx: i, row }));
+    }
+    const start = headerActive ? 1 : 0;
+    let rows: IndexedRow[] = sheet.rows.slice(start).map((row, i) => ({ idx: start + i, row }));
+    // Global filter (case-insensitive, any column)
+    const q = filter.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((r) => r.row.some((c) => c != null && String(c).toLowerCase().includes(q)));
+    }
+    // Per-column filters (case-insensitive substring on the targeted column only).
+    // Only applied while the column filter row is visible — otherwise the user
+    // would see rows disappear with no UI hint why.
+    if (showColumnFilters && activeColumnFilters.length) {
+      rows = rows.filter((r) =>
+        activeColumnFilters.every(([colStr, q]) => {
+          const col = Number(colStr);
+          const v = r.row[col];
+          return v != null && String(v).toLowerCase().includes(q.trim().toLowerCase());
+        })
+      );
+    }
+    // Sort
+    if (sortCol !== null) {
+      const dir = sortDir === "asc" ? 1 : -1;
+      const sample = rows.find((r) => r.row[sortCol] != null);
+      const tryNum = sample ? Number(sample.row[sortCol]) : NaN;
+      const numericMode = !isNaN(tryNum) && rows.every((r) => {
+        const v = r.row[sortCol];
+        if (v == null || v === "") return true;
+        return !isNaN(Number(v));
+      });
+      rows = [...rows].sort((a, b) => {
+        const av = a.row[sortCol]; const bv = b.row[sortCol];
+        // Empties go last regardless of direction
+        const aEmpty = av == null || av === "";
+        const bEmpty = bv == null || bv === "";
+        if (aEmpty && bEmpty) return 0;
+        if (aEmpty) return 1;
+        if (bEmpty) return -1;
+        if (numericMode) return (Number(av) - Number(bv)) * dir;
+        return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: "base" }) * dir;
+      });
+    }
+    return rows;
+  }, [sheet, editMode, headerActive, filter, sortCol, sortDir, showColumnFilters, activeColumnFilters]);
+
+  const numRows = bodyRows.length;
 
   // Virtual window (disabled in edit mode — need all rows in DOM to collect values)
   const startIdx = editMode ? 0 : Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
   const endIdx = editMode ? numRows : Math.min(numRows, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN);
   const padTop = startIdx * ROW_HEIGHT;
   const padBottom = Math.max(0, (numRows - endIdx) * ROW_HEIGHT);
+
+  const cycleSort = (col: number) => {
+    if (sortCol !== col) { setSortCol(col); setSortDir("asc"); return; }
+    if (sortDir === "asc") { setSortDir("desc"); return; }
+    // Already desc → turn sort off
+    setSortCol(null); setSortDir("asc");
+  };
 
   return (
     <div className="flex-1 flex overflow-hidden min-h-0">
@@ -179,12 +290,96 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
 
         <div className="flex-1" />
 
+        {/* View controls — hidden while editing because they don't apply */}
+        {!editMode && !loading && !error && sheet && (
+          <>
+            <button
+              onClick={() => setUseHeader((v) => !v)}
+              title={useHeader ? t.sheetHeaderToggleOn : t.sheetHeaderToggleOff}
+              className={clsx(
+                "flex items-center gap-1 px-2 h-6 text-[11px] rounded transition-colors shrink-0",
+                useHeader ? "bg-accent/15 text-accent" : "bg-surface-3 border border-border text-text-secondary hover:bg-surface-4"
+              )}
+            >
+              <ListFilter size={11} /> {t.sheetHeader}
+            </button>
+
+            {/* Filter — collapsed by default; click to open the input */}
+            {showFilter ? (
+              <div className="flex items-center gap-1 h-6 px-1.5 rounded bg-surface-3 border border-border shrink-0">
+                <Filter size={11} className="text-text-muted" />
+                <input
+                  type="text"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  placeholder={t.sheetFilterPlaceholder}
+                  autoFocus
+                  className="bg-transparent text-[11px] text-text-primary placeholder-text-muted outline-none w-32"
+                />
+                {filter && (
+                  <button
+                    onClick={() => setFilter("")}
+                    className="text-text-muted hover:text-text-primary"
+                    title={t.sheetClearFilter}
+                  >
+                    <X size={11} />
+                  </button>
+                )}
+                <button
+                  onClick={() => { setShowFilter(false); setFilter(""); }}
+                  className="text-text-muted hover:text-text-primary"
+                  title={t.sheetCloseFilter}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowFilter(true)}
+                title={t.sheetFilter}
+                className="flex items-center gap-1 px-2 h-6 text-[11px] rounded bg-surface-3 border border-border text-text-secondary hover:text-text-primary hover:bg-surface-4 transition-colors shrink-0"
+              >
+                <Filter size={11} /> {t.sheetFilter}
+              </button>
+            )}
+
+            {/* Per-column filter row toggle */}
+            <button
+              onClick={() => setShowColumnFilters((v) => !v)}
+              title={showColumnFilters ? t.sheetColumnFiltersHide : t.sheetColumnFiltersShow}
+              className={clsx(
+                "flex items-center gap-1 px-2 h-6 text-[11px] rounded transition-colors shrink-0",
+                showColumnFilters
+                  ? "bg-accent/15 text-accent"
+                  : "bg-surface-3 border border-border text-text-secondary hover:bg-surface-4"
+              )}
+            >
+              <Filter size={11} /> {t.sheetColumnFilters}
+              {activeColumnFilters.length > 0 && (
+                <span className="ml-1 min-w-[15px] h-[14px] px-1 rounded-full bg-accent text-[9px] font-bold text-white flex items-center justify-center">
+                  {activeColumnFilters.length}
+                </span>
+              )}
+            </button>
+
+            {sortCol !== null && (
+              <button
+                onClick={() => { setSortCol(null); setSortDir("asc"); }}
+                title={t.sheetSortClear}
+                className="flex items-center gap-1 px-2 h-6 text-[11px] rounded bg-accent/15 text-accent hover:bg-accent/25 transition-colors shrink-0"
+              >
+                <ArrowUpDown size={11} /> {t.sheetSortActive}
+              </button>
+            )}
+          </>
+        )}
+
         {isCSV && !editMode && !loading && (
           <button
             onClick={() => setEditMode(true)}
             className="flex items-center gap-1 px-2 h-6 text-[11px] rounded bg-surface-3 border border-border text-text-secondary hover:text-text-primary hover:bg-surface-4 transition-colors shrink-0"
           >
-            Éditer
+            {t.sheetEdit}
           </button>
         )}
         {isCSV && editMode && (
@@ -195,7 +390,7 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
               className="flex items-center gap-1 px-2 h-6 text-[11px] rounded bg-accent text-white hover:bg-accent/90 disabled:opacity-50 transition-colors"
             >
               <Save size={11} />
-              {saving ? "…" : "Sauvegarder"}
+              {saving ? "…" : t.sheetSave}
             </button>
             <button
               onClick={() => setEditMode(false)}
@@ -240,12 +435,12 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
           >
             {sheet.truncated && (
               <div className="px-3 py-1.5 text-[10px] text-amber-400 bg-amber-400/10 border-b border-amber-400/20">
-                Affichage limité aux {fmtNum(MAX_ROWS)} premières lignes
+                {t.sheetTruncatedTo.replace("{n}", fmtNum(MAX_ROWS, settings.language))}
               </div>
             )}
             {editMode && (
               <div className="px-3 py-1 text-[10px] text-accent bg-accent/5 border-b border-accent/20">
-                Mode édition — cliquez une cellule pour modifier
+                {t.sheetEditingHint}
               </div>
             )}
 
@@ -253,10 +448,66 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
               <thead>
                 <tr>
                   <th className="spreadsheet-row-num" />
-                  {Array.from({ length: numCols }, (_, i) => (
-                    <th key={i} className="spreadsheet-col-header">{COL_LETTER(i)}</th>
-                  ))}
+                  {Array.from({ length: numCols }, (_, i) => {
+                    const isSorted = sortCol === i;
+                    const Icon = !isSorted ? ArrowUpDown : sortDir === "asc" ? ArrowUp : ArrowDown;
+                    const clickable = !editMode;
+                    return (
+                      <th
+                        key={i}
+                        className={clsx(
+                          "spreadsheet-col-header",
+                          clickable && "cursor-pointer hover:bg-surface-4 transition-colors",
+                          isSorted && "text-accent"
+                        )}
+                        onClick={clickable ? () => cycleSort(i) : undefined}
+                        title={clickable ? t.sheetSortClick : undefined}
+                      >
+                        <span className="inline-flex items-center gap-1 truncate">
+                          <span className="truncate">{headerLabels[i] ?? COL_LETTER(i)}</span>
+                          {clickable && (
+                            <Icon size={9} className={clsx(isSorted ? "opacity-100" : "opacity-30")} />
+                          )}
+                        </span>
+                      </th>
+                    );
+                  })}
                 </tr>
+                {/* Per-column filter row — sits below the headers, sticky via thead */}
+                {showColumnFilters && !editMode && (
+                  <tr className="spreadsheet-filter-row">
+                    <th className="spreadsheet-row-num spreadsheet-filter-corner">
+                      {activeColumnFilters.length > 0 && (
+                        <button
+                          onClick={() => setColumnFilters({})}
+                          title={t.sheetColumnFiltersClearAll}
+                          className="w-3.5 h-3.5 flex items-center justify-center rounded text-text-muted hover:text-red-400"
+                        >
+                          <X size={9} />
+                        </button>
+                      )}
+                    </th>
+                    {Array.from({ length: numCols }, (_, i) => {
+                      const value = columnFilters[i] ?? "";
+                      return (
+                        <th key={i} className="spreadsheet-filter-cell">
+                          <input
+                            type="text"
+                            value={value}
+                            onChange={(e) => setColumnFilters((m) => ({ ...m, [i]: e.target.value }))}
+                            placeholder={t.sheetColumnFilterPlaceholder}
+                            className={clsx(
+                              "w-full h-5 px-1.5 text-[10px] outline-none rounded border bg-surface-2 transition-colors",
+                              value
+                                ? "border-accent/40 text-text-primary"
+                                : "border-border text-text-secondary placeholder-text-muted focus:border-accent/40"
+                            )}
+                          />
+                        </th>
+                      );
+                    })}
+                  </tr>
+                )}
               </thead>
               <tbody ref={tbodyRef}>
                 {/* Top spacer */}
@@ -266,8 +517,8 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
                   </tr>
                 )}
 
-                {sheet.rows.slice(startIdx, endIdx).map((row, i) => {
-                  const ri = startIdx + i;
+                {bodyRows.slice(startIdx, endIdx).map((entry) => {
+                  const { idx: ri, row } = entry;
                   return (
                     <tr key={ri} className="hover:bg-accent/5" style={{ height: ROW_HEIGHT }}>
                       <td className="spreadsheet-row-num">{ri + 1}</td>
@@ -312,25 +563,47 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
 
           {/* Status bar */}
           <div className="flex items-center gap-3 px-3 h-6 bg-surface-2 border-t border-border-subtle shrink-0 text-[10px] text-text-muted select-none">
-            <span>{fmtNum(numRows)} ligne{numRows !== 1 ? "s" : ""}</span>
+            {/* Body-rows count: shows filtered vs. total when a filter is active */}
+            <span>
+              {fmtNum(numRows, settings.language)} {numRows !== 1 ? t.sheetRowPlur : t.sheetRowSing}
+              {!editMode && filter && numRows !== (headerActive ? totalRows - 1 : totalRows) && (
+                <span className="text-text-muted/70"> / {fmtNum(headerActive ? totalRows - 1 : totalRows, settings.language)}</span>
+              )}
+            </span>
             <span className="text-border">·</span>
-            <span>{fmtNum(numCols)} colonne{numCols !== 1 ? "s" : ""}</span>
+            <span>{fmtNum(numCols, settings.language)} {numCols !== 1 ? t.sheetColPlur : t.sheetColSing}</span>
             {sheets.length > 1 && (
               <>
                 <span className="text-border">·</span>
-                <span>{sheets.length} feuilles</span>
+                <span>{sheets.length} {t.sheetSheets}</span>
               </>
             )}
             {sheet.truncated && (
               <>
                 <span className="text-border">·</span>
-                <span className="text-amber-400">tronqué à {fmtNum(MAX_ROWS)}</span>
+                <span className="text-amber-400">{t.sheetTruncatedStatus.replace("{n}", fmtNum(MAX_ROWS, settings.language))}</span>
+              </>
+            )}
+            {!editMode && sortCol !== null && (
+              <>
+                <span className="text-border">·</span>
+                <span className="text-accent">
+                  {t.sheetSortedBy} {headerLabels[sortCol] ?? COL_LETTER(sortCol)} ({sortDir === "asc" ? "↑" : "↓"})
+                </span>
+              </>
+            )}
+            {!editMode && showColumnFilters && activeColumnFilters.length > 0 && (
+              <>
+                <span className="text-border">·</span>
+                <span className="text-accent">
+                  {t.sheetColumnFiltersActive.replace("{n}", String(activeColumnFilters.length))}
+                </span>
               </>
             )}
             {editMode && (
               <>
                 <span className="text-border">·</span>
-                <span className="text-accent">édition en cours</span>
+                <span className="text-accent">{t.sheetEditing}</span>
               </>
             )}
           </div>

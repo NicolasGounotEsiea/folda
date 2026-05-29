@@ -2,6 +2,137 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.7] - 2026-05-29
+
+### Added
+
+- **Streaming AI responses** — tokens stream live into the assistant bubble as the model generates them, for both Anthropic and Ollama. The Stop button now aborts the underlying `fetch` (`AbortController`) in addition to the loop, so cancellation is truly instant. Tool calls still execute in the existing agent loop at end-of-stream — no breaking change to the tool flow.
+- **Custom AI instructions** — Settings → AI → "Custom instructions" lets the user write persistent personal rules (working language, naming conventions, organization preferences). Appended to every system prompt under a dedicated section so the model always follows them.
+- **Composite AI tools** — three new high-level tools, each replacing what used to require dozens of atomic calls and a long agent chain:
+  - **`tag_files_matching(dir, pattern?, extension?, tag_name)`** — tag every file in a tree by name substring or extension in a single call. Creates the tag if it doesn't exist. Capped at 500 tagged files for safety.
+  - **`find_duplicates(dir)`** — reports groups of files sharing the same name + size (fast, no hashing). Catches the common case of copies across folders. Top 50 groups by size.
+  - **`find_unused(dir, days)`** — lists files in a tree that have no recorded activity (open/modify/etc.) in the last N days. Useful for cleanup suggestions.
+- **Post-action verification** — `create_file`, `create_dir`, `write_file`, and `rename_path` now re-check the filesystem after the action and prepend `✓ Verified —` (or a clear failure message) to the tool result. Hard-kills the class of small-model hallucinations where the AI claims success without acting.
+- **Per-file progress events during indexing** — the backend now emits two `content-indexed` events per file (one before the extraction, one after the DB write). The badge popover updates `Processed` / `Remaining` counters in real time as each file completes, instead of waiting for batches.
+- **AI memory cap** — the system prompt now injects only the 30 most recent memories (older ones stay in the DB but don't bloat the context window). New backend command `count_ai_memories` for future UI showing total saved.
+
+### Improved
+
+- **Indexing event payloads now use folder-global counters** — `indexed` / `total` in `content-indexed` events match what `get_indexing_stats` returns from the DB, so frontend filters work correctly across simultaneous indexing of multiple workspace folders.
+- **Indexing popover positioning** — rendered via React portal at `document.body` with `position: fixed` clamped to the viewport. No longer clipped by the sidebar's `overflow-hidden`. The badge button stays clickable while indexing runs, so the popover can be reopened to monitor progress.
+- **Text selection in info panels** — `PreviewPanel` and `AiPanel` opt into `user-select: text` so file paths, metadata, and AI responses can be copied. The rest of the app keeps the `user-select: none` "native app" feel.
+- **`summarize_folder` tool** — categorizes a folder's contents (PDFs, Images, Code, Spreadsheets, etc.) with extension hints and per-category total size. The AI calls this on "what's in this folder?" questions instead of dumping a raw `list_directory` output.
+- **`get_indexing_stats` is now async + spawn_blocking** — DB queries during indexing no longer pin the tokio runtime, so badge refreshes don't compete with the indexer for the DB mutex.
+
+### Performance
+
+- **SQLite startup pragmas** — at every connection open: `PRAGMA wal_checkpoint(TRUNCATE)` reclaims WAL space from the previous session, then `synchronous=NORMAL` (durable enough with WAL, much faster bulk writes), `temp_store=MEMORY` (temp tables in RAM), and `mmap_size=256MB` (memory-map up to 256 MB of the DB for read-only queries). Net result: faster cold queries, smaller `.db-wal`, less fsync pressure during indexing.
+- **New composite SQLite indexes** — `idx_file_tags_file_ctx` on `(file_id, context_id)`, `idx_folder_tags_path_ctx` on `(folder_path, context_id)`, `idx_activity_file_ts` on `(file_id, timestamp DESC)`, plus a partial index `idx_file_content_attempted` on non-empty rows. The tag-aware JOINs in `list_directory` and `load_files_with_tags` are 3-5× faster on large workspaces.
+- **Lazy-loaded file viewers** — `DocumentViewer` (pdfjs ~2 MB), `EditorView` (CodeMirror packs), `MediaViewer`, and `ArchiveViewer` are now imported via `React.lazy` + `Suspense`. The initial JS bundle drops by several MB; the viewer chunk is fetched only when the user actually opens a file of the matching type. Visible startup time improvement.
+- **Batched DB writes in the content indexer** — extracted text is buffered in groups of 20 files and flushed in a single `BEGIN`/`COMMIT` transaction. Collapses 20 mutex acquisitions + 20 implicit transactions into one — ~10× faster DB throughput on bulk indexing.
+- **Global indexing-progress store** — one tauri event listener and one Zustand store (`useIndexingStore`) feed all sidebar badges via path-keyed selectors, instead of N badges each registering their own listener and re-querying `get_indexing_stats`. Drastically reduces tauri event dispatch and DB load when multiple workspace folders are active.
+- **Folder-size LRU cache** — `get_folder_stats` and `get_folder_sizes` results are cached in-memory for 30 s (max 32 entries). Re-opening the preview panel for a previously-visited folder is instant instead of re-walking the tree. The file watcher invalidates cache entries for any path branch where a change is detected, so freshness is preserved.
+
+### Fixed
+
+- **"Rendered more hooks than during the previous render" crash** — the indexing badge component declared `useRef` / `useState` after an early-return path; all hooks are now unconditional.
+- **Indexing counters stuck while file names cycled** — the event payload's `total` referred to the per-run queue size instead of the folder-global total, so the frontend filter rejected every update. Backend now emits global counters that match the badge's reference total.
+- **Indexing percentage overshooting 100%** (e.g. 103%) — in force mode the queue includes files that already had a row (empty content) plus genuinely new files. The local `indexed` counter incremented for both, even though retried-empties don't change the DB's attempted count. The query now carries a `was_attempted` flag per row and the counter only increments for genuinely new attempts. A frontend `Math.min(indexed, total)` clamp provides a belt-and-braces safeguard.
+- **Reindex popover closing on click** — `setOpen(false)` was called when launching the manual reindex, hiding the live progress immediately. The popover now stays open so the user can watch each file go by.
+- **Stop button only flipped a flag** — the in-flight fetch kept running until the model finished generating. Now the `AbortController.abort()` is wired up too, so the network call dies the moment Stop is clicked.
+
+### Fixed
+
+- **"Rendered more hooks than during the previous render" crash** — the indexing badge component declared `useRef` / `useState` after an early-return path; all hooks are now unconditional.
+- **Indexing counters stuck while file names cycled** — the event payload's `total` referred to the per-run queue size instead of the folder-global total, so the frontend filter rejected every update. Backend now emits global counters that match the badge's reference total.
+- **Reindex popover closing on click** — `setOpen(false)` was called when launching the manual reindex, hiding the live progress immediately. The popover now stays open so the user can watch each file go by.
+- **Stop button only flipped a flag** — the in-flight fetch kept running until the model finished generating. Now the `AbortController.abort()` is wired up too, so the network call dies the moment Stop is clicked.
+
+### Developer
+
+- **`commands/ai_ops.rs`** — new module hosting the composite AI tools. Kept separate from `tags.rs` / `files.rs` because these are AI-facing batch operations with their own semantics (best-effort across a tree, capped payloads, no per-call confirmation).
+- **`AnthropicResp` SSE reassembly** — `callAnthropicStream` reads `content_block_start` / `delta` / `stop` events, reconstructs the same `AnthropicResp` shape at end of stream so the rest of the agent loop is unchanged. The non-streaming `callAnthropic` is kept as a fallback (not currently called but available).
+- **`store/useIndexingStore.ts`** — new Zustand store with one global tauri listener, path-keyed progress map, and a `seedIndexingProgress(path, total, indexed)` helper for badges to publish their initial state. Pending events for unmounted badges are stashed under synthetic keys and migrated on first seed.
+- **`utils/folderSizeCache.ts`** — small TTL + LRU cache module exporting `getCachedFolderStats` / `cacheFolderStats` / `getCachedFolderSizes` / `cacheFolderSizes` / `invalidateFolderCacheForPath`. The file watcher in `App.tsx` calls the invalidate helper on any `file-changed` event so the cache stays consistent.
+
+### Added (workspace notes, AI extensions, spreadsheet improvements)
+
+- **Workspace notes panel** — new toolbar button (sticky-note icon) opens a per-workspace panel split into two sections:
+  - **Tasks** with checkbox, editable text, optional due date and time. Inline custom date/time pickers styled to match the app (no native browser UI). Auto-sort: not-done first, then by due date ascending; overdue tasks tinted red, due-today amber. Toolbar badge shows count of pending tasks per workspace.
+  - **Free-form notes** textarea below the tasks for context, meeting notes, etc.
+  - **Save semantics**: structural actions (toggle, add, delete, date change) save immediately; text typing is debounced 300 ms.
+- **Custom DatePicker / TimePicker components** — replace the native browser pickers that didn't match the dark theme. Calendar grid with month navigation + "Today" / "Clear" shortcuts; time picker with hour/minute steppers, 5 quick presets (Morning, Noon, Afternoon, End-of-day, Evening), "Now" / "Clear". Both rendered via portal with viewport-clamped positioning.
+- **Workspace-notes startup toast** — at app start, if any unchecked tasks for the active workspace have a due date that is overdue or today, a toast appears (warning for overdue, info for due-today) with up to 3 task titles. One toast per workspace per session via `sessionStorage`.
+- **AI tools for workspace notes** — 9 new tools the AI can call:
+  - Single-task: `add_task`, `toggle_task`, `delete_task`, `set_task_due`, `edit_task_text`
+  - Multi-task: `bulk_task_action(action, scope)` — `action ∈ {done, undone, toggle, delete}`, `scope ∈ {all, undone, done, <substring>}`. Covers "coche les deux", "supprime tous les test", "mark all undone done", etc., in a single tool call.
+  - Notes section: `set_workspace_notes_text`, `append_to_workspace_notes`
+  - Read: `get_workspace_notes` (rarely needed because the current task list is auto-injected into every system prompt).
+- **Relative date resolution in user messages** — before sending a message to the model, common date/time expressions are detected and appended as a `[Resolved: "demain" = 2026-05-31; "14h" = 14:00]` annotation. Covers French and English keywords (`aujourd'hui`/`today`, `demain`/`tomorrow`, `après-demain`, `semaine prochaine`/`next week`, `dans X jours`/`in X days`, weekday names with optional "prochain"/"next"), and times in `Xh`, `XhYY`, `HH:MM` formats. Dramatically improves small Ollama models' date accuracy.
+- **Pre-computed date block in system prompt** — the prompt now starts with a `CURRENT DATE` block listing absolute values for Today, Tomorrow, Day after, In 7/30 days, Next Monday, Next Friday. The model is explicitly instructed to use these values verbatim instead of computing them.
+- **Current workspace tasks inlined in the system prompt** — the model can act on them directly without an extra `get_workspace_notes` round-trip.
+- **Text-based tool-call parser for Ollama** — `extractTextToolCalls(text)` runs as a fallback when the structured `tool_calls` array is empty in the response. Recognizes four common emission formats:
+  - `<tool_call>{...}</tool_call>` (qwen2.5, Hermes)
+  - Dangling `<tool_call>{...` without closing tag (stream cut mid-token)
+  - `<|python_tag|>{...}<|end|>` (some Llama variants)
+  - ```` ```tool_call\n{...}\n``` ```` (code-block wrapped)
+  Tolerant to `arguments` / `parameters` / `args` synonyms. Cleans the rendered text of the matched tags so the user doesn't see them.
+- **Spreadsheet viewer improvements** — major usability lift for CSV / XLSX:
+  - **Header-row mode** (auto-on) replaces the `A B C` column letters with the first row's values as labels.
+  - **Sortable columns**: click a header to sort ascending → descending → off. Numeric mode auto-detected when every non-empty cell parses as a number; otherwise locale-aware string compare with `numeric: true` collation. Empty cells always go last regardless of direction.
+  - **Global filter**: case-insensitive substring across all columns.
+  - **Per-column filter row** (new): toggle via toolbar button, shows an inline input under each header. Filters AND together with the global filter. Sticky positioning keeps the row visible during scroll. Clear-all corner button when at least one column filter is active.
+  - **Original row numbers preserved** in the leftmost column even when sorted or filtered.
+  - **Edit mode unaffected**: sort/filter controls hidden in edit mode; saved file always reflects the original order with all rows.
+  - **Status bar** shows filtered/total counts, active sort column with direction, and active column-filter count.
+  - All viewer labels (`Edit`, `Save`, `Header`, `Filter`, `Sort`, status bar plurals…) routed through the i18n system. `fmtNum` now uses the active language locale instead of hardcoded `fr-FR`.
+
+### Improved (AI quality)
+
+- **Tool result phrasing rewritten** for the workspace-notes tools — every result starts with `SUCCESS:` / `FAILURE:` in caps and ends with an explicit instruction (e.g. *"Tell the user."*). Small Ollama models stop questioning their own actions and stop asking the user to confirm.
+- **Failure hints** when `toggle_task` / `delete_task` / `set_task_due` find no match — the response lists the actually-available tasks, so the model can retry with the correct text in the next turn instead of giving up. `set_task_due` failure explicitly warns *"do NOT call add_task"* to prevent duplicate-creation bugs.
+- **Date local time** — system prompt date block now uses local-date components instead of `toISOString()`, fixing off-by-one errors near midnight in non-UTC timezones.
+- **`AppSettings.aiInstructions`** consumed by the prompt builder — custom instructions appear under a dedicated section in every system prompt.
+
+### Fixed
+
+- **AI inventing dates from training data** (e.g. *"September 26, 2023"* when asked for "tomorrow") — combination of stronger system-prompt language, pre-computed date table, and inline message resolution.
+- **AI requesting task ids unnecessarily** — the live CURRENT TASKS section in the prompt plus tightened rules ("Don't ask for ids") stops the model from asking the user to identify a task that's already visible.
+- **Bulk task operations confusing the model** — adding the dedicated `bulk_task_action` tool means "check both" / "delete all the test ones" resolve in a single call instead of multiple `toggle_task` round-trips.
+- **Tool calls emitted as raw text by Ollama models** (e.g. `<tool_call>{"name":"…"}</tool_call>` shown verbatim instead of executed) — caught by the new fallback parser and routed to the executor.
+- **`SpreadsheetViewer` had hard-coded French strings** — all replaced via the i18n table, with new `sheet*` keys covering both FR and EN.
+
+### Developer
+
+- **`commands/notes.rs`** — minimal Rust commands for per-workspace notes: `get_workspace_note(context_id)`, `save_workspace_note(context_id, content)`. Content is a TEXT blob; the frontend stores JSON (`{ tasks, notes }`) and the backend doesn't introspect it. Migration tolerates pre-existing raw markdown content (placed in `notes`, `tasks` empty).
+- **`workspace_notes` table** added in `db.rs` (idempotent), keyed by `context_id` (PK), with `content` and `updated_at`.
+- **`NotesPanel.tsx`** holds the typed `NotesState = { tasks, notes }` shape; tasks use random short ids. Live updates from the AI dispatch a `notes-updated` CustomEvent on `window` so the panel, the toolbar badge, and the AI's own prompt context refresh without polling.
+- **`DatePicker.tsx` / `TimePicker.tsx`** — self-contained popovers using `createPortal`. No external date library; computed in-component.
+- **`resolveRelativeDatesInMessage(text)`** in `AiPanel.tsx` — patterns kept terse (regex per keyword), case-insensitive, with a fallback path for "next <weekday>" and a generic "dans X jours / in X days". Easy to extend with new languages or expressions.
+
+### Windows shell integration — robustness fixes
+
+- **Single-instance mode** via `tauri-plugin-single-instance`. Right-clicking "Open with nxs" while nxs is already running no longer spawns a second window. The existing window pops to the foreground and navigates to the new path. The duplicate process exits cleanly without ever opening a window. Plugin must remain the FIRST `.plugin(...)` call in the Tauri builder for the detection to work.
+- **Reliable file vs directory detection** — `get_launch_path` now returns `{ path, is_dir }` and computes `is_dir` via `fs::metadata` instead of the string heuristic (`!path.includes(".")`). The old heuristic broke on dotted folder names (`my.docs`) and extension-less files (`Makefile`, `LICENSE`).
+- **`SHChangeNotify(SHCNE_ASSOCCHANGED)`** is called after registering or unregistering the shell extension. Windows usually picks up the registry change on its own, but several long-running Explorer scenarios benefit from an explicit notification. Cheap and harmless. Requires the `Win32_UI_Shell` feature on the `windows` crate (added to `Cargo.toml`).
+- **Self-healing exe path** — at startup, if the user previously opted in to shell integration, the backend silently compares the exe path stored in the registry to `current_exe()` and re-registers if they differ. Means an app update relocating the binary no longer leaves the context menu pointing at a stale path; the user doesn't have to revisit Settings. Runs in a background thread so it never delays the splash.
+
+### Developer (shell integration)
+
+- **`commands/winintegration.rs`** now exposes `parse_launch_path_from_args(args)` and `classify_launch_path(path)` as public helpers. Reused by `lib.rs` in the single-instance callback so the second-launch path follows the same parsing as the initial `get_launch_path`.
+- **`shell-launch` Tauri event** — emitted from the single-instance callback with the same `{ path: string, is_dir: bool }` payload as the initial launch. `App.tsx` has a dedicated listener that navigates the existing window without creating a new view.
+
+### Known limitations
+
+- The streaming Ollama path requires Ollama ≥ 0.1.30 for `stream: true` with `tools`. Older versions silently ignore tool calls when streaming.
+- `find_duplicates` matches by `(name, size)` only — files with the same content but renamed are not detected. Content-hash detection is on the roadmap.
+- `FileList` is not yet virtualized — opening a directory with 2000+ entries feels slightly laggy on first paint and during scroll. Below ~500 visible entries it's invisible. Virtualization is on the roadmap.
+- Workspace-notes notifications are in-app only (toast at startup, badge counter). OS-level reminders that fire when the app is closed are out of scope for V1.
+- Spreadsheet sort is single-column only; multi-column sort and operator filters (`>`, `<`, ranges) are not supported.
+- Relative-date resolution covers common French and English expressions only; expressions like *"fin juin"*, *"dans 2 mois et demi"*, or *"le 15 du mois prochain"* are not resolved and fall back to whatever the model can compute from the date block.
+- Shell integration requires a one-time Explorer refresh on rare systems where `SHChangeNotify` is not enough — restart Explorer (Task Manager → Restart) if the context menu entry doesn't show up after toggling the setting.
+- In dev mode (`npm run tauri dev`), enabling shell integration registers the path of the dev binary in `target/debug/`. Launching from the context menu starts a fresh standalone process, not a `tauri dev` session. Always test shell integration against a release build.
+
 ## [0.1.6] - 2026-05-29
 
 ### Added

@@ -930,9 +930,42 @@ pub async fn index_directory_content(
         where_clause
     );
 
-    let unindexed: Vec<(i64, String, String, i64)> = {
+    // Gather both the queue (unindexed) AND the global counters in the same lock acquisition,
+    // so the event payloads we emit during processing use the SAME (total, indexed) semantics
+    // as the frontend's `get_indexing_stats` query (total = files in folder, indexed = attempted).
+    //
+    // We also tag each queue entry with `was_attempted` so the loop knows whether
+    // processing it ADDS a new attempted row (was IS NULL → indexed++) or merely
+    // updates an existing empty row (already counted in already_attempted → no change).
+    // Without this, force mode double-counts retries and overshoots total_files.
+    let (unindexed, total_files, already_attempted): (Vec<(i64, String, String, i64, bool)>, i64, i64) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
-        db.prepare(&query)
+
+        let total_files: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE path LIKE ?1 || '%'",
+                rusqlite::params![&path],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let already_attempted: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM files f
+                 JOIN file_content fc ON fc.file_id = f.id
+                 WHERE f.path LIKE ?1 || '%'",
+                rusqlite::params![&path],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        // Append fc.file_id IS NOT NULL to the SELECT so we know per row whether it
+        // was already attempted (retry case in force mode) or genuinely new.
+        let select_with_flag = query.replace(
+            "SELECT f.id, f.path, f.extension, f.size",
+            "SELECT f.id, f.path, f.extension, f.size, fc.file_id IS NOT NULL",
+        );
+        let queue: Vec<(i64, String, String, i64, bool)> = db
+            .prepare(&select_with_flag)
             .and_then(|mut stmt| {
                 stmt.query_map([&path], |row| {
                     Ok((
@@ -940,19 +973,25 @@ pub async fn index_directory_content(
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)? != 0,
                     ))
                 })
                 .map(|iter| iter.filter_map(|r| r.ok()).collect::<Vec<_>>())
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        (queue, total_files, already_attempted)
     };
 
     if unindexed.is_empty() {
         return Ok(0);
     }
 
-    let total = unindexed.len();
-    let mut indexed = 0usize;
+    // Event payloads use the GLOBAL (folder-wide) numbers so they line up with
+    // get_indexing_stats. `indexed` here starts at the existing attempted count
+    // and grows as we process files. `total` stays constant = files in folder.
+    let total = total_files as usize;
+    let mut indexed = already_attempted as usize;
 
     // Hard cap on PDF size to keep individual extractions bounded.
     // 10 MB in auto mode, 25 MB in force mode — beyond that we never try to extract,
@@ -965,16 +1004,24 @@ pub async fn index_directory_content(
     // in tokio's blocking pool (capped at 512 threads), but app responsiveness is preserved.
     const PER_FILE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(30);
 
+    // DB write buffer — accumulates (file_id, text) pairs across multiple chunks
+    // and gets flushed as a single transaction. Significantly reduces per-row
+    // overhead (mutex acquisition + fsync via implicit transactions).
+    let mut write_buffer: Vec<(i64, String)> = Vec::with_capacity(32);
+
     // Process in chunks. Each file gets its own join handle so we can apply a timeout
     // per file. Even if one extraction hangs, we never stall the whole pipeline.
     for chunk in unindexed.chunks(PARALLEL_EXTRACTIONS) {
-        let mut handles: Vec<(i64, String, tokio::task::JoinHandle<String>)> =
+        // (id, path, was_attempted, JoinHandle<text>) — was_attempted is needed
+        // when draining results to decide whether to increment the `indexed` counter.
+        let mut handles: Vec<(i64, String, bool, tokio::task::JoinHandle<String>)> =
             Vec::with_capacity(chunk.len());
-        for (id, file_path, ext, size) in chunk {
+        for (id, file_path, ext, size, was_attempted) in chunk {
             let id = *id;
             let file_path_owned = file_path.clone();
             let ext = ext.clone();
             let size = *size;
+            let was_attempted = *was_attempted;
             let path_for_task = file_path_owned.clone();
             let handle = tokio::task::spawn_blocking(move || {
                 // Lower priority on Windows so we don't starve the UI thread.
@@ -990,17 +1037,24 @@ pub async fn index_directory_content(
                 }
                 extract_text_content(&path_for_task, &ext, size)
             });
-            handles.push((id, file_path_owned, handle));
+            handles.push((id, file_path_owned, was_attempted, handle));
         }
 
-        // Drain results sequentially with per-file timeout.
-        for (file_id, file_path, handle) in handles {
-            // Notify the UI which file is being processed (visible in popover during reindex).
+        // Drain results sequentially with per-file timeout. We accumulate results
+        // into a write_buffer and flush them to the DB in ONE transaction every
+        // FLUSH_AT_N items. This collapses N mutex acquisitions + N implicit
+        // transactions into a single BEGIN/COMMIT — ~10x faster DB throughput
+        // on bulk indexing. UI progress is still emitted per file, so the user
+        // sees movement continuously even though the DB write lags by < FLUSH_AT_N rows.
+        const FLUSH_AT_N: usize = 20;
+        for (file_id, file_path, was_attempted, handle) in handles {
             let file_name = std::path::Path::new(&file_path)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
+
+            // Emit "starting file X" so the popover updates the current filename right away.
             let _ = app.emit("content-indexed", serde_json::json!({
                 "indexed": indexed,
                 "total": total,
@@ -1013,19 +1067,53 @@ pub async fn index_directory_content(
                 _ => String::new(),
             };
 
-            let db_arc = state.db.clone();
-            let text_for_store = text;
-            tokio::task::spawn_blocking(move || {
-                if let Ok(db) = db_arc.lock() {
-                    store_text_content(&db, file_id, &text_for_store);
-                }
-            }).await.ok();
+            write_buffer.push((file_id, text));
+            if write_buffer.len() >= FLUSH_AT_N {
+                let db_arc = state.db.clone();
+                let to_write = std::mem::take(&mut write_buffer);
+                tokio::task::spawn_blocking(move || {
+                    if let Ok(db) = db_arc.lock() {
+                        let _ = db.execute_batch("BEGIN");
+                        for (id, text) in &to_write {
+                            store_text_content(&db, *id, text);
+                        }
+                        let _ = db.execute_batch("COMMIT");
+                    }
+                }).await.ok();
+            }
 
-            indexed += 1;
+            // Only count this file as a NEW attempt if it wasn't already attempted before.
+            // Retried empty rows (force mode) don't change the DB's COUNT(*) of attempted
+            // rows — incrementing here would overshoot total_files and produce e.g. 103%.
+            if !was_attempted {
+                indexed += 1;
+            }
+
+            // Emit "completed" so Processed / Remaining counters advance immediately.
+            let _ = app.emit("content-indexed", serde_json::json!({
+                "indexed": indexed,
+                "total": total,
+                "done": false,
+            }));
         }
 
         // Yield between chunks.
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    // Final flush of any remaining buffered writes.
+    if !write_buffer.is_empty() {
+        let db_arc = state.db.clone();
+        let to_write = std::mem::take(&mut write_buffer);
+        tokio::task::spawn_blocking(move || {
+            if let Ok(db) = db_arc.lock() {
+                let _ = db.execute_batch("BEGIN");
+                for (id, text) in &to_write {
+                    store_text_content(&db, *id, text);
+                }
+                let _ = db.execute_batch("COMMIT");
+            }
+        }).await.ok();
     }
 
     let _ = app.emit("content-indexed", serde_json::json!({

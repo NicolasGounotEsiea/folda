@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { getCachedFolderSizes, cacheFolderSizes } from "../utils/folderSizeCache";
 
 interface Entry { name: string; path: string; size: number; is_dir: boolean; }
 
@@ -21,11 +22,23 @@ export function DiskUsageModal({ path, onClose, onNavigate: _onNavigate }: {
   const [currentPath, setCurrentPath] = useState(path);
 
   useEffect(() => {
+    const cached = getCachedFolderSizes(currentPath);
+    if (cached) {
+      setEntries(cached);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
+    let cancelled = false;
     invoke<Entry[]>("get_folder_sizes", { path: currentPath })
-      .then(setEntries)
+      .then((rows) => {
+        if (cancelled) return;
+        cacheFolderSizes(currentPath, rows);
+        setEntries(rows);
+      })
       .catch(console.error)
-      .finally(() => setLoading(false));
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [currentPath]);
 
   const total = entries.reduce((s, e) => s + e.size, 0);

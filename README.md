@@ -13,17 +13,19 @@ Two formats are available: **NSIS `.exe`** (recommended) and **MSI `.msi`**.
 
 ## Features
 
-- **AI Assistant** — built-in panel that talks to Anthropic Claude (4.5/4.6/4.7) or any Ollama model. Can search by content, navigate, create/rename/move/copy files, tag in bulk, and propose a complete folder reorganization plan that you review and approve in one click before any move happens. Persistent memory across sessions for project context and preferences. Responds in your system language automatically.
+- **AI Assistant** — built-in panel that talks to Anthropic Claude (4.5/4.6/4.7) or any Ollama model. Streaming responses, custom personal instructions, persistent memory across sessions, automatic resolution of relative dates ("tomorrow at 14h" → 2026-05-31, 14:00) so even small Ollama models pick the right date. Can search by content, navigate, create/rename/move/copy files, tag in bulk, propose a complete folder reorganization plan that you approve in one click, find duplicates, list unused files, manage workspace tasks and free-form notes, and verify every mutation it claims to have done. Responds in your system language automatically.
+- **Workspace notes & tasks** — per-workspace panel (sticky-note icon in the toolbar) with a structured task list (checkbox, editable text, optional due date and time via dark-themed custom calendar / clock pickers) and a free-form notes section. Toolbar badge shows the count of pending tasks. At app start, a toast surfaces any tasks that are overdue or due today.
 - **Content-aware search** — PDFs, DOCX, XLSX, PPTX, ODT, ODS, ODP and every text/code format are indexed for full-text search of their contents, not just their names. Content extraction runs asynchronously in the background with per-file timeout and Below-Normal thread priority to keep the UI responsive.
 - **Per-folder indexing progress** — each workspace folder in the sidebar shows a live `XX%` badge; the popover reveals the file currently being processed and offers a manual "re-scan everything" button (force mode lifts the PDF size cap and retries previously failed extractions).
 - **Multi-workspace** — organize folders into named workspaces with icons, tags, and pinned paths
 - **File explorer** — multi-tab browsing, context menus, bulk rename, drag & drop; rubber-band multi-selection; image thumbnails in grid view; status bar; editable path bar
 - **Drag & drop** — internal move/copy between folders; external drag to any Windows app (Explorer, browser, desktop) using the native OS drag API
-- **Windows shell integration** — "Open with nxs" context menu entry in File Explorer (files, folders, background); installs/uninstalls from Settings with no admin rights required
+- **Windows shell integration** — "Open with nxs" context menu entry in File Explorer for files, folders, and folder background. Installs/uninstalls from Settings (no admin rights required), single-instance aware so a second click navigates the existing window instead of opening a new one, and self-heals the registered exe path after app updates
 - **Multi-window** — open any file or folder in an independent window via right-click → *Open in new window*
 - **Trash** — Del moves files to a recoverable bin; browse, restore, or permanently delete from the sidebar; Shift+Del skips the bin
 - **Archive manager** — browse ZIP, TAR, TAR.GZ contents with virtual folder navigation; extract here or to any destination via the in-app folder picker; compress files/folders to ZIP with a custom name
 - **Editor** — syntax-highlighted editor (CodeMirror) for text, code, Markdown, and DOCX preview
+- **Spreadsheet viewer** — CSV / XLSX / ODS browsing with first-row-as-header mode, sortable columns (numeric or locale-aware string compare), global filter, and a per-column filter row. Multi-sheet tab bar for Excel workbooks. Inline edit mode for CSV with save-as-original-order safeguards.
 - **Snapshots** — lightweight per-file version history stored in SQLite; auto mode (snapshot on every save) or manual mode; configurable max count (2–50); diff view for text files; restore-only for binary files (images, spreadsheets, PDFs)
 - **Activity feed** — per-file history tab in the preview panel showing open, edit, rename, and delete events with timestamps
 - **Quick Look** — press Space on any selected file to open an instant floating preview
@@ -35,6 +37,7 @@ Two formats are available: **NSIS `.exe`** (recommended) and **MSI `.msi`**.
 - **Shared workspaces** — host your workspace over a local or remote network; guests can browse, edit, create, and delete files in real time; granular per-path permissions (list, read, create, edit, delete); supports copy/paste and drag & drop across local and remote tabs
 - **Frameless window** — custom titlebar with native window controls
 - **i18n** — English and French UI, switchable in Settings
+- **Fast on real workspaces** — SQLite WAL with `synchronous=NORMAL`, 256 MB mmap, composite indexes on tag-aware JOINs, lazy-loaded heavy viewers (pdfjs / CodeMirror), batched DB writes during content indexing, single global event listener for indexing progress, LRU cache for folder size computations. Workspaces with tens of thousands of files stay responsive.
 
 ## Tech stack
 
@@ -147,9 +150,12 @@ The host starts sharing from the sidebar — the app binds a WebSocket server on
 
 ### Search & Discovery
 - [x] **Command palette** — recent files, recent searches, parallel DB + live filesystem search
-- [ ] **Full-text search inside files** — index file contents (text, code, PDF text layer) with instant results
+- [x] **Full-text search inside files** — PDFs, DOCX, XLSX, PPTX, text and code indexed via SQLite FTS5
+- [ ] **Semantic search via embeddings** — local embeddings (Ollama `nomic-embed-text` or similar) stored in `sqlite-vec`, ranked by cosine similarity. Enables queries like *"find the document about budget reorganization"* without exact keyword match
+- [ ] **RAG for AI memory** — embed each saved memory; on every user turn, retrieve the top-k most relevant ones instead of injecting the 30 most recent verbatim. Removes the context-window pressure of long-lived memory
 - [ ] **Search operators** — `tag:Code size:>1MB modified:7d`, regex, exclude patterns
 - [ ] **Global search palette** — Ctrl+Shift+F across all workspaces simultaneously
+- [ ] **Content-hash duplicate detection** — current `find_duplicates` matches by (name, size); content hashing would catch renamed copies too
 
 ### Cloud & Sync
 - [ ] **Workspace sync** — sync metadata, tags, and saved views across machines
@@ -187,6 +193,9 @@ The host starts sharing from the sidebar — the app binds a WebSocket server on
 - [ ] **Onboarding wizard** — guided first-run creating a workspace and explaining tags
 - [ ] **Keyboard shortcut panel** — `?` key opens a reference overlay
 - [ ] **Customizable columns** — show/hide and reorder columns in list view
+- [ ] **Virtualized file list** — currently the FileList renders every entry in the DOM; folders with 2000+ files feel slightly laggy. Virtualization via `@tanstack/react-virtual` would cap DOM nodes regardless of folder size
+- [ ] **OS-level reminders for workspace tasks** — fire Windows toasts when an in-app task becomes due, even when nxs is closed. Requires a small background scheduler integrated with the Windows Task Scheduler
+- [ ] **Spreadsheet operators & multi-column sort** — `>`, `<`, range syntax in column filters; secondary sort tiebreaker. Useful for serious data exploration
 
 ### Monetization & Distribution
 - [ ] **License key system** — offline activation with server-validated license

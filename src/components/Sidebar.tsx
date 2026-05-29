@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { clsx } from "clsx";
 import {
@@ -7,7 +6,9 @@ import {
   File, Folder, FolderPlus, Hash, Loader2, LogIn, Plus, RefreshCw, Share2, Tag, Trash2, Users, X, Zap,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useStore } from "../store/useStore";
+import { useIndexingStore, seedIndexingProgress } from "../store/useIndexingStore";
 import type { Context, FileEntry, ListEntry, PinnedItem, SavedView, Tag as TagType } from "../types";
 import { JoinModal } from "./JoinModal";
 import { ShareModal } from "./ShareModal";
@@ -328,40 +329,30 @@ function SectionHeader({ label, action }: { label: string; action?: React.ReactN
 }
 
 /// Per-folder indexing progress badge.
-/// Click → opens a small popover showing stats and a "Reindex everything" button.
-/// Listens to `content-indexed` events to update the percentage live during indexing.
+/// Uses the global `useIndexingStore` so a single tauri event listener feeds all
+/// badges in the sidebar (instead of N listeners). The badge itself only subscribes
+/// to its own slot via a selector, so it does not re-render when other folders progress.
 function IndexingBadge({ path }: { path: string }) {
-  const [stats, setStats] = useState<{ total: number; indexed: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
-  const [currentFile, setCurrentFile] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
 
-  const refresh = useCallback(async () => {
-    try {
-      const [total, indexed] = await invoke<[number, number]>("get_indexing_stats", { path });
-      setStats({ total, indexed });
-    } catch { /* ignore */ }
-  }, [path]);
+  // Subscribe ONLY to this folder's slice of the progress map. Returns undefined
+  // until seedIndexingProgress has fired, which is fine — we render nothing then.
+  const state = useIndexingStore((s) => s.progress[path]);
+  const ensureListener = useIndexingStore((s) => s.ensureListener);
+  useEffect(() => { ensureListener(); }, [ensureListener]);
 
-  useEffect(() => { refresh(); }, [refresh]);
-
-  // Debounced refresh — the indexer emits one event per file processed, which can be
-  // dozens per second. Without debounce, every badge in the sidebar hammers the DB.
+  // Initial fetch — seeds the global store under our path key.
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    let pending: ReturnType<typeof setTimeout> | null = null;
-    listen<{ done: boolean; current?: string }>("content-indexed", (e) => {
-      if (e.payload.current) setCurrentFile(e.payload.current);
-      if (e.payload.done) setCurrentFile(null);
-      if (pending) return;
-      pending = setTimeout(() => { pending = null; refresh(); }, 500);
-    }).then((fn) => { unlisten = fn; });
-    return () => {
-      unlisten?.();
-      if (pending) clearTimeout(pending);
-    };
-  }, [refresh]);
+    let cancelled = false;
+    invoke<[number, number]>("get_indexing_stats", { path })
+      .then(([total, indexed]) => { if (!cancelled) seedIndexingProgress(path, total, indexed); })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, [path]);
 
   // Close popover on outside click
   useEffect(() => {
@@ -373,7 +364,12 @@ function IndexingBadge({ path }: { path: string }) {
     return () => window.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  if (!stats || stats.total === 0) return null;
+  if (!state || state.total === 0) return null;
+  // Clamp so display can never overshoot 100% even if the backend counter desyncs
+  // (e.g. files added by the watcher during a long indexing run).
+  const safeIndexed = Math.min(state.indexed, state.total);
+  const stats = { total: state.total, indexed: safeIndexed };
+  const currentFile = state.current;
 
   const pct = Math.round((stats.indexed / stats.total) * 100);
   const isFull = pct >= 100;
@@ -386,30 +382,55 @@ function IndexingBadge({ path }: { path: string }) {
     try {
       await invoke("index_directory_content", { path, force: true });
     } catch (e) { console.error(e); }
-    finally { setBusy(false); refresh(); }
+    finally {
+      setBusy(false);
+      // After the indexer's final emit (done=true), counters are already up to date
+      // in the global store. A safety-net refresh re-reads the DB to be sure.
+      invoke<[number, number]>("get_indexing_stats", { path })
+        .then(([total, indexed]) => seedIndexingProgress(path, total, indexed))
+        .catch(() => {});
+    }
+  };
+
+  // Floating popover anchored to the button's bounding rect, rendered via portal
+  // so the sidebar's overflow doesn't clip it. buttonRef + anchor are declared above
+  // (with the other hooks) so they don't run conditionally after the early return.
+  const toggleOpen = () => {
+    if (!open && buttonRef.current) {
+      const r = buttonRef.current.getBoundingClientRect();
+      // Open to the right of the badge so it never overflows past the sidebar's right edge
+      setAnchor({ top: r.bottom + 4, left: r.right - 240 });
+    }
+    setOpen((v) => !v);
   };
 
   return (
-    <div className="relative shrink-0 mr-0.5">
+    <>
       <button
-        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
-        disabled={busy}
-        title={busy ? "Indexing…" : "Click for indexing details"}
+        ref={buttonRef}
+        onClick={(e) => { e.stopPropagation(); toggleOpen(); }}
+        title={busy ? "Indexing in progress — click to view details" : "Click for indexing details"}
         className={clsx(
-          "flex items-center gap-1 px-1 h-4 rounded text-[9px] font-medium transition-colors",
+          "shrink-0 mr-0.5 flex items-center gap-1 px-1 h-4 rounded text-[9px] font-medium transition-colors",
           isFull
             ? "text-emerald-400/80 hover:bg-emerald-500/10"
-            : "text-amber-400 hover:bg-amber-500/10",
-          busy && "opacity-60 cursor-wait"
+            : "text-amber-400 hover:bg-amber-500/10"
         )}
       >
         {busy ? <Loader2 size={8} className="animate-spin" /> : (!isFull && <RefreshCw size={8} />)}
         <span>{pct}%</span>
       </button>
-      {open && (
+      {open && anchor && createPortal(
         <div
           ref={popoverRef}
-          className="absolute right-0 top-5 z-50 w-60 rounded-lg border border-border bg-surface-2 shadow-xl p-3 flex flex-col gap-2"
+          style={{
+            position: "fixed",
+            top: anchor.top,
+            left: Math.max(8, Math.min(anchor.left, window.innerWidth - 248)),
+            width: 240,
+            zIndex: 1000,
+          }}
+          className="rounded-lg border border-border bg-surface-2 shadow-2xl p-3 flex flex-col gap-2"
         >
           <div>
             <p className="text-[11px] font-semibold text-text-primary mb-0.5">Content indexing</p>
@@ -447,9 +468,10 @@ function IndexingBadge({ path }: { path: string }) {
           <p className="text-[10px] text-text-muted leading-relaxed -mt-1">
             Runs in the background. The app may feel slower while it processes large PDFs.
           </p>
-        </div>
+        </div>,
+        document.body
       )}
-    </div>
+    </>
   );
 }
 

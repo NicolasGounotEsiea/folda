@@ -21,6 +21,7 @@ import remarkGfm from "remark-gfm";
 import { useStore } from "../store/useStore";
 import type { FolderStats, ListEntry, Tag as TagType } from "../types";
 import { useTranslation } from "../utils/i18n";
+import { getCachedFolderStats, cacheFolderStats } from "../utils/folderSizeCache";
 
 interface ActivityEntry {
   id: number;
@@ -135,12 +136,25 @@ function FolderStatsView({ path }: { path: string }) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    // Use cached value if fresh — avoids re-walking the tree on back/forth navigation.
+    const cached = getCachedFolderStats(path);
+    if (cached) {
+      setStats(cached);
+      setLoading(false);
+      return;
+    }
     setStats(null);
     setLoading(true);
+    let cancelled = false;
     invoke<FolderStats>("get_folder_stats", { path })
-      .then(setStats)
-      .catch(() => setStats(null))
-      .finally(() => setLoading(false));
+      .then((s) => {
+        if (cancelled) return;
+        cacheFolderStats(path, s);
+        setStats(s);
+      })
+      .catch(() => { if (!cancelled) setStats(null); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [path]);
 
   if (loading) return (
@@ -277,7 +291,7 @@ function FolderPreview({ folder, onClose, width, onDragStart }: {
   };
 
   return (
-    <div style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden relative">
+    <div style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden relative select-text">
       {/* Resize handle */}
       <div
         onMouseDown={onDragStart}
@@ -443,7 +457,7 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
   const isCode = ext in EXT_LANG;
 
   return (
-    <div style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden relative">
+    <div style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden relative select-text">
       {/* Resize handle */}
       <div onMouseDown={onDragStart} className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-accent/40 transition-colors z-10" />
       {/* Close button */}

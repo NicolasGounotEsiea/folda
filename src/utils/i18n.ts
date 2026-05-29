@@ -128,6 +128,36 @@ type AppStrings = {
   ollamaModelDone: string;
   ollamaToolWarning: string;
   ollamaRefresh: string;
+
+  // ── Spreadsheet viewer ────────────────────────────────────────────────────
+  sheetEdit: string;            // "Edit" / "Éditer"
+  sheetSave: string;            // "Save" / "Sauvegarder"
+  sheetHeader: string;          // "Header" / "En-tête"
+  sheetHeaderToggleOn: string;  // "First row used as header (click to disable)"
+  sheetHeaderToggleOff: string; // "Use first row as header"
+  sheetFilter: string;          // "Filter" / "Filtrer"
+  sheetFilterPlaceholder: string; // "Filter…" / "Filtrer…"
+  sheetClearFilter: string;     // tooltip "Clear" / "Effacer"
+  sheetCloseFilter: string;     // tooltip "Close" / "Fermer"
+  sheetSortActive: string;      // pill "Sort on" / "Tri actif"
+  sheetSortClear: string;       // tooltip "Clear sort" / "Annuler le tri"
+  sheetSortClick: string;       // tooltip "Click to sort" / "Cliquer pour trier"
+  sheetEditing: string;         // status "editing" / "édition en cours"
+  sheetEditingHint: string;     // banner "Edit mode — click a cell to modify"
+  sheetTruncatedTo: string;     // banner "Display limited to first {n} rows"
+  sheetTruncatedStatus: string; // status "truncated to {n}"
+  sheetRowSing: string;         // "row" / "ligne"
+  sheetRowPlur: string;         // "rows" / "lignes"
+  sheetColSing: string;         // "column" / "colonne"
+  sheetColPlur: string;         // "columns" / "colonnes"
+  sheetSheets: string;          // "sheets" / "feuilles"
+  sheetSortedBy: string;        // "sorted by" / "trié par"
+  sheetColumnFilters: string;       // toolbar button "Column filters" / "Filtres colonne"
+  sheetColumnFiltersShow: string;   // tooltip when hidden
+  sheetColumnFiltersHide: string;   // tooltip when shown
+  sheetColumnFilterPlaceholder: string;  // input placeholder e.g. "Filter…"
+  sheetColumnFiltersActive: string;     // status "{n} column filter(s) active"
+  sheetColumnFiltersClearAll: string;   // tooltip on clear-all button
 };
 
 const translations: Record<string, AppStrings> = {
@@ -248,6 +278,36 @@ const translations: Record<string, AppStrings> = {
     ollamaModelDone: "Model ready",
     ollamaToolWarning: "This model may not support tools — responses may be text-only",
     ollamaRefresh: "Refresh",
+
+    // Spreadsheet
+    sheetEdit: "Edit",
+    sheetSave: "Save",
+    sheetHeader: "Header",
+    sheetHeaderToggleOn: "First row used as header (click to disable)",
+    sheetHeaderToggleOff: "Use first row as header",
+    sheetFilter: "Filter",
+    sheetFilterPlaceholder: "Filter…",
+    sheetClearFilter: "Clear",
+    sheetCloseFilter: "Close",
+    sheetSortActive: "Sort on",
+    sheetSortClear: "Clear sort",
+    sheetSortClick: "Click to sort",
+    sheetEditing: "editing",
+    sheetEditingHint: "Edit mode — click a cell to modify",
+    sheetTruncatedTo: "Display limited to first {n} rows",
+    sheetTruncatedStatus: "truncated to {n}",
+    sheetRowSing: "row",
+    sheetRowPlur: "rows",
+    sheetColSing: "column",
+    sheetColPlur: "columns",
+    sheetSheets: "sheets",
+    sheetSortedBy: "sorted by",
+    sheetColumnFilters: "Column filters",
+    sheetColumnFiltersShow: "Show column filters",
+    sheetColumnFiltersHide: "Hide column filters",
+    sheetColumnFilterPlaceholder: "Filter…",
+    sheetColumnFiltersActive: "{n} column filter(s) active",
+    sheetColumnFiltersClearAll: "Clear all column filters",
   },
 
   fr: {
@@ -367,6 +427,36 @@ const translations: Record<string, AppStrings> = {
     ollamaModelDone: "Modèle prêt",
     ollamaToolWarning: "Ce modèle ne supporte peut-être pas les outils — les réponses peuvent être en texte uniquement",
     ollamaRefresh: "Rafraîchir",
+
+    // Spreadsheet
+    sheetEdit: "Éditer",
+    sheetSave: "Sauvegarder",
+    sheetHeader: "En-tête",
+    sheetHeaderToggleOn: "Première ligne utilisée comme en-tête (cliquer pour désactiver)",
+    sheetHeaderToggleOff: "Activer la première ligne comme en-tête",
+    sheetFilter: "Filtrer",
+    sheetFilterPlaceholder: "Filtrer…",
+    sheetClearFilter: "Effacer",
+    sheetCloseFilter: "Fermer",
+    sheetSortActive: "Tri actif",
+    sheetSortClear: "Annuler le tri",
+    sheetSortClick: "Cliquer pour trier",
+    sheetEditing: "édition en cours",
+    sheetEditingHint: "Mode édition — cliquez une cellule pour modifier",
+    sheetTruncatedTo: "Affichage limité aux {n} premières lignes",
+    sheetTruncatedStatus: "tronqué à {n}",
+    sheetRowSing: "ligne",
+    sheetRowPlur: "lignes",
+    sheetColSing: "colonne",
+    sheetColPlur: "colonnes",
+    sheetSheets: "feuilles",
+    sheetSortedBy: "trié par",
+    sheetColumnFilters: "Filtres colonne",
+    sheetColumnFiltersShow: "Afficher les filtres par colonne",
+    sheetColumnFiltersHide: "Masquer les filtres par colonne",
+    sheetColumnFilterPlaceholder: "Filtrer…",
+    sheetColumnFiltersActive: "{n} filtre(s) colonne actif(s)",
+    sheetColumnFiltersClearAll: "Effacer tous les filtres colonne",
   },
 };
 

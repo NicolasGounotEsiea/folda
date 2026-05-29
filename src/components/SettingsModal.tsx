@@ -834,6 +834,21 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                       </div>
                     )}
 
+                    {/* Custom instructions — appended to every system prompt */}
+                    <div className="border-t border-border-subtle pt-3">
+                      <p className="text-[12px] text-text-primary mb-1.5">Custom instructions</p>
+                      <textarea
+                        value={settings.aiInstructions}
+                        onChange={(e) => patch({ aiInstructions: e.target.value })}
+                        placeholder="e.g. Always organize files by client first, then by date. Use French. Never tag anything as Important without asking."
+                        rows={4}
+                        className="w-full px-2.5 py-2 rounded bg-surface-3 border border-border text-[11px] text-text-primary placeholder-text-muted outline-none focus:border-accent transition-colors resize-y leading-relaxed"
+                      />
+                      <p className="text-[10px] text-text-muted mt-1">
+                        Appended to every system prompt. Keep it concise — long instructions slow down small Ollama models.
+                      </p>
+                    </div>
+
                     {/* Anthropic section */}
                     {settings.aiProvider === "anthropic" && (
                       <div className="border-t border-border-subtle pt-3 flex flex-col gap-1">
@@ -881,7 +896,7 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                   </div>
                   <div className="ml-auto">
                     <span className="text-[11px] text-text-muted bg-surface-3 px-2 py-1 rounded">
-                      {t.about.version} 0.1.2
+                      {t.about.version} {__APP_VERSION__}
                     </span>
                   </div>
                 </div>

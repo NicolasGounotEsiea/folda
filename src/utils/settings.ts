@@ -24,6 +24,7 @@ export interface AppSettings {
   ollamaModel: string;
   ollamaUrl: string;
   contentIndexing: boolean;
+  aiInstructions: string;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -52,6 +53,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ollamaModel: "llama3.2:3b",
   ollamaUrl: "http://localhost:11434",
   contentIndexing: true,
+  aiInstructions: "",
 };
 
 export interface AccentPreset {
@@ -134,5 +136,6 @@ export function deserializeSettings(raw: Record<string, string>): AppSettings {
     ollamaModel:        raw.ollamaModel ?? d.ollamaModel,
     ollamaUrl:          raw.ollamaUrl ?? d.ollamaUrl,
     contentIndexing:    raw.contentIndexing !== undefined ? raw.contentIndexing === "true" : d.contentIndexing,
+    aiInstructions:     raw.aiInstructions ?? d.aiInstructions,
   };
 }

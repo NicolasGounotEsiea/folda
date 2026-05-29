@@ -5,6 +5,24 @@ use std::path::Path;
 pub fn init(db_path: &Path) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
     create_tables(&conn)?;
+
+    // Truncate-checkpoint the WAL once at startup. If the .db-wal file grew large
+    // from a previous session (the indexer can write tens of thousands of rows),
+    // this reclaims the space and resets the WAL to zero — keeps subsequent reads
+    // fast (smaller WAL = fewer pages to traverse on each query).
+    // The PRAGMA returns rows; query_row drains them so the statement is finalized.
+    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+
+    // Performance pragmas (kept on the connection, not in WAL):
+    //   - synchronous = NORMAL: same durability as FULL with WAL, much faster bulk writes
+    //   - temp_store = MEMORY:  temp tables / sort indexes in RAM instead of disk
+    //   - mmap_size = 256 MB:   memory-map up to 256 MB of the DB for read-only queries
+    let _ = conn.execute_batch(
+        "PRAGMA synchronous = NORMAL;
+         PRAGMA temp_store  = MEMORY;
+         PRAGMA mmap_size   = 268435456;",
+    );
+
     Ok(conn)
 }
 
@@ -167,6 +185,12 @@ fn create_tables(conn: &Connection) -> Result<()> {
             created_at INTEGER NOT NULL DEFAULT (unixepoch())
         );
 
+        CREATE TABLE IF NOT EXISTS workspace_notes (
+            context_id INTEGER PRIMARY KEY,
+            content    TEXT    NOT NULL DEFAULT '',
+            updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
         CREATE TABLE IF NOT EXISTS file_content (
             file_id      INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
             text_content TEXT    NOT NULL DEFAULT '',
@@ -286,6 +310,24 @@ fn create_tables(conn: &Connection) -> Result<()> {
             COMMIT;
         ")?;
     }
+
+    // ── Performance indexes (created idempotently after migrations) ───────────
+    // Composite (file_id, context_id) for the tag-aware JOINs in list_directory
+    // and load_files_with_tags. Without this, queries scan idx_file_tags_file_id
+    // then filter by context_id row-by-row.
+    let _ = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_file_tags_file_ctx
+             ON file_tags(file_id, context_id);
+
+         CREATE INDEX IF NOT EXISTS idx_folder_tags_path_ctx
+             ON folder_tags(folder_path, context_id);
+
+         CREATE INDEX IF NOT EXISTS idx_file_content_attempted
+             ON file_content(file_id) WHERE text_content != '';
+
+         CREATE INDEX IF NOT EXISTS idx_activity_file_ts
+             ON activity(file_id, timestamp DESC);",
+    );
 
     Ok(())
 }
