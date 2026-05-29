@@ -89,10 +89,6 @@ pub async fn connect(
                         Err(e) => {
                             let _ = reply.send(Err(e.to_string()));
                         }
-                        Some(Ok(Message::Ping(data)))
-                            if sink.send(Message::Pong(data.clone())).await.is_err() => { break; }
-                        Some(Ok(Message::Close(_))) | None => break,
-                        _ => {}
                     }
                 }
                 None => break,
