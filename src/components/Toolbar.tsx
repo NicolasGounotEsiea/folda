@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search, Settings, Columns2, BarChart2 } from "lucide-react";
+import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search, Settings, Columns2, BarChart2, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import type { FileEntry, ListEntry } from "../types";
@@ -16,7 +16,7 @@ function useDebounce(fn: (...args: unknown[]) => void, delay: number) {
   };
 }
 
-export function Toolbar({ onOpenSettings, onOpenDiskUsage }: { onOpenSettings: () => void; onOpenDiskUsage?: () => void }) {
+export function Toolbar({ onOpenSettings, onOpenDiskUsage, onOpenAi, aiActive }: { onOpenSettings: () => void; onOpenDiskUsage?: () => void; onOpenAi?: () => void; aiActive?: boolean }) {
   const {
     searchQuery, setSearchQuery,
     searchType, setSearchType,
@@ -277,6 +277,19 @@ export function Toolbar({ onOpenSettings, onOpenDiskUsage }: { onOpenSettings: (
           className="w-7 h-7 flex items-center justify-center rounded text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
         >
           <BarChart2 size={13} />
+        </button>
+      )}
+
+      {onOpenAi && (
+        <button
+          onClick={onOpenAi}
+          title="AI Assistant (Ctrl+I)"
+          className={clsx(
+            "w-7 h-7 flex items-center justify-center rounded transition-colors",
+            aiActive ? "bg-accent/20 text-accent" : "text-text-muted hover:text-text-secondary hover:bg-surface-3"
+          )}
+        >
+          <Sparkles size={13} />
         </button>
       )}
 

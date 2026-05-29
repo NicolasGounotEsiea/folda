@@ -1113,7 +1113,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
         >
         <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
           {parentPath && (
-            <button onClick={() => navigate(parentPath)} onDoubleClick={() => navigate(parentPath)}
+            <button data-is-entry onClick={() => navigate(parentPath)} onDoubleClick={() => navigate(parentPath)}
               className="flex flex-col items-start gap-1.5 p-3 rounded-lg border border-border hover:border-yellow-400/30 hover:bg-surface-2 text-left w-32 transition-colors">
               <Folder size={20} className="text-yellow-400 opacity-50" />
               <span className="text-[12px] text-text-muted">..</span>
@@ -1197,7 +1197,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
         onPointerDown={(e) => {
           if (e.button !== 0) return;
           const target = e.target as HTMLElement;
-          if (target.closest("[data-is-entry]")) return;
+          if (target.closest("[data-is-entry]") || target.closest("[data-is-header]")) return;
           rubberBandActive.current = { startX: e.clientX, startY: e.clientY };
           listContainerRef.current?.setPointerCapture(e.pointerId);
           setRubberBand({ x1: e.clientX, y1: e.clientY, x2: e.clientX, y2: e.clientY });
@@ -1212,7 +1212,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
         }}
       >
         {/* Header */}
-        <div style={ROW_COLS} className={clsx(ROW_GRID, "h-7 border-b border-border-subtle sticky top-0 bg-surface-0 shrink-0")}>
+        <div data-is-header style={ROW_COLS} className={clsx(ROW_GRID, "h-7 border-b border-border-subtle sticky top-0 bg-surface-0 shrink-0")}>
           {/* col 1: icon spacer */}
           <span />
           {/* col 2: name */}
@@ -1262,7 +1262,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
 
         {/* ".." up row */}
         {parentPath && (
-          <button style={ROW_COLS} onClick={() => navigate(parentPath)} onDoubleClick={() => navigate(parentPath)}
+          <button data-is-entry style={ROW_COLS} onClick={() => navigate(parentPath)} onDoubleClick={() => navigate(parentPath)}
             className={clsx(ROW_GRID, "w-full h-9 text-left transition-colors hover:bg-surface-2 text-text-muted hover:text-text-primary shrink-0")}>
             <ChevronUp size={15} className="opacity-50" />
             <span className="text-[12px]">..</span>

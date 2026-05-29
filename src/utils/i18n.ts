@@ -96,6 +96,38 @@ type AppStrings = {
   sharingGuests: string;
   sharingShare: string;
   sharingJoin: string;
+
+  // AI assistant
+  aiTitle: string;
+  aiEmptyDesc: string;
+  aiSuggestion1: string;
+  aiSuggestion2: string;
+  aiSuggestion3: string;
+  aiThinking: string;
+  aiUsingTool: string;
+  aiPlaceholder: string;
+  aiStop: string;
+  aiDisclaimer: string;
+  aiDisclaimerOllama: string;
+  aiShiftEnter: string;
+  // Ollama
+  ollamaStatus: string;
+  ollamaRunning: string;
+  ollamaOffline: string;
+  ollamaChecking: string;
+  ollamaNotInstalled: string;
+  ollamaInstallDesc: string;
+  ollamaDownload: string;
+  ollamaInstalledModels: string;
+  ollamaNoModels: string;
+  ollamaDownloadModel: string;
+  ollamaPull: string;
+  ollamaPulling: string;
+  ollamaCustomModel: string;
+  ollamaModelPlaceholder: string;
+  ollamaModelDone: string;
+  ollamaToolWarning: string;
+  ollamaRefresh: string;
 };
 
 const translations: Record<string, AppStrings> = {
@@ -186,6 +218,36 @@ const translations: Record<string, AppStrings> = {
     sharingGuests: "guests",
     sharingShare: "Share",
     sharingJoin: "Join",
+
+    aiTitle: "AI Assistant",
+    aiEmptyDesc: "Ask me anything about your files — I can browse folders, search, read files, and help you organize.",
+    aiSuggestion1: "What's in this folder?",
+    aiSuggestion2: "Find all PDF files",
+    aiSuggestion3: "What are my recent files?",
+    aiThinking: "Thinking…",
+    aiUsingTool: "Using tool:",
+    aiPlaceholder: "Ask about your files… (Enter to send)",
+    aiStop: "Stop",
+    aiDisclaimer: "File paths may be sent to Anthropic",
+    aiDisclaimerOllama: "Everything stays local — no data leaves your machine",
+    aiShiftEnter: "Shift+Enter for new line",
+    ollamaStatus: "Ollama status",
+    ollamaRunning: "Ollama is running",
+    ollamaOffline: "Ollama not detected",
+    ollamaChecking: "Checking…",
+    ollamaNotInstalled: "Ollama is not installed or not running",
+    ollamaInstallDesc: "Ollama lets you run AI models locally for free. Install it once, then come back here to download a model.",
+    ollamaDownload: "Download Ollama (free)",
+    ollamaInstalledModels: "Installed models",
+    ollamaNoModels: "No models installed yet",
+    ollamaDownloadModel: "Download a model",
+    ollamaPull: "Download",
+    ollamaPulling: "Downloading…",
+    ollamaCustomModel: "Custom model name",
+    ollamaModelPlaceholder: "e.g. mistral:7b",
+    ollamaModelDone: "Model ready",
+    ollamaToolWarning: "This model may not support tools — responses may be text-only",
+    ollamaRefresh: "Refresh",
   },
 
   fr: {
@@ -275,6 +337,36 @@ const translations: Record<string, AppStrings> = {
     sharingGuests: "invités",
     sharingShare: "Partager",
     sharingJoin: "Rejoindre",
+
+    aiTitle: "Assistant IA",
+    aiEmptyDesc: "Posez-moi des questions sur vos fichiers — je peux parcourir les dossiers, rechercher, lire des fichiers et vous aider à organiser.",
+    aiSuggestion1: "Qu'est-ce qu'il y a dans ce dossier ?",
+    aiSuggestion2: "Trouver tous les PDF",
+    aiSuggestion3: "Quels sont mes fichiers récents ?",
+    aiThinking: "Réflexion en cours…",
+    aiUsingTool: "Utilisation de l'outil :",
+    aiPlaceholder: "Posez une question sur vos fichiers… (Entrée pour envoyer)",
+    aiStop: "Arrêter",
+    aiDisclaimer: "Les chemins de fichiers peuvent être envoyés à Anthropic",
+    aiDisclaimerOllama: "Tout reste local — aucune donnée ne quitte votre machine",
+    aiShiftEnter: "Maj+Entrée pour nouvelle ligne",
+    ollamaStatus: "Statut d'Ollama",
+    ollamaRunning: "Ollama est actif",
+    ollamaOffline: "Ollama non détecté",
+    ollamaChecking: "Vérification…",
+    ollamaNotInstalled: "Ollama n'est pas installé ou n'est pas actif",
+    ollamaInstallDesc: "Ollama vous permet d'exécuter des modèles IA localement et gratuitement. Installez-le une fois, puis revenez ici pour télécharger un modèle.",
+    ollamaDownload: "Télécharger Ollama (gratuit)",
+    ollamaInstalledModels: "Modèles installés",
+    ollamaNoModels: "Aucun modèle installé",
+    ollamaDownloadModel: "Télécharger un modèle",
+    ollamaPull: "Télécharger",
+    ollamaPulling: "Téléchargement…",
+    ollamaCustomModel: "Nom de modèle personnalisé",
+    ollamaModelPlaceholder: "ex. mistral:7b",
+    ollamaModelDone: "Modèle prêt",
+    ollamaToolWarning: "Ce modèle ne supporte peut-être pas les outils — les réponses peuvent être en texte uniquement",
+    ollamaRefresh: "Rafraîchir",
   },
 };
 

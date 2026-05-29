@@ -106,3 +106,22 @@ pub struct TagStat {
     pub tag_id: i64,
     pub count: i64,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FileSnippet {
+    pub path: String,
+    pub name: String,
+    /// First ~200 chars of extracted text content (UTF-8 safe)
+    pub snippet: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FileSnippetsPage {
+    pub snippets: Vec<FileSnippet>,
+    /// Total number of files directly in the directory
+    pub total: usize,
+    /// Offset used for this page
+    pub offset: usize,
+    /// True if there are more files beyond this page
+    pub has_more: bool,
+}

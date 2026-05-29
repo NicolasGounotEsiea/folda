@@ -1,16 +1,30 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { clsx } from "clsx";
-import { Activity, BookOpen, Eye, FileText, FolderOpen, Info, LayoutList, Palette, Trash2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Activity, BookOpen, Bot, CheckCircle2, ChevronDown, Eye, FileText, FolderOpen, Info, LayoutList, Loader2, Palette, RefreshCw, Trash2, X, XCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { clearLog, getLogPath } from "../utils/errorLog";
 import { useStore } from "../store/useStore";
 import { ACCENT_PRESETS, serializeSettings, type AppSettings } from "../utils/settings";
+import { useTranslation } from "../utils/i18n";
 
 // ── i18n strings ─────────────────────────────────────────────────────────────
 const T = {
   en: {
     settings: "Settings", saved: "Saved",
-    sections: { appearance: "Appearance", explorer: "Explorer", editor: "Editor", activity: "Activity", about: "About" },
+    sections: { appearance: "Appearance", explorer: "Explorer", editor: "Editor", activity: "Activity", ai: "AI Assistant", about: "About" },
+    ai: {
+      desc: "Enable a Claude-powered assistant that can browse your files, search, read content, and help you stay organized. Your file paths are sent to Anthropic when you use the assistant.",
+      enable: "Enable AI Assistant",
+      provider: "Provider",
+      providerOllamaSub: "Free · Local · No data sent",
+      providerAnthropicSub: "Paid API · Best quality",
+      apiKey: "API Key",
+      apiKeyHint: "Get your key at console.anthropic.com · Stored locally, never synced",
+      model: "Model",
+      modelHint: "Haiku is fast and cheap · Sonnet is balanced · Opus is most capable",
+      ollamaUrl: "Ollama URL (advanced)",
+    },
     appearance: {
       theme: "Theme", dark: "Dark", light: "Light",
       accent: "Accent color",
@@ -55,7 +69,19 @@ const T = {
   },
   fr: {
     settings: "Paramètres", saved: "Enregistré",
-    sections: { appearance: "Apparence", explorer: "Explorateur", editor: "Éditeur", activity: "Activité", about: "À propos" },
+    sections: { appearance: "Apparence", explorer: "Explorateur", editor: "Éditeur", activity: "Activité", ai: "Assistant IA", about: "À propos" },
+    ai: {
+      desc: "Activez un assistant alimenté par Claude qui peut parcourir vos fichiers, rechercher, lire du contenu et vous aider à vous organiser. Vos chemins de fichiers sont envoyés à Anthropic lors de l'utilisation de l'assistant.",
+      enable: "Activer l'assistant IA",
+      provider: "Fournisseur",
+      providerOllamaSub: "Gratuit · Local · Aucune donnée envoyée",
+      providerAnthropicSub: "API payante · Meilleure qualité",
+      apiKey: "Clé API",
+      apiKeyHint: "Obtenez votre clé sur console.anthropic.com · Stockée localement, jamais synchronisée",
+      model: "Modèle",
+      modelHint: "Haiku est rapide et économique · Sonnet est équilibré · Opus est le plus puissant",
+      ollamaUrl: "URL d'Ollama (avancé)",
+    },
     appearance: {
       theme: "Thème", dark: "Sombre", light: "Clair",
       accent: "Couleur d'accent",
@@ -101,13 +127,14 @@ const T = {
 } as const;
 
 type Lang = keyof typeof T;
-type Section = "appearance" | "explorer" | "editor" | "activity" | "about";
+type Section = "appearance" | "explorer" | "editor" | "activity" | "ai" | "about";
 
 const SECTIONS: { id: Section; icon: React.ReactNode }[] = [
   { id: "appearance", icon: <Palette size={14} /> },
   { id: "explorer",   icon: <LayoutList size={14} /> },
   { id: "editor",     icon: <FileText size={14} /> },
   { id: "activity",   icon: <Activity size={14} /> },
+  { id: "ai",         icon: <Bot size={14} /> },
   { id: "about",      icon: <Info size={14} /> },
 ];
 
@@ -167,6 +194,239 @@ function SegmentedControl<T extends string | number>({
   );
 }
 
+// ── Ollama manager sub-component ──────────────────────────────────────────────
+
+type OllamaStatus = "checking" | "running" | "offline";
+
+interface PullProgress { status: string; percent: number | null }
+
+const SUGGESTED_MODELS = [
+  { name: "llama3.2:3b",   label: "Llama 3.2 3B",  size: "~2 GB",  tools: true  },
+  { name: "llama3.2:1b",   label: "Llama 3.2 1B",  size: "~1 GB",  tools: true  },
+  { name: "phi3:mini",     label: "Phi-3 Mini",    size: "~2.3 GB", tools: true  },
+  { name: "mistral:7b",    label: "Mistral 7B",    size: "~4.5 GB", tools: true  },
+  { name: "gemma2:2b",     label: "Gemma 2 2B",    size: "~1.6 GB", tools: false },
+];
+
+function OllamaManager({
+  ollamaUrl, currentModel, t, onModelSelect,
+}: {
+  ollamaUrl: string;
+  currentModel: string;
+  t: ReturnType<typeof import("../utils/i18n").useTranslation>;
+  onModelSelect: (m: string) => void;
+}) {
+  const [status, setStatus] = useState<OllamaStatus>("checking");
+  const [installedModels, setInstalledModels] = useState<string[]>([]);
+  const [pullName, setPullName] = useState("");
+  const [pulling, setPulling] = useState<string | null>(null);
+  const [pullProgress, setPullProgress] = useState<PullProgress | null>(null);
+  const [pullDone, setPullDone] = useState<string | null>(null);
+  const abortRef = useRef(false);
+
+  const check = async () => {
+    setStatus("checking");
+    try {
+      const res = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      if (!res.ok) throw new Error();
+      const data = await res.json() as { models: { name: string }[] };
+      setInstalledModels(data.models.map((m) => m.name));
+      setStatus("running");
+    } catch {
+      setStatus("offline");
+      setInstalledModels([]);
+    }
+  };
+
+  useEffect(() => { check(); }, [ollamaUrl]);
+
+  const pull = async (name: string) => {
+    if (pulling) return;
+    abortRef.current = false;
+    setPulling(name);
+    setPullProgress({ status: "Connecting…", percent: null });
+    setPullDone(null);
+    try {
+      const res = await fetch(`${ollamaUrl}/api/pull`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, stream: true }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body!.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done || abortRef.current) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const obj = JSON.parse(line) as { status: string; completed?: number; total?: number };
+            const percent = obj.total && obj.completed ? Math.round((obj.completed / obj.total) * 100) : null;
+            setPullProgress({ status: obj.status, percent });
+          } catch { /* ignore bad line */ }
+        }
+      }
+      setPullDone(name);
+      await check();
+      onModelSelect(name);
+    } catch (e) {
+      setPullProgress({ status: `Error: ${e}`, percent: null });
+    } finally {
+      setPulling(null);
+    }
+  };
+
+  const statusDot = {
+    checking: <Loader2 size={11} className="animate-spin text-text-muted" />,
+    running:  <CheckCircle2 size={11} className="text-emerald-400" />,
+    offline:  <XCircle size={11} className="text-red-400" />,
+  }[status];
+
+  const statusLabel = {
+    checking: t.ollamaChecking,
+    running:  t.ollamaRunning,
+    offline:  t.ollamaOffline,
+  }[status];
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Status */}
+      <div className="flex items-center justify-between py-1">
+        <div className="flex items-center gap-1.5">
+          {statusDot}
+          <span className="text-[12px] text-text-primary">{statusLabel}</span>
+        </div>
+        <button
+          onClick={check}
+          className="flex items-center gap-1 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
+        >
+          <RefreshCw size={11} /> {t.ollamaRefresh}
+        </button>
+      </div>
+
+      {status === "offline" && (
+        <div className="p-3 rounded-lg bg-surface-2 border border-border-subtle flex flex-col gap-2">
+          <p className="text-[11px] text-text-muted">{t.ollamaInstallDesc}</p>
+          <button
+            onClick={() => shellOpen("https://ollama.com/download").catch(() => {})}
+            className="self-start flex items-center gap-1.5 h-7 px-3 rounded bg-accent text-white text-[11px] hover:bg-accent/90 transition-colors"
+          >
+            {t.ollamaDownload}
+          </button>
+        </div>
+      )}
+
+      {status === "running" && (
+        <>
+          {/* Installed models */}
+          <div>
+            <p className="text-[11px] text-text-muted uppercase tracking-widest font-semibold mb-1.5">{t.ollamaInstalledModels}</p>
+            {installedModels.length === 0 ? (
+              <p className="text-[11px] text-text-muted italic">{t.ollamaNoModels}</p>
+            ) : (
+              <div className="flex flex-col gap-1">
+                {installedModels.map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => onModelSelect(m)}
+                    className={clsx(
+                      "flex items-center justify-between px-2.5 py-1.5 rounded-md text-[11px] border transition-colors",
+                      currentModel === m
+                        ? "bg-accent/10 border-accent/30 text-accent"
+                        : "bg-surface-3 border-border text-text-secondary hover:text-text-primary hover:bg-surface-4"
+                    )}
+                  >
+                    <span className="font-mono">{m}</span>
+                    {currentModel === m && <span className="text-[10px] opacity-70">✓</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Download a model */}
+          <div className="border-t border-border-subtle pt-3">
+            <p className="text-[11px] text-text-muted uppercase tracking-widest font-semibold mb-2">{t.ollamaDownloadModel}</p>
+
+            {/* Suggested */}
+            <div className="flex flex-col gap-1 mb-2">
+              {SUGGESTED_MODELS.filter((m) => !installedModels.includes(m.name)).map((m) => (
+                <div key={m.name} className="flex items-center justify-between px-2.5 py-1.5 rounded-md bg-surface-3 border border-border">
+                  <div className="flex flex-col">
+                    <span className="text-[11px] text-text-primary font-mono">{m.name}</span>
+                    <span className="text-[10px] text-text-muted">{m.label} · {m.size}{!m.tools ? " · ⚠️ no tools" : ""}</span>
+                  </div>
+                  <button
+                    onClick={() => pull(m.name)}
+                    disabled={!!pulling}
+                    className="text-[10px] px-2 py-1 rounded bg-accent/10 text-accent hover:bg-accent/20 transition-colors disabled:opacity-40"
+                  >
+                    {pulling === m.name ? <Loader2 size={10} className="animate-spin" /> : <ChevronDown size={10} />}
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* Custom */}
+            <div className="flex gap-1.5 items-center">
+              <input
+                type="text"
+                value={pullName}
+                onChange={(e) => setPullName(e.target.value)}
+                placeholder={t.ollamaModelPlaceholder}
+                className="flex-1 h-7 px-2.5 rounded bg-surface-3 border border-border text-[11px] text-text-primary placeholder-text-muted outline-none focus:border-accent transition-colors font-mono"
+                onKeyDown={(e) => { if (e.key === "Enter" && pullName.trim()) pull(pullName.trim()); }}
+              />
+              <button
+                onClick={() => pullName.trim() && pull(pullName.trim())}
+                disabled={!pullName.trim() || !!pulling}
+                className="h-7 px-3 rounded bg-surface-3 border border-border text-[11px] text-text-secondary hover:text-text-primary hover:bg-surface-4 disabled:opacity-40 transition-colors"
+              >
+                {pulling ? t.ollamaPulling : t.ollamaPull}
+              </button>
+            </div>
+
+            {/* Pull progress */}
+            {pulling && pullProgress && (
+              <div className="mt-2 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-text-muted truncate">{pullProgress.status}</span>
+                  {pullProgress.percent !== null && (
+                    <span className="text-[10px] text-accent ml-2 shrink-0">{pullProgress.percent}%</span>
+                  )}
+                </div>
+                {pullProgress.percent !== null && (
+                  <div className="h-1 rounded bg-surface-4 overflow-hidden">
+                    <div
+                      className="h-full bg-accent transition-all duration-300"
+                      style={{ width: `${pullProgress.percent}%` }}
+                    />
+                  </div>
+                )}
+                <button
+                  onClick={() => { abortRef.current = true; setPulling(null); setPullProgress(null); }}
+                  className="self-start text-[10px] text-red-400 hover:text-red-300"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+
+            {pullDone && (
+              <p className="text-[11px] text-emerald-400 mt-1.5">✓ {t.ollamaModelDone}: {pullDone}</p>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; onShowGuide?: () => void }) {
   const { settings, updateSettings, setShowHidden } = useStore();
@@ -183,6 +443,7 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
 
   const lang = settings.language as Lang;
   const t = T[lang] ?? T.en;
+  const ti = useTranslation(); // for OllamaManager (uses i18n.ts keys)
 
   const patch = async (p: Partial<AppSettings>) => {
     updateSettings(p);
@@ -488,6 +749,16 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                   />
                 </Row>
 
+                <Row label="Content indexing">
+                  <Toggle
+                    checked={settings.contentIndexing}
+                    onChange={(v) => patch({ contentIndexing: v })}
+                  />
+                </Row>
+                <p className="text-[11px] text-text-muted -mt-1 mb-2">
+                  When enabled, the content of PDFs, Word docs, and spreadsheets is extracted in the background after adding a folder to a workspace. This makes search work on file contents, not just file names. New and modified files are always indexed regardless of this setting.
+                </p>
+
                 <div className="pt-4 flex items-center justify-between">
                   <div>
                     <p className="text-[12px] text-text-primary">{t.activity.purge}</p>
@@ -502,6 +773,98 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                     {t.activity.purge}
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* ── AI Assistant ── */}
+            {section === "ai" && (
+              <div className="flex flex-col gap-3">
+                {/* Enable toggle */}
+                <Row label={t.ai.enable}>
+                  <Toggle checked={settings.claudeEnabled} onChange={(v) => patch({ claudeEnabled: v })} />
+                </Row>
+
+                {settings.claudeEnabled && (
+                  <>
+                    {/* Provider selector */}
+                    <div className="py-2 border-t border-border-subtle">
+                      <p className="text-[11px] text-text-muted uppercase tracking-widest font-semibold mb-2">{t.ai.provider}</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {([
+                          { id: "ollama",    label: "Ollama",         sub: t.ai.providerOllamaSub },
+                          { id: "anthropic", label: "Anthropic API",  sub: t.ai.providerAnthropicSub },
+                        ] as const).map((p) => (
+                          <button
+                            key={p.id}
+                            onClick={() => patch({ aiProvider: p.id })}
+                            className={clsx(
+                              "flex flex-col items-start px-3 py-2 rounded-lg border text-left transition-colors",
+                              settings.aiProvider === p.id
+                                ? "bg-accent/10 border-accent/40 text-accent"
+                                : "bg-surface-3 border-border text-text-secondary hover:bg-surface-4"
+                            )}
+                          >
+                            <span className="text-[12px] font-medium">{p.label}</span>
+                            <span className="text-[10px] opacity-70 mt-0.5">{p.sub}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Ollama section */}
+                    {settings.aiProvider === "ollama" && (
+                      <div className="border-t border-border-subtle pt-3">
+                        <OllamaManager
+                          ollamaUrl={settings.ollamaUrl}
+                          currentModel={settings.ollamaModel}
+                          t={ti}
+                          onModelSelect={(m) => patch({ ollamaModel: m })}
+                        />
+                        {/* URL customisation */}
+                        <div className="mt-3 pt-3 border-t border-border-subtle">
+                          <p className="text-[11px] text-text-muted mb-1">{t.ai.ollamaUrl}</p>
+                          <input
+                            type="text"
+                            value={settings.ollamaUrl}
+                            onChange={(e) => patch({ ollamaUrl: e.target.value })}
+                            placeholder="http://localhost:11434"
+                            className="w-full h-7 px-2.5 rounded bg-surface-3 border border-border text-[11px] text-text-primary outline-none focus:border-accent transition-colors font-mono"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Anthropic section */}
+                    {settings.aiProvider === "anthropic" && (
+                      <div className="border-t border-border-subtle pt-3 flex flex-col gap-1">
+                        <div className="py-1">
+                          <p className="text-[12px] text-text-primary mb-1.5">{t.ai.apiKey}</p>
+                          <input
+                            type="password"
+                            value={settings.claudeApiKey}
+                            onChange={(e) => patch({ claudeApiKey: e.target.value })}
+                            placeholder="sk-ant-…"
+                            className="w-full h-7 px-2.5 rounded bg-surface-3 border border-border text-[12px] text-text-primary placeholder-text-muted outline-none focus:border-accent transition-colors font-mono"
+                            spellCheck={false}
+                          />
+                          <p className="text-[10px] text-text-muted mt-1">{t.ai.apiKeyHint}</p>
+                        </div>
+                        <Row label={t.ai.model}>
+                          <SegmentedControl
+                            value={settings.claudeModel}
+                            options={[
+                              { value: "claude-haiku-4-5-20251001" as const, label: "Haiku" },
+                              { value: "claude-sonnet-4-6" as const,         label: "Sonnet" },
+                              { value: "claude-opus-4-7" as const,           label: "Opus" },
+                            ]}
+                            onChange={(v) => patch({ claudeModel: v })}
+                          />
+                        </Row>
+                        <p className="text-[10px] text-text-muted">{t.ai.modelHint}</p>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             )}
 

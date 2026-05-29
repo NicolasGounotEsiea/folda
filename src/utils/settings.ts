@@ -17,6 +17,13 @@ export interface AppSettings {
   language: "en" | "fr";
   telemetryEnabled: boolean;
   hasSeenOnboarding: boolean;
+  claudeEnabled: boolean;
+  aiProvider: "ollama" | "anthropic";
+  claudeApiKey: string;
+  claudeModel: "claude-haiku-4-5-20251001" | "claude-sonnet-4-6" | "claude-opus-4-7";
+  ollamaModel: string;
+  ollamaUrl: string;
+  contentIndexing: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -38,6 +45,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   language: "en",
   telemetryEnabled: false,
   hasSeenOnboarding: false,
+  claudeEnabled: false,
+  aiProvider: "ollama",
+  claudeApiKey: "",
+  claudeModel: "claude-haiku-4-5-20251001",
+  ollamaModel: "llama3.2:3b",
+  ollamaUrl: "http://localhost:11434",
+  contentIndexing: true,
 };
 
 export interface AccentPreset {
@@ -113,5 +127,12 @@ export function deserializeSettings(raw: Record<string, string>): AppSettings {
     language:           (raw.language as AppSettings["language"])         ?? d.language,
     telemetryEnabled:   raw.telemetryEnabled   !== undefined ? raw.telemetryEnabled   === "true" : d.telemetryEnabled,
     hasSeenOnboarding:  raw.hasSeenOnboarding  !== undefined ? raw.hasSeenOnboarding  === "true" : d.hasSeenOnboarding,
+    claudeEnabled:      raw.claudeEnabled !== undefined ? raw.claudeEnabled === "true" : d.claudeEnabled,
+    aiProvider:         (raw.aiProvider as AppSettings["aiProvider"]) ?? d.aiProvider,
+    claudeApiKey:       raw.claudeApiKey ?? d.claudeApiKey,
+    claudeModel:        (raw.claudeModel as AppSettings["claudeModel"]) ?? d.claudeModel,
+    ollamaModel:        raw.ollamaModel ?? d.ollamaModel,
+    ollamaUrl:          raw.ollamaUrl ?? d.ollamaUrl,
+    contentIndexing:    raw.contentIndexing !== undefined ? raw.contentIndexing === "true" : d.contentIndexing,
   };
 }

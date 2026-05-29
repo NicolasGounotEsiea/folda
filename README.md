@@ -13,6 +13,9 @@ Two formats are available: **NSIS `.exe`** (recommended) and **MSI `.msi`**.
 
 ## Features
 
+- **AI Assistant** — built-in panel that talks to Anthropic Claude (4.5/4.6/4.7) or any Ollama model. Can search by content, navigate, create/rename/move/copy files, tag in bulk, and propose a complete folder reorganization plan that you review and approve in one click before any move happens. Persistent memory across sessions for project context and preferences. Responds in your system language automatically.
+- **Content-aware search** — PDFs, DOCX, XLSX, PPTX, ODT, ODS, ODP and every text/code format are indexed for full-text search of their contents, not just their names. Content extraction runs asynchronously in the background with per-file timeout and Below-Normal thread priority to keep the UI responsive.
+- **Per-folder indexing progress** — each workspace folder in the sidebar shows a live `XX%` badge; the popover reveals the file currently being processed and offers a manual "re-scan everything" button (force mode lifts the PDF size cap and retries previously failed extractions).
 - **Multi-workspace** — organize folders into named workspaces with icons, tags, and pinned paths
 - **File explorer** — multi-tab browsing, context menus, bulk rename, drag & drop; rubber-band multi-selection; image thumbnails in grid view; status bar; editable path bar
 - **Drag & drop** — internal move/copy between folders; external drag to any Windows app (Explorer, browser, desktop) using the native OS drag API

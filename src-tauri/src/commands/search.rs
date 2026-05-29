@@ -4,15 +4,16 @@ use walkdir::WalkDir;
 fn load_file_tags(
     db: &rusqlite::Connection,
     file_id: i64,
+    context_id: i64,
 ) -> Vec<crate::models::Tag> {
     db.prepare(
         "SELECT DISTINCT t.id, t.name, t.color, t.is_auto, ft.context_id
          FROM tags t JOIN file_tags ft ON ft.tag_id = t.id
-         WHERE ft.file_id = ?1 AND ft.context_id = 0
-         ORDER BY t.name",
+         WHERE ft.file_id = ?1 AND (ft.context_id = 0 OR ft.context_id = ?2)
+         ORDER BY ft.context_id ASC, t.name",
     )
     .and_then(|mut s| {
-        s.query_map([file_id], |row| {
+        s.query_map(rusqlite::params![file_id, context_id], |row| {
             Ok(crate::models::Tag {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -29,20 +30,25 @@ fn load_file_tags(
 #[tauri::command]
 pub fn search_files(
     query: String,
+    context_id: Option<i64>,
     state: tauri::State<AppState>,
 ) -> Result<Vec<FileEntry>, String> {
+    let context_id = context_id.unwrap_or(0);
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
     let fts_query = format!("{}*", query.trim().replace('"', ""));
 
     let mut stmt = db
         .prepare(
-            "SELECT f.id, f.path, f.name, f.extension, f.size,
+            "SELECT DISTINCT f.id, f.path, f.name, f.extension, f.size,
                     f.created_at, f.modified_at, f.accessed_at
              FROM files f
-             JOIN files_fts ON files_fts.rowid = f.id
-             WHERE files_fts MATCH ?1
-             ORDER BY rank
+             WHERE f.id IN (
+                 SELECT rowid FROM files_fts WHERE files_fts MATCH ?1
+                 UNION
+                 SELECT rowid FROM file_content_fts WHERE file_content_fts MATCH ?1
+             )
+             ORDER BY f.name
              LIMIT 200",
         )
         .map_err(|e| e.to_string())?;
@@ -64,7 +70,7 @@ pub fn search_files(
         .filter_map(|r| r.ok())
         .map(
             |(id, path, name, extension, size, created_at, modified_at, accessed_at)| {
-                let tags = load_file_tags(&db, id);
+                let tags = load_file_tags(&db, id, context_id);
                 FileEntry {
                     id, path, name, extension, size,
                     created_at, modified_at, accessed_at, tags,

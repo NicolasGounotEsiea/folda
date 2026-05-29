@@ -313,7 +313,16 @@ export const useStore = create<AppStore>((set, get) => ({
           : s.folderTabs,
       };
     }),
-  setListEntries: (listEntries) => set({ listEntries }),
+  setListEntries: (newEntries) => set((s) => {
+    // If a stale list_directory call (contextId=0) returns entries with no tags,
+    // preserve the tags we already have for those same paths rather than wiping them.
+    const tagCache = new Map(s.listEntries.map((e) => [e.path, e.tags]));
+    const merged = newEntries.map((e) => {
+      const cached = tagCache.get(e.path);
+      return cached && cached.length > 0 && e.tags.length === 0 ? { ...e, tags: cached } : e;
+    });
+    return { listEntries: merged };
+  }),
 
   openFolderTab: (path) =>
     set((s) => {

@@ -161,6 +161,37 @@ fn create_tables(conn: &Connection) -> Result<()> {
             size          INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS ai_memory (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            content    TEXT    NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS file_content (
+            file_id      INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+            text_content TEXT    NOT NULL DEFAULT '',
+            indexed_at   INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS file_content_fts USING fts5(
+            text_content,
+            content='file_content',
+            content_rowid='file_id'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS file_content_ai AFTER INSERT ON file_content BEGIN
+            INSERT INTO file_content_fts(rowid, text_content) VALUES (new.file_id, new.text_content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS file_content_ad AFTER DELETE ON file_content BEGIN
+            INSERT INTO file_content_fts(file_content_fts, rowid, text_content)
+            VALUES ('delete', old.file_id, old.text_content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS file_content_au AFTER UPDATE ON file_content BEGIN
+            INSERT INTO file_content_fts(file_content_fts, rowid, text_content)
+            VALUES ('delete', old.file_id, old.text_content);
+            INSERT INTO file_content_fts(rowid, text_content) VALUES (new.file_id, new.text_content);
+        END;
+
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
             name,
             extension,

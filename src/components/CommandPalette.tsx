@@ -50,7 +50,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   const {
     rootPaths, setCurrentPath, setListEntries, pushNav, selectFile,
     setViewMode, setLayoutMode, viewMode, layoutMode, toggleShowHidden, showHidden,
-    pinnedItems,
+    pinnedItems, activeContextId,
   } = useStore();
 
   const [query, setQuery] = useState("");
@@ -104,7 +104,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     pushNav(path);
     setViewMode("explorer");
     try {
-      const entries = await invoke<ListEntry[]>("list_directory", { path });
+      const entries = await invoke<ListEntry[]>("list_directory", { path, contextId: activeContextId ?? 0 });
       setListEntries(entries);
       selectFile(null);
     } catch { /* ignore */ }

@@ -15,3 +15,4 @@ pub mod log;
 pub mod settings;
 pub mod windowing;
 pub mod winintegration;
+pub mod memory;

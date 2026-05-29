@@ -54,7 +54,7 @@ const RANGE_OPTIONS = [
 ];
 
 export function TimelineView() {
-  const { currentPath, setCurrentPath, setListEntries, selectEntry, setViewMode, pushNav } = useStore();
+  const { currentPath, setCurrentPath, setListEntries, selectEntry, setViewMode, pushNav, activeContextId } = useStore();
   const [entries, setEntries] = useState<ActivityEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [rangeDays, setRangeDays] = useState(7);
@@ -74,7 +74,7 @@ export function TimelineView() {
     const parts = filePath.split("\\");
     const parentPath = parts.slice(0, -1).join("\\") || filePath;
     try {
-      const listEntries = await invoke<ListEntry[]>("list_directory", { path: parentPath });
+      const listEntries = await invoke<ListEntry[]>("list_directory", { path: parentPath, contextId: activeContextId ?? 0 });
       setCurrentPath(parentPath);
       pushNav(parentPath);
       setListEntries(listEntries);

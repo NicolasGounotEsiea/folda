@@ -13,6 +13,7 @@ import { ArchiveViewer } from "./components/ArchiveViewer";
 import { AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS, DOC_EXTS, ARCHIVE_EXTS } from "./utils/fileExtensions";
 import { PreviewPanel } from "./components/PreviewPanel";
 import { ProgressOverlay } from "./components/ProgressOverlay";
+import { AiPanel } from "./components/AiPanel";
 import { DiskUsageModal } from "./components/DiskUsageModal";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
@@ -59,7 +60,12 @@ export function App() {
     updateSettings, setShowHidden, openFile, settings,
     dualPaneActive, setDualPaneActive,
     activePaneIndex, stepBack2, stepForward2, setPane2Entries,
+    activeContextId,
   } = useStore();
+
+  // Ref so async callbacks always read the current contextId without stale closures
+  const activeContextIdRef = useRef(activeContextId);
+  useEffect(() => { activeContextIdRef.current = activeContextId; }, [activeContextId]);
 
   const addToast = useToastStore((s) => s.addToast);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -67,6 +73,7 @@ export function App() {
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const watcherDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Null = main window, set = popup window with init data.
   // IS_POPUP is stable: the window label never changes after creation.
   const IS_POPUP = getCurrentWindow().label !== "main";
@@ -260,7 +267,7 @@ export function App() {
       e.preventDefault();
       try {
         const cmd = sharingMode === "joined" ? "list_remote_dir" : "list_directory";
-        const entries = await invoke<ListEntry[]>(cmd, { path });
+        const entries = await invoke<ListEntry[]>(cmd, { path, contextId: activeContextIdRef.current ?? 0 });
         if (usePane2) setPane2Entries(entries);
         else setListEntries(entries);
         selectEntry(null);
@@ -271,21 +278,26 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dualPaneActive, activePaneIndex]);
 
-  // File watching events
+  // File watching events — debounced 300ms to coalesce rapid bursts (e.g. Word auto-save)
   useEffect(() => {
-    const unlisten = listen<FileChangedPayload>("file-changed", async (event) => {
+    const unlisten = listen<FileChangedPayload>("file-changed", (event) => {
       const { action, path, timestamp } = event.payload;
       if (action === "deleted") { removeFile(path); return; }
-      if (currentPath) {
+      if (!currentPath) return;
+      if (watcherDebounceRef.current) clearTimeout(watcherDebounceRef.current);
+      watcherDebounceRef.current = setTimeout(async () => {
         try {
-          const entries = await invoke<ListEntry[]>("list_directory", { path: currentPath });
+          const entries = await invoke<ListEntry[]>("list_directory", { path: currentPath, contextId: activeContextIdRef.current ?? 0 });
           setListEntries(entries);
           const tags = await invoke<Tag[]>("get_tags");
           setTags(tags);
         } catch { markFileModified(path, timestamp); }
-      }
+      }, 300);
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => {
+      unlisten.then((fn) => fn());
+      if (watcherDebounceRef.current) clearTimeout(watcherDebounceRef.current);
+    };
   }, [currentPath, setListEntries, setTags, removeFile, markFileModified]);
 
   // Init telemetry once settings are loaded
@@ -309,6 +321,10 @@ export function App() {
       if (e.key === "F5" && !inInput) {
         e.preventDefault();
         setDualPaneActive(!dualPaneActive);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "i") {
+        e.preventDefault();
+        setAiPanelOpen((v) => !v);
       }
     };
     window.addEventListener("keydown", handler);
@@ -362,6 +378,7 @@ export function App() {
 
   const [previewOpen, setPreviewOpen] = useState(true);
   const [diskUsageOpen, setDiskUsageOpen] = useState(false);
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
 
   // Save workspace state on OS-level close (Alt+F4, taskbar right-click, etc.)
   // Popup windows use native OS decorations so the OS handles close naturally.
@@ -386,10 +403,16 @@ export function App() {
     <div className="flex flex-col h-full bg-surface-0">
       {/* Custom titlebar only for the main window — popup windows use native OS chrome */}
       {!IS_POPUP && <Titlebar />}
-      <Toolbar onOpenSettings={() => setSettingsOpen(true)} onOpenDiskUsage={() => setDiskUsageOpen(true)} />
+      <Toolbar
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenDiskUsage={() => setDiskUsageOpen(true)}
+        onOpenAi={settings.claudeEnabled ? () => setAiPanelOpen((v) => !v) : undefined}
+        aiActive={aiPanelOpen}
+      />
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar hidden in popup windows for a focused, distraction-free view */}
         {!IS_POPUP && <Sidebar />}
+        <div className="flex flex-1 overflow-hidden min-w-0">
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
           <TabBar />
           {openedFile ? (() => {
@@ -424,6 +447,26 @@ export function App() {
             <TimelineView />
           )}
         </div>
+        {aiPanelOpen && settings.claudeEnabled && (
+          <AiPanel
+            onClose={() => setAiPanelOpen(false)}
+            onNavigate={async (p) => {
+              try {
+                const entries = await invoke<ListEntry[]>("list_directory", { path: p, contextId: activeContextIdRef.current ?? 0 });
+                setCurrentPath(p);
+                pushNav(p);
+                setListEntries(entries);
+              } catch { /* ignore */ }
+            }}
+            onRefreshDir={async (p) => {
+              try {
+                const entries = await invoke<ListEntry[]>("list_directory", { path: p, contextId: activeContextIdRef.current ?? 0 });
+                setListEntries(entries);
+              } catch { /* ignore */ }
+            }}
+          />
+        )}
+        </div>
       </div>
       <ProgressOverlay />
       <ToastContainer />
@@ -449,7 +492,7 @@ export function App() {
             setBulkRenameOpen(false);
             if (currentPath) {
               try {
-                const entries = await invoke<ListEntry[]>("list_directory", { path: currentPath });
+                const entries = await invoke<ListEntry[]>("list_directory", { path: currentPath, contextId: activeContextIdRef.current ?? 0 });
                 setListEntries(entries);
               } catch { /* ignore */ }
             }
@@ -464,7 +507,7 @@ export function App() {
           onNavigate={(p) => {
             setCurrentPath(p);
             pushNav(p);
-            invoke<ListEntry[]>("list_directory", { path: p, contextId: 0 })
+            invoke<ListEntry[]>("list_directory", { path: p, contextId: activeContextIdRef.current ?? 0 })
               .then(setListEntries)
               .catch(console.error);
             setDiskUsageOpen(false);

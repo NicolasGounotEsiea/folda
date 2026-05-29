@@ -58,6 +58,155 @@ fn load_folder_tags(
     Ok(tags)
 }
 
+// ── Text extraction ───────────────────────────────────────────────────────────
+
+const TEXT_EXTS: &[&str] = &[
+    "txt", "md", "rst", "log", "csv", "tsv",
+    "json", "toml", "yaml", "yml", "xml", "html", "htm", "svg", "ini", "cfg", "conf",
+    "rs", "js", "ts", "tsx", "jsx", "py", "go", "java", "c", "cpp", "h", "hpp",
+    "cs", "rb", "php", "swift", "kt", "sh", "bash", "zsh", "ps1", "lua", "sql",
+    "css", "scss", "less", "vue", "svelte", "tex",
+];
+
+const MAX_EXTRACT: usize = 3000; // chars returned to the AI
+
+/// Extract up to MAX_EXTRACT chars of readable text from a file.
+/// Returns an empty string for unsupported types or files that are too large.
+pub fn extract_text_content(path: &str, extension: &str, size: i64) -> String {
+    const MAX_BYTES: i64 = 50 * 1024 * 1024; // 50 MB ceiling
+    if size <= 0 || size > MAX_BYTES { return String::new(); }
+
+    let ext = extension.to_lowercase();
+    match ext.as_str() {
+        e if TEXT_EXTS.contains(&e) => {
+            std::fs::read_to_string(path)
+                .ok()
+                .map(|s| s.chars().take(MAX_EXTRACT).collect())
+                .unwrap_or_default()
+        }
+        "pdf" => extract_pdf(path),
+        "docx" => extract_zip_xml(path, &["word/document.xml"]),
+        "pptx" => extract_pptx(path),
+        "xlsx" | "ods" => extract_zip_xml(path, &["xl/sharedStrings.xml", "content.xml"]),
+        "odt" | "odp" => extract_zip_xml(path, &["content.xml"]),
+        _ => String::new(),
+    }
+}
+
+/// PDF: use pdf-extract for digital PDFs; fall back to ASCII heuristic for scanned/encrypted ones.
+/// pdf-extract can panic on malformed PDFs (e.g. ObjectNotFound) — we catch the panic with
+/// catch_unwind so a bad PDF never crashes the entire app.
+fn extract_pdf(path: &str) -> String {
+    let path_owned = path.to_string();
+    // Move path into closure so it is UnwindSafe (String: UnwindSafe)
+    let result = std::panic::catch_unwind(move || pdf_extract::extract_text(&path_owned));
+    match result {
+        Ok(Ok(text)) if !text.trim().is_empty() => {
+            let clean: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            clean.chars().take(MAX_EXTRACT).collect()
+        }
+        _ => {
+            // pdf_extract failed or panicked — fall back to ASCII heuristic
+            std::fs::read(path)
+                .ok()
+                .map(|b| ascii_runs(&b))
+                .unwrap_or_default()
+        }
+    }
+}
+
+/// DOCX / ODT / ODS / ODP: open as ZIP, read the named XML entries, strip tags.
+fn extract_zip_xml(path: &str, entry_names: &[&str]) -> String {
+    use std::io::Read;
+    let file = match std::fs::File::open(path) { Ok(f) => f, Err(_) => return String::new() };
+    let mut archive = match zip::ZipArchive::new(file) { Ok(a) => a, Err(_) => return String::new() };
+    let mut combined = String::new();
+    for &name in entry_names {
+        if let Ok(mut entry) = archive.by_name(name) {
+            let mut xml = String::new();
+            if entry.read_to_string(&mut xml).is_ok() {
+                combined.push_str(&strip_xml(&xml));
+                combined.push(' ');
+                if combined.len() >= MAX_EXTRACT * 4 { break; }
+            }
+        }
+    }
+    combined.split_whitespace().collect::<Vec<_>>().join(" ")
+        .chars().take(MAX_EXTRACT).collect()
+}
+
+/// PPTX: iterate slide XML files inside the ZIP.
+fn extract_pptx(path: &str) -> String {
+    use std::io::Read;
+    let file = match std::fs::File::open(path) { Ok(f) => f, Err(_) => return String::new() };
+    let mut archive = match zip::ZipArchive::new(file) { Ok(a) => a, Err(_) => return String::new() };
+    let mut combined = String::new();
+    let names: Vec<String> = (0..archive.len())
+        .filter_map(|i| archive.by_index(i).ok().map(|e| e.name().to_string()))
+        .filter(|n| n.starts_with("ppt/slides/slide") && n.ends_with(".xml"))
+        .collect();
+    for name in names {
+        if let Ok(mut entry) = archive.by_name(&name) {
+            let mut xml = String::new();
+            if entry.read_to_string(&mut xml).is_ok() {
+                combined.push_str(&strip_xml(&xml));
+                combined.push(' ');
+                if combined.len() >= MAX_EXTRACT * 4 { break; }
+            }
+        }
+    }
+    combined.split_whitespace().collect::<Vec<_>>().join(" ")
+        .chars().take(MAX_EXTRACT).collect()
+}
+
+/// Remove XML/HTML tags, returning the interleaved text content.
+fn strip_xml(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len() / 2);
+    let mut in_tag = false;
+    for ch in xml.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(if ch.is_whitespace() { ' ' } else { ch }),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Fallback: collect runs of ≥4 printable ASCII chars from raw bytes.
+fn ascii_runs(bytes: &[u8]) -> String {
+    let mut result = String::new();
+    let mut run = String::new();
+    for &b in bytes {
+        if (0x20..=0x7e).contains(&b) {
+            run.push(b as char);
+        } else {
+            if run.len() >= 4 {
+                let t = run.trim();
+                if !t.is_empty() {
+                    if !result.is_empty() { result.push(' '); }
+                    result.push_str(t);
+                    if result.len() >= MAX_EXTRACT { break; }
+                }
+            }
+            run.clear();
+        }
+    }
+    result.chars().take(MAX_EXTRACT).collect()
+}
+
+/// Upsert extracted text into `file_content` (FTS triggers keep `file_content_fts` in sync).
+fn store_text_content(db: &rusqlite::Connection, file_id: i64, text: &str) {
+    let _ = db.execute(
+        "INSERT INTO file_content (file_id, text_content) VALUES (?1, ?2)
+         ON CONFLICT(file_id) DO UPDATE SET
+           text_content = excluded.text_content,
+           indexed_at   = unixepoch()",
+        rusqlite::params![file_id, text],
+    );
+}
+
 pub fn auto_tag_for_ext(ext: &str) -> Option<(&'static str, &'static str)> {
     match ext.to_lowercase().as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" | "bmp" | "tiff" | "avif" | "heic" => {
@@ -125,6 +274,7 @@ struct RawFile {
     created_at: i64,
     modified_at: i64,
     accessed_at: i64,
+    text_content: String,
 }
 
 fn should_skip(path: &std::path::Path) -> bool {
@@ -232,14 +382,26 @@ pub fn scan_directory(
                     t.map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
                         .unwrap_or(0)
                 };
+                let path_str = file_path.to_string_lossy().into_owned();
+                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+                let size = metadata.len() as i64;
+                // During bulk scan: extract text for small files immediately.
+                // Larger document files (PDF, DOCX, etc.) are indexed by name now
+                // and queued for async content extraction via index_directory_content.
+                let text_content = if size <= 200_000 {
+                    extract_text_content(&path_str, &ext, size)
+                } else {
+                    String::new()
+                };
                 raw_files.push(RawFile {
-                    path: file_path.to_string_lossy().into_owned(),
+                    path: path_str,
                     name: file_path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string(),
-                    extension: file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_string(),
-                    size: metadata.len() as i64,
+                    extension: ext,
+                    size,
                     created_at: ts(metadata.created()),
                     modified_at: ts(metadata.modified()),
                     accessed_at: ts(metadata.accessed()),
+                    text_content,
                 });
                 count += 1;
             }
@@ -270,6 +432,10 @@ pub fn scan_directory(
         for f in &raw_files {
             let Ok(id) = upsert_file(&db, &f.path, &f.name, &f.extension,
                 f.size, f.created_at, f.modified_at, f.accessed_at) else { continue };
+
+            if !f.text_content.is_empty() {
+                store_text_content(&db, id, &f.text_content);
+            }
 
             if let Some((tag_name, tag_color)) = auto_tag_for_ext(&f.extension) {
                 if let Ok(tag_id) = ensure_auto_tag(&db, tag_name, tag_color) {
@@ -328,23 +494,39 @@ fn handle_fs_event(
             .unwrap_or_default()
             .as_secs() as i64;
 
+        // Extract text content BEFORE acquiring the DB lock (file I/O outside the mutex)
+        let (file_meta, text_content) = if action != "deleted" {
+            match std::fs::metadata(path) {
+                Ok(meta) => {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let text = extract_text_content(&path_str, ext, meta.len() as i64);
+                    (Some(meta), text)
+                }
+                Err(_) => (None, String::new()),
+            }
+        } else {
+            (None, String::new())
+        };
+
         if let Ok(db) = db.lock() {
             let file_id: Option<i64> = if action != "deleted" {
-                if let Ok(meta) = std::fs::metadata(path) {
+                if let Some(meta) = file_meta {
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                     let _ = upsert_file(
                         &db, &path_str, &name, ext,
                         meta.len() as i64, timestamp, timestamp, timestamp,
                     );
-                    // Apply auto-tag on creation (path_str matches list_directory's format)
-                    if action == "created" {
-                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                        if let Some((tag_name, tag_color)) = auto_tag_for_ext(ext) {
-                            if let Ok(tag_id) = ensure_auto_tag(&db, tag_name, tag_color) {
-                                if let Ok(fid) = db.query_row(
-                                    "SELECT id FROM files WHERE path = ?1", [&path_str],
-                                    |r| r.get::<_, i64>(0)
-                                ) {
+                    if let Ok(fid) = db.query_row(
+                        "SELECT id FROM files WHERE path = ?1", [&path_str], |r| r.get::<_, i64>(0)
+                    ) {
+                        if !text_content.is_empty() {
+                            store_text_content(&db, fid, &text_content);
+                        }
+                        // Apply auto-tag on creation
+                        if action == "created" {
+                            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                            if let Some((tag_name, tag_color)) = auto_tag_for_ext(ext) {
+                                if let Ok(tag_id) = ensure_auto_tag(&db, tag_name, tag_color) {
                                     let _ = db.execute(
                                         "INSERT OR IGNORE INTO file_tags (file_id, tag_id, context_id) VALUES (?1, ?2, 0)",
                                         rusqlite::params![fid, tag_id],
@@ -618,11 +800,400 @@ pub fn write_file(path: String, content: String, state: tauri::State<AppState>) 
     Ok(())
 }
 
+/// Upsert a single file into the index and return its DB id.
+/// Returns Err("is_directory") when the path points to a directory — callers
+/// should use add_tag_to_folder instead.
+#[tauri::command]
+pub fn index_file_by_path(path: String, state: tauri::State<AppState>) -> Result<i64, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.is_dir() {
+        return Err("is_directory".to_string());
+    }
+    use std::time::UNIX_EPOCH;
+    let ts = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok().map(|s| s.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64).unwrap_or(0)
+    };
+    let name = std::path::Path::new(&path)
+        .file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    let ext = std::path::Path::new(&path)
+        .extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+    let size = meta.len() as i64;
+    let created_at  = ts(meta.created());
+    let modified_at = ts(meta.modified());
+    let accessed_at = ts(meta.accessed());
+
+    // Extract text before acquiring DB lock
+    let text_content = extract_text_content(&path, &ext, size);
+
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let id = upsert_file(&db, &path, &name, &ext, size, created_at, modified_at, accessed_at)
+        .map_err(|e| e.to_string())?;
+    if !text_content.is_empty() {
+        store_text_content(&db, id, &text_content);
+    }
+    Ok(id)
+}
+
 #[tauri::command]
 pub fn get_home_dir() -> String {
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| "C:\\Users".to_string())
+}
+
+/// Extract and return a text preview (up to 500 chars) of a single file.
+/// Works for PDFs, DOCX, XLSX, PPTX, text files, and code.
+/// Result is cached in file_content for future search_files hits.
+/// Stats for the indexing progress of a directory (recursive).
+/// Returns (total_files, attempted_files) — files we have already tried to index.
+/// "Attempted" counts both successful extractions AND files where extraction returned
+/// nothing (scanned PDFs, binary files). This matches the user's mental model:
+/// "have we looked at this file yet?" — not "did we find text in it".
+#[tauri::command]
+pub async fn get_indexing_stats(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(i64, i64), String> {
+    // Run on the blocking pool so the std::sync::Mutex doesn't pin a tokio runtime thread
+    // — important because this command is called repeatedly while indexing is in progress.
+    let db_arc = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let db = db_arc.lock().map_err(|e| e.to_string())?;
+        let total: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE path LIKE ?1 || '%'",
+                rusqlite::params![&path],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let attempted: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM files f
+                 JOIN file_content fc ON fc.file_id = f.id
+                 WHERE f.path LIKE ?1 || '%'",
+                rusqlite::params![&path],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok((total, attempted))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Max PDF size for AUTOMATIC bulk indexing.
+/// Kept aggressive (3 MB) because pdf-extract is slow (~5-30s per file) and unreliable.
+/// PDFs above this cap are marked as "attempted" without extraction so they don't
+/// block the progress badge. The user can pull them in via the manual reindex button
+/// (which uses a higher cap), and the AI can always call preview_file on any file size.
+const MAX_PDF_BYTES: i64 = 3 * 1024 * 1024; // 3 MB
+
+/// Number of files to extract in parallel via spawn_blocking. pdf-extract is fully CPU-bound,
+/// so each worker pegs a core. We cap at 2 to leave headroom for the WebView2 UI thread and
+/// other tauri commands — otherwise the app feels unresponsive during reindexing.
+const PARALLEL_EXTRACTIONS: usize = 2;
+
+/// Async background content indexing for all files in a directory tree.
+/// Called automatically after adding a folder to a workspace.
+/// Extracts text from PDFs, DOCX, XLSX, etc. that were skipped during the initial scan.
+/// Stores a sentinel empty row for files where extraction failed or returned nothing,
+/// so they are not retried on every relaunch.
+/// Emits "content-indexed" events so the frontend can show progress.
+#[tauri::command]
+pub async fn index_directory_content(
+    path: String,
+    force: Option<bool>,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<usize, String> {
+    use tauri::Emitter;
+    let force = force.unwrap_or(false);
+
+    // Selection rule:
+    // - automatic mode (force=false): only files never attempted (no row in file_content)
+    // - manual mode  (force=true):    also retry rows with empty content (failed/skipped earlier)
+    // Force mode also lifts the PDF size cap below so the user can manually pull in large docs.
+    let where_clause = if force {
+        "WHERE f.path LIKE ?1 || '%'
+           AND f.size > 0
+           AND (fc.file_id IS NULL OR fc.text_content = '')"
+    } else {
+        "WHERE f.path LIKE ?1 || '%'
+           AND fc.file_id IS NULL
+           AND f.size > 0"
+    };
+    let query = format!(
+        "SELECT f.id, f.path, f.extension, f.size
+         FROM files f
+         LEFT JOIN file_content fc ON fc.file_id = f.id
+         {}",
+        where_clause
+    );
+
+    let unindexed: Vec<(i64, String, String, i64)> = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.prepare(&query)
+            .and_then(|mut stmt| {
+                stmt.query_map([&path], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .map(|iter| iter.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            })
+            .unwrap_or_default()
+    };
+
+    if unindexed.is_empty() {
+        return Ok(0);
+    }
+
+    let total = unindexed.len();
+    let mut indexed = 0usize;
+
+    // Hard cap on PDF size to keep individual extractions bounded.
+    // 10 MB in auto mode, 25 MB in force mode — beyond that we never try to extract,
+    // even in force mode, because a 40 MB PDF can take minutes and pdf-extract is
+    // not interruptible. The user can still query content via the AI's preview_file.
+    let pdf_cap = if force { 25 * 1024 * 1024 } else { MAX_PDF_BYTES };
+
+    // Hard timeout per file. If pdf-extract hangs on a malformed file, we drop our
+    // join handle after this duration and move on. The orphaned thread keeps running
+    // in tokio's blocking pool (capped at 512 threads), but app responsiveness is preserved.
+    const PER_FILE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(30);
+
+    // Process in chunks. Each file gets its own join handle so we can apply a timeout
+    // per file. Even if one extraction hangs, we never stall the whole pipeline.
+    for chunk in unindexed.chunks(PARALLEL_EXTRACTIONS) {
+        let mut handles: Vec<(i64, String, tokio::task::JoinHandle<String>)> =
+            Vec::with_capacity(chunk.len());
+        for (id, file_path, ext, size) in chunk {
+            let id = *id;
+            let file_path_owned = file_path.clone();
+            let ext = ext.clone();
+            let size = *size;
+            let path_for_task = file_path_owned.clone();
+            let handle = tokio::task::spawn_blocking(move || {
+                // Lower priority on Windows so we don't starve the UI thread.
+                #[cfg(windows)]
+                unsafe {
+                    use windows::Win32::System::Threading::{
+                        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+                    };
+                    let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                }
+                if ext.eq_ignore_ascii_case("pdf") && size > pdf_cap {
+                    return String::new();
+                }
+                extract_text_content(&path_for_task, &ext, size)
+            });
+            handles.push((id, file_path_owned, handle));
+        }
+
+        // Drain results sequentially with per-file timeout.
+        for (file_id, file_path, handle) in handles {
+            // Notify the UI which file is being processed (visible in popover during reindex).
+            let file_name = std::path::Path::new(&file_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let _ = app.emit("content-indexed", serde_json::json!({
+                "indexed": indexed,
+                "total": total,
+                "current": file_name,
+                "done": false,
+            }));
+
+            let text = match tokio::time::timeout(PER_FILE_TIMEOUT, handle).await {
+                Ok(Ok(text)) => text,
+                _ => String::new(),
+            };
+
+            let db_arc = state.db.clone();
+            let text_for_store = text;
+            tokio::task::spawn_blocking(move || {
+                if let Ok(db) = db_arc.lock() {
+                    store_text_content(&db, file_id, &text_for_store);
+                }
+            }).await.ok();
+
+            indexed += 1;
+        }
+
+        // Yield between chunks.
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    let _ = app.emit("content-indexed", serde_json::json!({
+        "indexed": indexed,
+        "total": total,
+        "done": true,
+    }));
+
+    Ok(indexed)
+}
+
+#[tauri::command]
+pub fn preview_file(path: String, state: tauri::State<AppState>) -> String {
+    let meta = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(_) => return format!("Cannot access: {}", path),
+    };
+    let size = meta.len() as i64;
+    let ext = std::path::Path::new(&path)
+        .extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+
+    // Check cache first
+    {
+        let db_result = state.db.lock().ok().and_then(|db| {
+            db.query_row(
+                "SELECT fc.text_content FROM file_content fc
+                 JOIN files f ON f.id = fc.file_id
+                 WHERE f.path = ?1",
+                rusqlite::params![&path],
+                |row| row.get::<_, String>(0),
+            ).ok()
+        });
+        if let Some(text) = db_result.filter(|s| !s.is_empty()) {
+            return text.chars().take(500).collect();
+        }
+    }
+
+    // Extract on demand (outside DB lock)
+    let text = extract_text_content(&path, &ext, size);
+
+    // Cache the result
+    if !text.is_empty() {
+        if let Ok(db) = state.db.lock() {
+            if let Ok(id) = db.query_row(
+                "SELECT id FROM files WHERE path = ?1",
+                rusqlite::params![&path],
+                |r| r.get::<_, i64>(0),
+            ) {
+                store_text_content(&db, id, &text);
+            }
+        }
+        text.chars().take(500).collect()
+    } else {
+        "(no readable text content in this file)".to_string()
+    }
+}
+
+/// Return text snippets for files directly inside `dir`, with pagination.
+/// - `offset`: skip this many files (default 0)
+/// - `limit`: return at most this many snippets (capped at 50)
+/// Files are extracted on-demand (on-disk read outside the DB lock) and cached.
+/// Files larger than 5 MB are skipped for on-demand extraction to avoid hangs.
+#[tauri::command]
+pub fn get_file_snippets(
+    dir: String,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    state: tauri::State<AppState>,
+) -> Result<crate::models::FileSnippetsPage, String> {
+    const MAX_ON_DEMAND_BYTES: i64 = 5 * 1024 * 1024; // 5 MB — skip larger files live
+    const PAGE_CAP: usize = 50;
+
+    let offset = offset.unwrap_or(0);
+    let limit = limit.unwrap_or(PAGE_CAP).min(PAGE_CAP);
+
+    let prefix = {
+        let d = dir.trim_end_matches(['\\', '/']);
+        format!("{}\\", d)
+    };
+
+    // Phase 1 — all direct children from DB (with existing content if any)
+    let all_rows: Vec<(i64, String, String, String, i64, Option<String>)> = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.prepare(
+            "SELECT f.id, f.path, f.name, f.extension, f.size, fc.text_content
+             FROM files f
+             LEFT JOIN file_content fc ON fc.file_id = f.id
+             WHERE f.path LIKE ?1 || '%'",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([&prefix], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })
+            .map(|iter| {
+                iter.filter_map(|r| r.ok())
+                    .filter(|(_, path, _, _, _, _)| {
+                        let suffix = path.strip_prefix(&*prefix).unwrap_or(path.as_str());
+                        !suffix.contains('\\') && !suffix.contains('/')
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .unwrap_or_default()
+    }; // DB lock released
+
+    let total = all_rows.len();
+    let page_rows: Vec<_> = all_rows.into_iter().skip(offset).take(limit).collect();
+
+    // Split into already-indexed and needs-extraction
+    let mut have: Vec<crate::models::FileSnippet> = Vec::new();
+    let mut need: Vec<(i64, String, String, i64)> = Vec::new();
+    for (id, path, name, ext, size, content) in page_rows {
+        match content.filter(|s| !s.is_empty()) {
+            Some(text) => have.push(crate::models::FileSnippet {
+                path, name,
+                snippet: text.chars().take(200).collect(),
+            }),
+            None => {
+                // Skip very large files for on-demand extraction
+                if size <= MAX_ON_DEMAND_BYTES {
+                    need.push((id, path, ext, size));
+                }
+                // else: silently skip — too large to extract live
+            }
+        }
+    }
+
+    // Phase 2 — extract text from disk without DB lock
+    let freshly_extracted: Vec<(i64, String, String, String)> = need
+        .iter()
+        .filter_map(|(id, path, ext, size)| {
+            let text = extract_text_content(path, ext, *size);
+            if text.is_empty() { return None; }
+            let name = std::path::Path::new(path)
+                .file_name().and_then(|n| n.to_str())
+                .unwrap_or(path.as_str()).to_string();
+            Some((*id, path.clone(), name, text))
+        })
+        .collect();
+
+    // Phase 3 — store and build result
+    let mut new_snippets: Vec<crate::models::FileSnippet> = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        freshly_extracted.iter().map(|(id, path, name, text)| {
+            store_text_content(&db, *id, text);
+            crate::models::FileSnippet {
+                path: path.clone(),
+                name: name.clone(),
+                snippet: text.chars().take(200).collect(),
+            }
+        }).collect()
+    };
+
+    have.append(&mut new_snippets);
+
+    Ok(crate::models::FileSnippetsPage {
+        snippets: have,
+        total,
+        offset,
+        has_more: offset + limit < total,
+    })
 }
 
 #[tauri::command]

@@ -16,6 +16,7 @@ src-tauri/gen/
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # Logs
 *.log

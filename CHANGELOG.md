@@ -2,6 +2,46 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.6] - 2026-05-29
+
+### Added
+
+- **AI Assistant overhaul** — Anthropic (Claude 4.5/4.6/4.7) and Ollama providers share the same 20+ tool set: search, navigate, read, write, create, rename, move, copy, tag, plan batch reorganizations. The system prompt detects the user's locale and forces same-language replies; explicit anti-hallucination rules prevent the model from inventing file names. Active workspace, tags, and selection are injected as live context on every turn.
+- **`plan_moves` with confirmation flow** — when reorganizing a folder, the AI proposes a single batch plan (`fichier.pdf → dst_dir/`, with a "reason" per move). A popover shows the full list and the user approves or cancels before any file is moved. `dst_dir: "trash"` is a special value that safely routes to the recycle bin instead of deleting.
+- **Persistent AI memory** — `remember(content)` saves notes across sessions (project context, naming conventions, user preferences). Memories are injected into every system prompt verbatim. A collapsible memory panel in the AI assistant lists all saved notes with one-click delete.
+- **Content indexing for documents** — PDFs, DOCX, XLSX, PPTX, ODT, ODS, ODP, plus all text and code formats are extracted into a SQLite FTS5 index. `search_files` now matches both file names AND contents. PDF text is extracted via `pdf-extract` (with a panic-safe fallback for malformed files); Office formats are read directly from their underlying ZIP/XML.
+- **Background indexing pipeline** — when a folder is added to a workspace, content extraction runs asynchronously on a 2-thread blocking pool with `BELOW_NORMAL` priority on Windows, so the UI stays responsive. Per-file 30-second timeout prevents a single bad PDF from stalling the queue. Each processed file is marked in the DB so it's never retried unless the user explicitly forces a re-scan.
+- **Per-folder indexing badge** — each workspace folder in the sidebar shows a `XX%` badge indicating indexing progress. Click to open a popover with stats (`Processed: X / Y`, `Remaining: Z`), the file currently being processed, and a "Re-scan everything" button that retries previously skipped or failed files (with an extended 25 MB PDF cap in this manual mode).
+- **`preview_file` tool** — the AI can request a content preview of any single file regardless of size. Result is cached in the FTS index, so the next `search_files` will find that file by content too.
+- **Live filesystem fallback in `search_files`** — when the DB index has no match, the AI tool automatically tries a live disk walk on the home folder before reporting "not found".
+- **`content-indexed` progress events** — the backend emits a Tauri event per file processed with the current filename; the sidebar badge updates live during indexing without polling.
+- **`get_file_snippets(dir, offset, limit)`** — paginated content reader exposed to the AI for organizing large folders (50 files per page max).
+- **`copy_path` AI tool** — non-destructive duplication into a destination directory.
+- **Content indexing toggle** — Settings → Activity → "Content indexing" lets the user disable automatic content extraction. The file watcher always indexes new and modified files regardless of the toggle.
+
+### Improved
+
+- **File watcher debounced 300ms** — Word and other apps fire 8+ filesystem events when saving a single document; the watcher now coalesces bursts before reloading the directory.
+- **`search_files` is now workspace-aware** — search results carry workspace-scoped tags, not just global ones.
+- **`setListEntries` tag preservation** — defensive merge in the store: if a stale `list_directory` call returns entries with empty tags, the previous tags for those paths are kept. Acts as a safety net against `contextId=0` regressions.
+- **PDF extraction is panic-safe** — `pdf-extract` panics on malformed PDFs (CMap parse errors, missing object references) are caught and silently logged; the indexer falls back to an ASCII heuristic.
+- **Quieter console** — a custom panic hook filters output from `pdf-extract`, `lopdf`, `adobe-cmap-parser`, and `type1-encoding-parser` so the dev console isn't flooded during bulk indexing.
+
+### Fixed
+
+- **Tags disappearing when navigating with the mouse back/forward buttons** — the handler was calling `list_directory` with `contextId: 0` from a stale closure; now reads from a ref kept in sync with `activeContextId`.
+- **Tags disappearing when adding a folder to a workspace** — `Sidebar::handleAddFolder` was calling `list_directory` without `contextId` in two places.
+- **Tags missing after navigating via the disk-usage modal, command palette, and timeline view** — all three call sites now pass the active context id.
+- **Tags missing in `search_files` results** — the backend query was hard-coded to `context_id = 0`; now accepts the workspace id and filters with `OR ft.context_id = 0`.
+- **AI panel was confusing the current folder list with search results** — the listing was injected verbatim into the system prompt and the model returned items from it as if they were search hits. The prompt now ships only a compact summary (`5 folders, 23 files`) and the model must call `list_directory` to see details.
+- **`write_file` triggered an unnecessary confirmation dialog** — it was incorrectly tagged as destructive even when creating new files.
+- **AI invented `[id=27]` as a tag name** — the prompt and `get_tags` output now show tags as `name="Archives"` and an explicit rule forbids the ID notation.
+- **Failed PDF extractions were retried on every relaunch** — files where extraction returned nothing are now marked in `file_content` and skipped unless the user clicks "Re-scan everything".
+
+### Developer
+
+- **`CLAUDE.md`** — 890-line internal codebase guide (gitignored). 31 sections cover the data model, every backend module, dual-pane mode, popup windows, the drag-and-drop system, the content indexing pipeline, AI architecture, common idioms, and step-by-step how-tos for the most frequent change types.
+
 ## [0.1.5] - 2026-05-28
 
 ### Added

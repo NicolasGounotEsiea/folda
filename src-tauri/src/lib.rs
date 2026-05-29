@@ -14,8 +14,29 @@ pub struct AppState {
     pub window_init: Mutex<std::collections::HashMap<String, serde_json::Value>>,
 }
 
+/// Install a custom panic hook that silently swallows panics originating from
+/// pdf-extract / lopdf / adobe-cmap-parser. These libraries panic on malformed
+/// PDFs (CMap parse errors, missing object references) — we already catch the
+/// unwind in extract_pdf(), but the default hook still prints the panic banner
+/// to stderr, which floods the console during bulk indexing.
+fn install_quiet_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let loc = info.location().map(|l| l.file()).unwrap_or("");
+        if loc.contains("pdf-extract")
+            || loc.contains("lopdf")
+            || loc.contains("adobe-cmap-parser")
+            || loc.contains("type1-encoding-parser")
+        {
+            return; // silently swallow
+        }
+        default_hook(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_quiet_panic_hook();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -43,6 +64,11 @@ pub fn run() {
             commands::files::record_activity,
             commands::files::watch_directory,
             commands::files::get_home_dir,
+            commands::files::index_file_by_path,
+            commands::files::get_file_snippets,
+            commands::files::preview_file,
+            commands::files::index_directory_content,
+            commands::files::get_indexing_stats,
             commands::files::copy_with_progress,
             commands::folders::create_directory,
             commands::folders::get_folder_tags,
@@ -131,6 +157,10 @@ pub fn run() {
             commands::sharing::rename_remote_path,
             commands::sharing::create_remote_file,
             commands::sharing::create_remote_dir,
+            // AI memory
+            commands::memory::get_ai_memories,
+            commands::memory::add_ai_memory,
+            commands::memory::delete_ai_memory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
