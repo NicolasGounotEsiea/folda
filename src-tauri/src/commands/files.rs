@@ -893,6 +893,11 @@ const MAX_PDF_BYTES: i64 = 3 * 1024 * 1024; // 3 MB
 /// other tauri commands — otherwise the app feels unresponsive during reindexing.
 const PARALLEL_EXTRACTIONS: usize = 2;
 
+/// One row of the indexer's work queue: (file_id, absolute_path, extension, size, was_attempted).
+/// `was_attempted` distinguishes brand-new files (false) from rows whose previous extraction
+/// returned empty (true, force mode only) — needed for accurate progress accounting.
+type UnindexedRow = (i64, String, String, i64, bool);
+
 /// Async background content indexing for all files in a directory tree.
 /// Called automatically after adding a folder to a workspace.
 /// Extracts text from PDFs, DOCX, XLSX, etc. that were skipped during the initial scan.
@@ -938,7 +943,7 @@ pub async fn index_directory_content(
     // processing it ADDS a new attempted row (was IS NULL → indexed++) or merely
     // updates an existing empty row (already counted in already_attempted → no change).
     // Without this, force mode double-counts retries and overshoots total_files.
-    let (unindexed, total_files, already_attempted): (Vec<(i64, String, String, i64, bool)>, i64, i64) = {
+    let (unindexed, total_files, already_attempted): (Vec<UnindexedRow>, i64, i64) = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
 
         let total_files: i64 = db
@@ -964,7 +969,7 @@ pub async fn index_directory_content(
             "SELECT f.id, f.path, f.extension, f.size",
             "SELECT f.id, f.path, f.extension, f.size, fc.file_id IS NOT NULL",
         );
-        let queue: Vec<(i64, String, String, i64, bool)> = db
+        let queue: Vec<UnindexedRow> = db
             .prepare(&select_with_flag)
             .and_then(|mut stmt| {
                 stmt.query_map([&path], |row| {
