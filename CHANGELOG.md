@@ -2,6 +2,59 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.8] - 2026-05-31
+
+### Added
+
+- **Automation rules** — nxs can now act on the filesystem in response to events or on demand. A full new subsystem with four phases shipping in one release:
+  - **Typed rule model.** Each rule has a trigger (`file_created` / `file_modified` / `file_renamed` / `manual`), an optional scope path, a list of AND'd conditions, and an ordered list of actions. Persisted in a new `automation_rules` table with conditions and actions as JSON arrays; no DB migration required to add new variants.
+  - **9 condition kinds**: `ext`, `name_contains`, `name_starts_with`, `name_regex`, `path_contains`, `size_gt`, `size_lt`, `age_gt_days`, `tag_has`. Regex uses `regex-lite` (no PCRE features, fast cold start).
+  - **7 action kinds**: `move_to`, `copy_to`, `rename`, `add_tag`, `remove_tag`, `trash`, `notify`. Move falls back to copy + remove on cross-volume hops. Trash uses the existing `trash_items` table — soft delete only, never `delete_path`.
+  - **Template engine** with `{year}`, `{month}`, `{day}`, `{hour}`, `{minute}`, `{date}` (= YYYY-MM-DD), `{name}`, `{ext}`. Unknown tokens are left literal — typo-friendly. Date math via Howard Hinnant's algorithm; no `chrono` dependency.
+  - **Manual run** with target folder + optional recursive walk (max depth 8, hard cap at 10 000 files, same skip list as `scan_directory`: `.git`, `node_modules`, `target`, `__pycache__`, etc.). Dry-run preview returns a per-file diff before applying.
+  - **Watcher dispatch.** Every filesystem event from the existing `notify::RecommendedWatcher` is forwarded to `automation::dispatch_event` via `std::thread::spawn` so the notify callback never blocks on rule evaluation.
+  - **Per-rule rate limiting** — 10 firings per 60 seconds per rule. Beyond that, the rule is auto-disabled and a toast notifies the user with an "Open Automations" CTA to jump straight to the panel and re-enable when ready.
+  - **Cycle detection** — every engine-touched path is registered for 5 s; subsequent watcher events on those paths are suppressed. Kills the self-trigger loop where a rule's own output would re-fire the rule.
+  - **UI** — full modal with three views (list / editor / run). Editor is a visual builder with dropdown-selected condition and action kinds, no free-form code. Per-row drag handles let you reorder actions (order matters: `move` then `rename` ≠ `rename` then `move`).
+- **Preset library** — 5 ready-to-use templates surface as the empty-state gallery and behind a "Templates" button when rules exist. Picking a preset prefills the editor in the user's language, ready to tweak and save:
+  - *Tag PDFs as Documents* — adds the "Documents" tag to every PDF in a folder (manual run, zero config).
+  - *Tag images as Photos* — single regex covers jpg/jpeg/png/webp/heic.
+  - *Archive screenshots older than 30 days* — `name_starts_with=Screenshot` + `age_gt_days=30` → trash.
+  - *Organize new PDFs by year* — file-created watcher → `move_to C:\Archive\{year}`, demonstrates template tokens.
+  - *Clean .tmp files older than 7 days* — combined extension + age condition.
+- **Per-rule diagnostics** — three new columns on `automation_rules`: `last_fired_at`, `fire_count`, `last_error`. Updated whenever a rule actually does work (dry runs don't count, no-match firings don't count). Shown in the rule list as *"fired 12× · last 5m ago"* with an automatic *"⚠ last error"* badge that clears itself on the next fully-successful run. Closes the "is my rule even firing?" feedback loop that V1 was missing.
+- **Drag-to-reorder action handles** — HTML5 native DnD with a visual drop indicator (2 px accent line above or below the target row) and dimmed source row. Action order is semantic so this matters: move-then-tag is different from tag-then-move.
+- **Toast action button** — `ToastAction { label, onClick }` optional field on `Toast`. Renders as a button under the detail line; clicking runs the action and auto-dismisses. First user is the rate-limit warning's "Open Automations" shortcut.
+- **`AutomationsModal` open state lifted to `useStore`** — matches the existing `shareModalOpen` pattern. Lets external triggers (toast CTA, future AI tool calls) open the modal without going through the Sidebar's local state.
+
+### Improved
+
+- **Toast `detail` field now wraps to 3 lines** (was: single-line truncate) via `line-clamp-3`. Long explanations like the rate-limit warning are readable in full; short details still fit on one line, no visual regression.
+- **`AutomationRule` JSON serialization is forward-compatible** — `last_fired_at`, `fire_count`, `last_error` carry `#[serde(default)]` so a rule deserialized from an older DB shape doesn't reject the row.
+- **~110 new i18n strings** covering the entire automation surface (rule names, conditions, actions, triggers, presets, run-now panel, diagnostics, toast). Full FR + EN parity.
+
+### Fixed
+
+- **Multi-folder workspaces only watched their last added folder** — `watch_directory` previously created a fresh `RecommendedWatcher` on every call and overwrote the static `Mutex<Option<...>>`, silently dropping the previous watcher and stopping its watches. A workspace with N watched folders only observed events for the last one added: auto-tag-on-create, content reindexing on modify, and tag preservation on watcher refresh were all broken for every folder except the latest. The watcher now accumulates paths into a single shared instance, calling `.watch(path)` for each new one. Fix landed alongside automation because every rule depends on receiving events, but the regression had been silently affecting the file manager for any user with more than one folder per workspace.
+
+### Performance
+
+- **No regression on cold path**. The diagnostics write is a single `UPDATE` inside the existing DB lock window of `dispatch_event` — no extra acquisitions, no extra round-trips. The new `idx_automation_enabled_trigger` index makes the per-event rule lookup O(log N).
+- **Rate limiter and cycle detection use lazy eviction** — old timestamps are pruned only when a relevant rule is checked, not on a timer thread. Zero ambient work when no automation events are flowing.
+
+### Testing
+
+- **36 unit tests on the automation engine** (up from 0 before this release). All pure-function over in-memory state, no Tauri runtime or live DB needed:
+  - Template engine (5 cases, including `{date}` / `{day}` substitution-order safety)
+  - Condition evaluator (9 cases, one per Condition variant + regex sad-path)
+  - Date and time helpers (`unix_to_ymd`, `unix_to_hm`)
+  - Path helpers (`unique_path_returns_original_when_free`, `describe_action_resolves_templates`, recursive walker with `.git` skip-list)
+  - Rate limiter (under cap, cap-trip, window pruning, per-rule isolation)
+  - Cycle detection (within-TTL, unknown path)
+  - Trigger-path matching (empty / inside / outside / case-insensitive)
+  - `trigger_kind_from_action` mapping
+  - `compute_diagnostics_update` (dry-run skip, no-match skip, success clears last_error, partial failure records first error, all-fail still fires)
+
 ## [0.1.7] - 2026-05-29
 
 ### Added
