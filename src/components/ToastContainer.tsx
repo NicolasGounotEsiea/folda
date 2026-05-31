@@ -45,7 +45,21 @@ function ToastItem({ toast }: { toast: Toast }) {
       <div className="flex-1 min-w-0">
         <p className="text-text-primary leading-snug">{toast.message}</p>
         {toast.detail && (
-          <p className="text-text-muted mt-0.5 leading-snug truncate">{toast.detail}</p>
+          // line-clamp-3 (was: truncate) lets longer explanations like the
+          // automation rate-limit detail wrap to 3 lines instead of being cut.
+          // Existing short-detail toasts still fit in 1-2 lines, no regression.
+          <p className="text-text-muted mt-0.5 leading-snug line-clamp-3">{toast.detail}</p>
+        )}
+        {toast.action && (
+          <button
+            onClick={() => {
+              toast.action!.onClick();
+              dismiss(toast.id);
+            }}
+            className="mt-1.5 px-2 h-6 rounded bg-surface-3 hover:bg-surface-1 text-text-primary text-[11px] font-medium border border-border transition-colors"
+          >
+            {toast.action.label}
+          </button>
         )}
       </div>
       <button

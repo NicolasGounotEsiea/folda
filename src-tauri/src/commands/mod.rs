@@ -18,3 +18,4 @@ pub mod winintegration;
 pub mod memory;
 pub mod ai_ops;
 pub mod notes;
+pub mod automation;

@@ -191,6 +191,31 @@ fn create_tables(conn: &Connection) -> Result<()> {
             updated_at INTEGER NOT NULL DEFAULT (unixepoch())
         );
 
+        -- Automation rules: filesystem-event-driven actions (when X arrives, do Y).
+        -- conditions and actions are JSON arrays of typed entries; the schema
+        -- is owned by the Rust enums in commands/automation.rs so adding new
+        -- condition / action kinds requires no DB migration.
+        CREATE TABLE IF NOT EXISTS automation_rules (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            name           TEXT    NOT NULL,
+            enabled        INTEGER NOT NULL DEFAULT 1,
+            trigger_kind   TEXT    NOT NULL,       -- file_created | file_modified | file_renamed | manual
+            trigger_path   TEXT    NOT NULL DEFAULT '', -- watched root; ignored when trigger_kind=manual
+            conditions     TEXT    NOT NULL DEFAULT '[]',
+            actions        TEXT    NOT NULL DEFAULT '[]',
+            context_id     INTEGER NOT NULL DEFAULT 0, -- 0 = global, >0 = workspace-scoped (metadata only)
+            created_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+            updated_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+            -- Diagnostics. Updated by dispatch_event + run_automation_rule_manual when
+            -- at least one action is attempted. fire_count is monotonic; last_error is
+            -- cleared back to NULL on a fully-successful run so the badge fades away.
+            last_fired_at  INTEGER,
+            fire_count     INTEGER NOT NULL DEFAULT 0,
+            last_error     TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_automation_enabled_trigger
+            ON automation_rules(enabled, trigger_kind);
+
         CREATE TABLE IF NOT EXISTS file_content (
             file_id      INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
             text_content TEXT    NOT NULL DEFAULT '',
@@ -309,6 +334,24 @@ fn create_tables(conn: &Connection) -> Result<()> {
             ALTER TABLE folder_tags_new RENAME TO folder_tags;
             COMMIT;
         ")?;
+    }
+
+    // Migration: add diagnostics columns to automation_rules (existing DBs).
+    // Each ALTER is independently gated so partial migrations don't double-add.
+    if !has_column(conn, "automation_rules", "last_fired_at") {
+        let _ = conn.execute_batch(
+            "ALTER TABLE automation_rules ADD COLUMN last_fired_at INTEGER;",
+        );
+    }
+    if !has_column(conn, "automation_rules", "fire_count") {
+        let _ = conn.execute_batch(
+            "ALTER TABLE automation_rules ADD COLUMN fire_count INTEGER NOT NULL DEFAULT 0;",
+        );
+    }
+    if !has_column(conn, "automation_rules", "last_error") {
+        let _ = conn.execute_batch(
+            "ALTER TABLE automation_rules ADD COLUMN last_error TEXT;",
+        );
     }
 
     // ── Performance indexes (created idempotently after migrations) ───────────

@@ -3,6 +3,9 @@ import { useStore } from "../store/useStore";
 type AppStrings = {
   // ── existing ──────────────────────────────────────────────────────────────
   name: string; size: string; created: string; modified: string;
+  /// Tooltip shown on the Created row when the file was likely copied here,
+  /// explaining the inode-created date is later than the content-modified date.
+  addedHereOn: string;
   tags: string; noTags: string; addTag: string;
   info: string; history: string;
   statistics: string; items: string;
@@ -158,11 +161,131 @@ type AppStrings = {
   sheetColumnFilterPlaceholder: string;  // input placeholder e.g. "Filter…"
   sheetColumnFiltersActive: string;     // status "{n} column filter(s) active"
   sheetColumnFiltersClearAll: string;   // tooltip on clear-all button
+
+  // ── automations ───────────────────────────────────────────────────────────
+  automations: string;                  // sidebar entry
+  automationsTitle: string;             // modal header
+  automationNew: string;                // "+ New rule"
+  automationEdit: string;
+  automationDisable: string;
+  automationEnable: string;
+  automationRunNow: string;
+  automationEmpty: string;              // empty-state message
+  automationHelp: string;               // top help text
+  automationConfirmDelete: string;      // "Delete rule '{name}'?"
+  automationDeleted: string;
+  automationDeleteFailed: string;
+  automationSaved: string;
+  automationSaveFailed: string;
+  automationLoadFailed: string;
+  automationNameRequired: string;
+
+  automationFieldName: string;
+  automationFieldNamePh: string;
+  automationFieldTrigger: string;
+  automationFieldScope: string;
+  automationFieldScopePh: string;
+  automationFieldScopeHelp: string;
+  automationFieldConditions: string;
+  automationFieldActions: string;
+  automationAddCondition: string;
+  automationAddAction: string;
+  automationNoConditions: string;
+  automationNoActions: string;
+  automationBrowse: string;
+
+  automationTriggerCreated: string;
+  automationTriggerModified: string;
+  automationTriggerRenamed: string;
+  automationTriggerManual: string;
+  automationTriggerCreatedHelp: string;
+  automationTriggerModifiedHelp: string;
+  automationTriggerRenamedHelp: string;
+  automationTriggerManualHelp: string;
+
+  automationCondExt: string;
+  automationCondNameContains: string;
+  automationCondNameStarts: string;
+  automationCondNameRegex: string;
+  automationCondPathContains: string;
+  automationCondSizeGt: string;
+  automationCondSizeLt: string;
+  automationCondAgeGtDays: string;
+  automationCondTagHas: string;
+  automationCondExtPh: string;
+  automationCondNamePh: string;
+  automationCondRegexPh: string;
+  automationCondPathPh: string;
+  automationCondBytesPh: string;
+  automationCondDaysPh: string;
+  automationCondTagPh: string;
+
+  automationActionMoveTo: string;
+  automationActionCopyTo: string;
+  automationActionRename: string;
+  automationActionAddTag: string;
+  automationActionRemoveTag: string;
+  automationActionTrash: string;
+  automationActionNotify: string;
+  automationActionTrashHelp: string;
+  automationActionPathPh: string;
+  automationActionRenamePh: string;
+  automationActionTagPh: string;
+  automationActionMessagePh: string;
+
+  automationSummaryNoConditions: string;
+  automationSummaryConditionsSingular: string;
+  automationSummaryConditionsPlural: string;
+  automationSummaryActionsSingular: string;
+  automationSummaryActionsPlural: string;
+
+  automationRunTargetDir: string;
+  automationRunTargetDirPh: string;
+  automationRunRecursive: string;
+  automationRunDryRun: string;
+  automationRunApply: string;
+  automationRunDisabled: string;        // tooltip on Apply when rule is disabled
+  automationRunNoTarget: string;
+  automationRunDone: string;            // "{n} action(s) applied"
+  automationRunFailed: string;
+  automationRunReportDry: string;       // "{matched} file(s), {actions} action(s) preview"
+  automationRunReportLive: string;      // "{ok}/{total} succeeded"
+
+  automationToastRuleDisabledTitle: string;   // toast on rate-limit trip
+  automationToastRuleDisabledDetail: string;
+  automationToastOpen: string;                // CTA button label on the toast
+
+  // ── automations: per-rule diagnostics ─────────────────────────────────────
+  automationDiagFiredTimes: string;    // "fired {n}× · last {when}"
+  automationDiagJustNow: string;       // "just now"
+  automationDiagMinutesAgo: string;    // "{n}m ago"
+  automationDiagHoursAgo: string;      // "{n}h ago"
+  automationDiagDaysAgo: string;       // "{n}d ago"
+  automationDiagLastErrorChip: string; // chip text "last error"
+  automationDiagLastErrorTitle: string; // hover title: "Last error: {error}"
+
+  // ── automations: preset library ───────────────────────────────────────────
+  automationPresets: string;            // button label "Templates"
+  automationPresetsHint: string;        // tooltip "Start from a template"
+  automationEmptyTryPreset: string;     // empty-state header above gallery
+  automationPresetTagPdfsName: string;
+  automationPresetTagPdfsDesc: string;
+  automationPresetTagImagesName: string;
+  automationPresetTagImagesDesc: string;
+  automationPresetArchiveScreenshotsName: string;
+  automationPresetArchiveScreenshotsDesc: string;
+  automationPresetOrganizePdfsName: string;
+  automationPresetOrganizePdfsDesc: string;
+  automationPresetCleanTmpName: string;
+  automationPresetCleanTmpDesc: string;
+
+  automationDragToReorder: string;     // tooltip on the action drag handle
 };
 
 const translations: Record<string, AppStrings> = {
   en: {
     name: "Name", size: "Size", created: "Created", modified: "Modified",
+    addedHereOn: "Copied to this folder on {date} — the file's content modification date is older.",
     tags: "Tags", noTags: "No tags", addTag: "+ Add",
     info: "Info", history: "History",
     statistics: "Statistics", items: "Items",
@@ -308,10 +431,127 @@ const translations: Record<string, AppStrings> = {
     sheetColumnFilterPlaceholder: "Filter…",
     sheetColumnFiltersActive: "{n} column filter(s) active",
     sheetColumnFiltersClearAll: "Clear all column filters",
+
+    automations: "Automations",
+    automationsTitle: "Automations",
+    automationNew: "New rule",
+    automationEdit: "Edit",
+    automationDisable: "Disable",
+    automationEnable: "Enable",
+    automationRunNow: "Run now",
+    automationEmpty: "No automation rules yet. Create one to react to file events or batch-process a folder.",
+    automationHelp: "Rules fire automatically on file events, or on demand against a target folder.",
+    automationConfirmDelete: "Delete the automation \"{name}\"?",
+    automationDeleted: "Rule deleted",
+    automationDeleteFailed: "Could not delete the rule",
+    automationSaved: "Rule saved",
+    automationSaveFailed: "Could not save the rule",
+    automationLoadFailed: "Could not load rules",
+    automationNameRequired: "Please give the rule a name",
+
+    automationFieldName: "Name",
+    automationFieldNamePh: "e.g. Archive invoices by year",
+    automationFieldTrigger: "Trigger",
+    automationFieldScope: "Folder",
+    automationFieldScopePh: "C:\\Users\\…\\Downloads (empty = anywhere)",
+    automationFieldScopeHelp: "Restricts the trigger to events inside this folder (and subfolders). Leave empty to match anywhere.",
+    automationFieldConditions: "Conditions (all must match)",
+    automationFieldActions: "Actions (run in order)",
+    automationAddCondition: "Add condition",
+    automationAddAction: "Add action",
+    automationNoConditions: "No conditions — every file will match.",
+    automationNoActions: "No actions yet — add at least one.",
+    automationBrowse: "Browse",
+
+    automationTriggerCreated: "On create",
+    automationTriggerModified: "On modify",
+    automationTriggerRenamed: "On rename",
+    automationTriggerManual: "Manual",
+    automationTriggerCreatedHelp: "Fires when a new file appears in the folder.",
+    automationTriggerModifiedHelp: "Fires when a file is edited or overwritten.",
+    automationTriggerRenamedHelp: "Fires when a file is renamed.",
+    automationTriggerManualHelp: "Runs only when you click \"Run now\" against a folder.",
+
+    automationCondExt: "extension is",
+    automationCondNameContains: "name contains",
+    automationCondNameStarts: "name starts with",
+    automationCondNameRegex: "name matches regex",
+    automationCondPathContains: "path contains",
+    automationCondSizeGt: "size >",
+    automationCondSizeLt: "size <",
+    automationCondAgeGtDays: "older than (days)",
+    automationCondTagHas: "has tag",
+    automationCondExtPh: "pdf",
+    automationCondNamePh: "report",
+    automationCondRegexPh: "^report-\\d{4}\\.pdf$",
+    automationCondPathPh: "\\2026\\",
+    automationCondBytesPh: "bytes",
+    automationCondDaysPh: "days",
+    automationCondTagPh: "Invoices",
+
+    automationActionMoveTo: "move to",
+    automationActionCopyTo: "copy to",
+    automationActionRename: "rename to",
+    automationActionAddTag: "add tag",
+    automationActionRemoveTag: "remove tag",
+    automationActionTrash: "move to trash",
+    automationActionNotify: "notify",
+    automationActionTrashHelp: "no parameter needed",
+    automationActionPathPh: "D:\\Archive\\{year}",
+    automationActionRenamePh: "{year}-{month}-{name}.{ext}",
+    automationActionTagPh: "Invoices",
+    automationActionMessagePh: "Message shown to the user",
+
+    automationSummaryNoConditions: "no conditions",
+    automationSummaryConditionsSingular: "condition",
+    automationSummaryConditionsPlural: "conditions",
+    automationSummaryActionsSingular: "action",
+    automationSummaryActionsPlural: "actions",
+
+    automationRunTargetDir: "Target folder",
+    automationRunTargetDirPh: "Pick the folder to scan",
+    automationRunRecursive: "Include subfolders (up to depth 8, skips .git / node_modules / etc.)",
+    automationRunDryRun: "Preview (dry-run)",
+    automationRunApply: "Apply",
+    automationRunDisabled: "Enable the rule first to apply for real",
+    automationRunNoTarget: "Please pick a target folder",
+    automationRunDone: "{n} action(s) applied",
+    automationRunFailed: "Run failed",
+    automationRunReportDry: "{matched} file(s) would match, {actions} action(s) preview",
+    automationRunReportLive: "{ok} / {total} action(s) succeeded",
+
+    automationToastRuleDisabledTitle: "Automation \"{name}\" was paused",
+    automationToastRuleDisabledDetail: "It fired more than {limit} times in {seconds}s. Re-enable it from the Automations panel once the underlying issue is fixed.",
+    automationToastOpen: "Open Automations",
+
+    automationDiagFiredTimes: "fired {n}× · last {when}",
+    automationDiagJustNow: "just now",
+    automationDiagMinutesAgo: "{n}m ago",
+    automationDiagHoursAgo: "{n}h ago",
+    automationDiagDaysAgo: "{n}d ago",
+    automationDiagLastErrorChip: "last error",
+    automationDiagLastErrorTitle: "Last error: {error}",
+
+    automationPresets: "Templates",
+    automationPresetsHint: "Start from a ready-made rule",
+    automationEmptyTryPreset: "No rules yet — pick a template below to get started, or click \"New rule\" for a blank one.",
+    automationPresetTagPdfsName: "Tag PDFs as Documents",
+    automationPresetTagPdfsDesc: "Manual run · adds the \"Documents\" tag to every PDF in a folder.",
+    automationPresetTagImagesName: "Tag images as Photos",
+    automationPresetTagImagesDesc: "Manual run · uses a regex to match jpg/png/webp/heic and tag them \"Photos\".",
+    automationPresetArchiveScreenshotsName: "Archive old screenshots",
+    automationPresetArchiveScreenshotsDesc: "Manual run · sends files named Screenshot* older than 30 days to the trash.",
+    automationPresetOrganizePdfsName: "Organize new PDFs by year",
+    automationPresetOrganizePdfsDesc: "On create · moves new PDFs to C:\\Archive\\{year}. Edit the destination before saving.",
+    automationPresetCleanTmpName: "Clean .tmp files older than 7 days",
+    automationPresetCleanTmpDesc: "Manual run · trashes .tmp files that haven't been touched in a week.",
+
+    automationDragToReorder: "Drag to reorder",
   },
 
   fr: {
     name: "Nom", size: "Taille", created: "Créé le", modified: "Modifié",
+    addedHereOn: "Copié dans ce dossier le {date} — la date de modification du contenu est plus ancienne.",
     tags: "Étiquettes", noTags: "Aucune étiquette", addTag: "+ Ajouter",
     info: "Infos", history: "Historique",
     statistics: "Statistiques", items: "Éléments",
@@ -457,6 +697,122 @@ const translations: Record<string, AppStrings> = {
     sheetColumnFilterPlaceholder: "Filtrer…",
     sheetColumnFiltersActive: "{n} filtre(s) colonne actif(s)",
     sheetColumnFiltersClearAll: "Effacer tous les filtres colonne",
+
+    automations: "Automatisations",
+    automationsTitle: "Automatisations",
+    automationNew: "Nouvelle règle",
+    automationEdit: "Modifier",
+    automationDisable: "Désactiver",
+    automationEnable: "Activer",
+    automationRunNow: "Exécuter",
+    automationEmpty: "Aucune règle pour le moment. Créez-en une pour réagir aux événements de fichiers ou traiter un dossier en lot.",
+    automationHelp: "Les règles s'exécutent automatiquement sur les événements fichier, ou à la demande sur un dossier cible.",
+    automationConfirmDelete: "Supprimer l'automatisation « {name} » ?",
+    automationDeleted: "Règle supprimée",
+    automationDeleteFailed: "Impossible de supprimer la règle",
+    automationSaved: "Règle enregistrée",
+    automationSaveFailed: "Impossible d'enregistrer la règle",
+    automationLoadFailed: "Impossible de charger les règles",
+    automationNameRequired: "Donnez un nom à la règle",
+
+    automationFieldName: "Nom",
+    automationFieldNamePh: "ex. Archiver les factures par année",
+    automationFieldTrigger: "Déclencheur",
+    automationFieldScope: "Dossier",
+    automationFieldScopePh: "C:\\Users\\…\\Téléchargements (vide = partout)",
+    automationFieldScopeHelp: "Restreint le déclencheur aux événements dans ce dossier (et sous-dossiers). Laissez vide pour s'appliquer partout.",
+    automationFieldConditions: "Conditions (toutes doivent correspondre)",
+    automationFieldActions: "Actions (exécutées dans l'ordre)",
+    automationAddCondition: "Ajouter une condition",
+    automationAddAction: "Ajouter une action",
+    automationNoConditions: "Aucune condition — tous les fichiers correspondront.",
+    automationNoActions: "Aucune action pour l'instant — ajoutez-en au moins une.",
+    automationBrowse: "Parcourir",
+
+    automationTriggerCreated: "À la création",
+    automationTriggerModified: "À la modification",
+    automationTriggerRenamed: "Au renommage",
+    automationTriggerManual: "Manuel",
+    automationTriggerCreatedHelp: "Se déclenche quand un nouveau fichier apparaît dans le dossier.",
+    automationTriggerModifiedHelp: "Se déclenche quand un fichier est édité ou écrasé.",
+    automationTriggerRenamedHelp: "Se déclenche quand un fichier est renommé.",
+    automationTriggerManualHelp: "Ne s'exécute que via le bouton « Exécuter » sur un dossier.",
+
+    automationCondExt: "extension =",
+    automationCondNameContains: "le nom contient",
+    automationCondNameStarts: "le nom commence par",
+    automationCondNameRegex: "le nom matche le regex",
+    automationCondPathContains: "le chemin contient",
+    automationCondSizeGt: "taille >",
+    automationCondSizeLt: "taille <",
+    automationCondAgeGtDays: "plus vieux que (jours)",
+    automationCondTagHas: "a l'étiquette",
+    automationCondExtPh: "pdf",
+    automationCondNamePh: "rapport",
+    automationCondRegexPh: "^rapport-\\d{4}\\.pdf$",
+    automationCondPathPh: "\\2026\\",
+    automationCondBytesPh: "octets",
+    automationCondDaysPh: "jours",
+    automationCondTagPh: "Factures",
+
+    automationActionMoveTo: "déplacer vers",
+    automationActionCopyTo: "copier vers",
+    automationActionRename: "renommer en",
+    automationActionAddTag: "ajouter l'étiquette",
+    automationActionRemoveTag: "retirer l'étiquette",
+    automationActionTrash: "mettre à la corbeille",
+    automationActionNotify: "notifier",
+    automationActionTrashHelp: "aucun paramètre requis",
+    automationActionPathPh: "D:\\Archive\\{year}",
+    automationActionRenamePh: "{year}-{month}-{name}.{ext}",
+    automationActionTagPh: "Factures",
+    automationActionMessagePh: "Message affiché à l'utilisateur",
+
+    automationSummaryNoConditions: "aucune condition",
+    automationSummaryConditionsSingular: "condition",
+    automationSummaryConditionsPlural: "conditions",
+    automationSummaryActionsSingular: "action",
+    automationSummaryActionsPlural: "actions",
+
+    automationRunTargetDir: "Dossier cible",
+    automationRunTargetDirPh: "Choisissez le dossier à analyser",
+    automationRunRecursive: "Inclure les sous-dossiers (profondeur max 8, ignore .git / node_modules / etc.)",
+    automationRunDryRun: "Aperçu (sans modification)",
+    automationRunApply: "Appliquer",
+    automationRunDisabled: "Activez la règle avant d'appliquer pour de vrai",
+    automationRunNoTarget: "Choisissez un dossier cible",
+    automationRunDone: "{n} action(s) appliquée(s)",
+    automationRunFailed: "Échec de l'exécution",
+    automationRunReportDry: "{matched} fichier(s) correspondraient, {actions} action(s) en aperçu",
+    automationRunReportLive: "{ok} / {total} action(s) réussies",
+
+    automationToastRuleDisabledTitle: "Automatisation « {name} » mise en pause",
+    automationToastRuleDisabledDetail: "Elle s'est déclenchée plus de {limit} fois en {seconds}s. Réactivez-la depuis le panneau Automatisations après avoir résolu la cause.",
+    automationToastOpen: "Ouvrir Automatisations",
+
+    automationDiagFiredTimes: "déclenchée {n}× · dernière {when}",
+    automationDiagJustNow: "à l'instant",
+    automationDiagMinutesAgo: "il y a {n}min",
+    automationDiagHoursAgo: "il y a {n}h",
+    automationDiagDaysAgo: "il y a {n}j",
+    automationDiagLastErrorChip: "dernière erreur",
+    automationDiagLastErrorTitle: "Dernière erreur : {error}",
+
+    automationPresets: "Modèles",
+    automationPresetsHint: "Partir d'une règle prête à l'emploi",
+    automationEmptyTryPreset: "Aucune règle — choisissez un modèle ci-dessous pour démarrer, ou cliquez sur « Nouvelle règle » pour partir de zéro.",
+    automationPresetTagPdfsName: "Étiqueter les PDFs comme Documents",
+    automationPresetTagPdfsDesc: "Exécution manuelle · ajoute l'étiquette « Documents » à tous les PDFs d'un dossier.",
+    automationPresetTagImagesName: "Étiqueter les images comme Photos",
+    automationPresetTagImagesDesc: "Exécution manuelle · regex pour matcher jpg/png/webp/heic et leur ajouter l'étiquette « Photos ».",
+    automationPresetArchiveScreenshotsName: "Archiver les vieilles captures d'écran",
+    automationPresetArchiveScreenshotsDesc: "Exécution manuelle · met à la corbeille les fichiers Screenshot* de plus de 30 jours.",
+    automationPresetOrganizePdfsName: "Organiser les nouveaux PDFs par année",
+    automationPresetOrganizePdfsDesc: "À la création · déplace les nouveaux PDFs vers C:\\Archive\\{year}. Modifiez la destination avant d'enregistrer.",
+    automationPresetCleanTmpName: "Nettoyer les .tmp de plus de 7 jours",
+    automationPresetCleanTmpDesc: "Exécution manuelle · met à la corbeille les .tmp non touchés depuis une semaine.",
+
+    automationDragToReorder: "Glisser pour réorganiser",
   },
 };
 

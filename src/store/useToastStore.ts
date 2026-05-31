@@ -2,11 +2,20 @@ import { create } from "zustand";
 
 export type ToastType = "success" | "error" | "warning" | "info";
 
+/// Optional CTA rendered on the toast as a small button. The toast is
+/// auto-dismissed after `onClick` fires — callers don't need to dismiss
+/// manually.
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface Toast {
   id: string;
   type: ToastType;
   message: string;
   detail?: string;
+  action?: ToastAction;
 }
 
 interface ToastStore {

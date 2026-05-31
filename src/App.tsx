@@ -40,6 +40,7 @@ import { TimelineView } from "./views/TimelineView";
 import { SettingsModal } from "./components/SettingsModal";
 import { deserializeSettings, applySettings } from "./utils/settings";
 import { telemetryInit } from "./utils/telemetry";
+import { useTranslation } from "./utils/i18n";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { OnboardingModal } from "./components/OnboardingModal";
 import { ToastContainer } from "./components/ToastContainer";
@@ -83,6 +84,7 @@ export function App() {
   useEffect(() => { activeContextIdRef.current = activeContextId; }, [activeContextId]);
 
   const addToast = useToastStore((s) => s.addToast);
+  const t = useTranslation();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
@@ -274,6 +276,32 @@ export function App() {
     return () => { u1.then((f) => f()); u2.then((f) => f()); u3.then((f) => f()); u4.then((f) => f()); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPath, sharingMode]);
+
+  // Automation events — toast on rule auto-disabled (rate-limit trip) and on Notify actions
+  useEffect(() => {
+    const setAutomationsModalOpen = useStore.getState().setAutomationsModalOpen;
+    const u1 = listen<{ rule_name: string; reason: string; limit: number; window_secs: number }>(
+      "automation://rule-disabled",
+      (e) => {
+        addToast({
+          type: "warning",
+          message: t.automationToastRuleDisabledTitle.replace("{name}", e.payload.rule_name),
+          detail: t.automationToastRuleDisabledDetail
+            .replace("{limit}", String(e.payload.limit))
+            .replace("{seconds}", String(e.payload.window_secs)),
+          action: {
+            label: t.automationToastOpen,
+            onClick: () => setAutomationsModalOpen(true),
+          },
+        });
+      },
+    );
+    const u2 = listen<{ message: string }>("automation-notify", (e) => {
+      addToast({ type: "info", message: e.payload.message });
+    });
+    return () => { u1.then((f) => f()); u2.then((f) => f()); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Mouse back / forward buttons — pane-aware
   useEffect(() => {

@@ -554,6 +554,24 @@ fn handle_fs_event(
             "action": action,
             "timestamp": timestamp,
         }));
+
+        // Dispatch to automation rules in a background thread so the notify
+        // callback isn't blocked on rule evaluation / fs ops. The dispatcher
+        // handles its own DB locking and cycle/rate-limit checks.
+        if action != "deleted" {
+            let db_for_auto = Arc::clone(db);
+            let app_for_auto = app.clone();
+            let path_buf = path.clone();
+            let action_owned = action.to_string();
+            std::thread::spawn(move || {
+                crate::commands::automation::dispatch_event(
+                    &path_buf,
+                    &action_owned,
+                    &db_for_auto,
+                    &app_for_auto,
+                );
+            });
+        }
     }
 }
 
@@ -565,21 +583,28 @@ pub fn watch_directory(
 ) -> Result<(), String> {
     use notify::{RecursiveMode, Watcher};
 
-    let db = Arc::clone(&state.db);
-    let app_handle = app.clone();
+    let mut guard = WATCHER.lock().map_err(|e| e.to_string())?;
 
-    let mut watcher = notify::RecommendedWatcher::new(
-        move |res| handle_fs_event(res, &db, &app_handle),
-        notify::Config::default(),
-    )
-    .map_err(|e| e.to_string())?;
+    // First call → create the singleton watcher with a callback bound to AppState.
+    // Subsequent calls reuse it and just add the new path. Previously this fn
+    // REPLACED the watcher on every call, which silently dropped earlier watches
+    // — so a multi-folder workspace only had its last folder observed.
+    if guard.is_none() {
+        let db = Arc::clone(&state.db);
+        let app_handle = app.clone();
+        let watcher = notify::RecommendedWatcher::new(
+            move |res| handle_fs_event(res, &db, &app_handle),
+            notify::Config::default(),
+        )
+        .map_err(|e| e.to_string())?;
+        *guard = Some(watcher);
+    }
 
+    let watcher = guard.as_mut().expect("watcher must be initialized");
+    // `watch` is idempotent on notify v6 — re-watching an existing path is a no-op.
     watcher
         .watch(std::path::Path::new(&path), RecursiveMode::Recursive)
         .map_err(|e| e.to_string())?;
-
-    // Replace the previous watcher (drops it, stopping the old watch)
-    *WATCHER.lock().map_err(|e| e.to_string())? = Some(watcher);
     Ok(())
 }
 

@@ -195,6 +195,9 @@ interface AppStore {
   remoteRootPaths: string[];
   shareModalOpen: boolean;
   joinModalOpen: boolean;
+  /// Automations modal — lifted to the store so the toast "Open" CTA from a
+  /// rate-limited rule can open it from outside the Sidebar.
+  automationsModalOpen: boolean;
   setSharingHosted: (code: string, password: string, workspaceName: string, workspaceIcon: string, contextId: number | null) => void;
   setSharingJoined: (workspaceName: string, rootPaths: string[]) => void;
   resetSharing: () => void;
@@ -202,6 +205,7 @@ interface AppStore {
   removeSharingClient: (name: string) => void;
   setShareModalOpen: (v: boolean) => void;
   setJoinModalOpen: (v: boolean) => void;
+  setAutomationsModalOpen: (v: boolean) => void;
   // Guest reconnection
   sharingGuestArgs: { code: string; password: string; displayName: string } | null;
   sharingReconnecting: boolean;
@@ -746,6 +750,7 @@ export const useStore = create<AppStore>((set, get) => ({
   remoteRootPaths: [],
   shareModalOpen: false,
   joinModalOpen: false,
+  automationsModalOpen: false,
 
   setSharingHosted: (code, password, workspaceName, workspaceIcon, contextId) =>
     set({ sharingMode: "hosting", sharingCode: code, sharingPassword: password, sharingClients: [], sharingContextId: contextId, sharingWorkspaceName: workspaceName, sharingWorkspaceIcon: workspaceIcon }),
@@ -759,6 +764,7 @@ export const useStore = create<AppStore>((set, get) => ({
     set((s) => ({ sharingClients: s.sharingClients.filter((n) => n !== name) })),
   setShareModalOpen: (shareModalOpen) => set({ shareModalOpen }),
   setJoinModalOpen: (joinModalOpen) => set({ joinModalOpen }),
+  setAutomationsModalOpen: (automationsModalOpen) => set({ automationsModalOpen }),
   sharingGuestArgs: null,
   sharingReconnecting: false,
   setSharingGuestArgs: (sharingGuestArgs) => set({ sharingGuestArgs }),

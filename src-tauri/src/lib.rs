@@ -196,6 +196,14 @@ pub fn run() {
             // Workspace notes
             commands::notes::get_workspace_note,
             commands::notes::save_workspace_note,
+            // Automation rules
+            commands::automation::get_automation_rules,
+            commands::automation::get_automation_rule,
+            commands::automation::create_automation_rule,
+            commands::automation::update_automation_rule,
+            commands::automation::delete_automation_rule,
+            commands::automation::toggle_automation_rule,
+            commands::automation::run_automation_rule_manual,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

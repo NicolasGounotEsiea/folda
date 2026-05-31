@@ -3,13 +3,14 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { clsx } from "clsx";
 import {
   Bookmark, BookmarkPlus, Check, ChevronDown, ChevronRight, ChevronUp,
-  File, Folder, FolderPlus, Hash, Loader2, LogIn, Plus, RefreshCw, Share2, Tag, Trash2, Users, X, Zap,
+  File, Folder, FolderPlus, Hash, Loader2, LogIn, Plus, RefreshCw, Share2, Tag, Trash2, Users, Workflow, X, Zap,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "../store/useStore";
 import { useIndexingStore, seedIndexingProgress } from "../store/useIndexingStore";
 import type { Context, FileEntry, ListEntry, PinnedItem, SavedView, Tag as TagType } from "../types";
+import { AutomationsModal } from "./AutomationsModal";
 import { JoinModal } from "./JoinModal";
 import { ShareModal } from "./ShareModal";
 import { TagRulesModal } from "./TagRulesModal";
@@ -497,6 +498,10 @@ export function Sidebar() {
   const [newTagName, setNewTagName] = useState("");
   const [newTagColor, setNewTagColor] = useState(COLOR_PALETTE[0]);
   const [showRulesModal, setShowRulesModal] = useState(false);
+  // automationsModalOpen lives in the store so toasts (e.g. rate-limit warning)
+  // can open the modal from outside the Sidebar's local state.
+  const automationsModalOpen = useStore((s) => s.automationsModalOpen);
+  const setAutomationsModalOpen = useStore((s) => s.setAutomationsModalOpen);
   const [editingTagId, setEditingTagId] = useState<number | null>(null);
   const [editTagName, setEditTagName] = useState("");
   const [editTagColor, setEditTagColor] = useState("");
@@ -1088,6 +1093,17 @@ export function Sidebar() {
 
       {showRulesModal && <TagRulesModal onClose={() => setShowRulesModal(false)} />}
 
+      {/* ── Automations ── */}
+      <div className="shrink-0 border-t border-border-subtle px-3 py-1.5">
+        <button
+          onClick={() => setAutomationsModalOpen(true)}
+          className="w-full flex items-center gap-2 px-2 h-7 rounded text-[12px] text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
+        >
+          <Workflow size={12} className="shrink-0" />
+          {tSidebar.automations}
+        </button>
+      </div>
+
       {/* ── Trash ── */}
       <div className="shrink-0 border-t border-border-subtle px-3 py-1.5">
         <button
@@ -1098,6 +1114,8 @@ export function Sidebar() {
           {tSidebar.trash}
         </button>
       </div>
+
+      {automationsModalOpen && <AutomationsModal onClose={() => setAutomationsModalOpen(false)} />}
 
       {/* ── Sharing ── */}
       <div className="shrink-0 border-t border-border-subtle px-3 py-2 flex flex-col gap-1">

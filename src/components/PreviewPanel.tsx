@@ -81,10 +81,7 @@ function FileActivityTab({ filePath }: { filePath: string }) {
             )}
           </div>
           <span className="text-[9px] text-text-muted">
-            {new Date(e.timestamp * 1000).toLocaleString(undefined, {
-              month: "short", day: "numeric",
-              hour: "2-digit", minute: "2-digit",
-            })}
+            {formatActivityDate(e.timestamp)}
           </span>
         </div>
       ))}
@@ -120,6 +117,21 @@ function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+/// Compact date for the activity history feed. Year is omitted only when the
+/// date is in the current year, so "20 janv., 22:21" makes sense for recent
+/// events but "20 janv. 2011, 22:21" is shown for older ones (avoids the
+/// ambiguity reported by users seeing a 14-year-old timestamp as if it were today).
+function formatActivityDate(unixSecs: number): string {
+  if (!unixSecs) return "—";
+  const d = new Date(unixSecs * 1000);
+  const opts: Intl.DateTimeFormatOptions = {
+    month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+  return d.toLocaleString(undefined, opts);
 }
 
 function formatDate(unixSecs: number): string {
@@ -553,8 +565,26 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
 
           <div className="flex flex-col gap-2">
             <Row icon={<HardDrive size={12} />} label={t.size} value={formatSize(selectedFile.size)} />
-            <Row icon={<Calendar size={12} />} label={t.created} value={formatDate(selectedFile.created_at)} />
-            <Row icon={<Clock size={12} />} label={t.modified} value={formatDate(selectedFile.modified_at)} />
+            {(() => {
+              // On Windows, copying a file sets `created_at` to NOW (inode creation
+              // at the new path) but preserves `modified_at` from the original.
+              // That makes `modified < created` for any copied file, which confuses
+              // users. We display the OLDER of the two as "Created" (the file's
+              // real age) and surface the copy event in a tooltip on hover.
+              const realCreated = selectedFile.created_at && selectedFile.modified_at
+                ? Math.min(selectedFile.created_at, selectedFile.modified_at)
+                : selectedFile.created_at;
+              const wasCopied = selectedFile.created_at > selectedFile.modified_at && selectedFile.modified_at > 0;
+              const tip = wasCopied
+                ? t.addedHereOn.replace("{date}", formatDate(selectedFile.created_at))
+                : undefined;
+              return (
+                <>
+                  <Row icon={<Calendar size={12} />} label={t.created} value={formatDate(realCreated)} title={tip} />
+                  <Row icon={<Clock size={12} />} label={t.modified} value={formatDate(selectedFile.modified_at)} />
+                </>
+              );
+            })()}
           </div>
 
           <div>
@@ -607,12 +637,14 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-function Row({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+function Row({ icon, label, value, title }: { icon: React.ReactNode; label: string; value: string; title?: string }) {
   return (
-    <div className="flex items-start gap-2">
+    <div className="flex items-start gap-2" title={title}>
       <span className="text-text-muted mt-0.5 shrink-0">{icon}</span>
       <span className="text-[11px] text-text-muted w-16 shrink-0">{label}</span>
-      <span className="text-[11px] text-text-secondary break-all">{value}</span>
+      <span className={clsx("text-[11px] text-text-secondary break-all", title && "underline decoration-dotted decoration-text-muted/40 underline-offset-2")}>
+        {value}
+      </span>
     </div>
   );
 }
