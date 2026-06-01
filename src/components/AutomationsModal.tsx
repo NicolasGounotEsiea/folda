@@ -31,6 +31,8 @@ type Action =
   | { kind: "trash" }
   | { kind: "notify"; message: string };
 
+type ConditionLogic = "and" | "or";
+
 interface AutomationRule {
   id: number;
   name: string;
@@ -38,6 +40,7 @@ interface AutomationRule {
   trigger_kind: TriggerKind;
   trigger_path: string;
   conditions: Condition[];
+  condition_logic: ConditionLogic;
   actions: Action[];
   context_id: number;
   created_at: number;
@@ -124,6 +127,7 @@ const PRESETS: Preset[] = [
       enabled: true,
       trigger_kind: "manual",
       trigger_path: "",
+      condition_logic: "and",
       conditions: [{ kind: "ext", value: "pdf" }],
       actions: [{ kind: "add_tag", tag: "Documents" }],
     }),
@@ -138,6 +142,7 @@ const PRESETS: Preset[] = [
       enabled: true,
       trigger_kind: "manual",
       trigger_path: "",
+      condition_logic: "and",
       // Single regex covers the common image extensions in one rule.
       conditions: [{ kind: "name_regex", value: "\\.(jpg|jpeg|png|webp|heic)$" }],
       actions: [{ kind: "add_tag", tag: "Photos" }],
@@ -153,6 +158,7 @@ const PRESETS: Preset[] = [
       enabled: true,
       trigger_kind: "manual",
       trigger_path: "",
+      condition_logic: "and",
       conditions: [
         { kind: "name_starts_with", value: "Screenshot" },
         { kind: "age_gt_days", days: 30 },
@@ -172,6 +178,7 @@ const PRESETS: Preset[] = [
       // User must edit both paths — placeholders signal where.
       trigger_path: "",
       conditions: [{ kind: "ext", value: "pdf" }],
+      condition_logic: "and",
       actions: [{ kind: "move_to", path: "C:\\Archive\\{year}" }],
     }),
   },
@@ -185,6 +192,7 @@ const PRESETS: Preset[] = [
       enabled: true,
       trigger_kind: "manual",
       trigger_path: "",
+      condition_logic: "and",
       conditions: [
         { kind: "ext", value: "tmp" },
         { kind: "age_gt_days", days: 7 },
@@ -208,6 +216,7 @@ interface DraftRule {
   trigger_kind: TriggerKind;
   trigger_path: string;
   conditions: Condition[];
+  condition_logic: ConditionLogic;
   actions: Action[];
 }
 
@@ -218,6 +227,7 @@ function emptyDraft(): DraftRule {
     trigger_kind: "manual",
     trigger_path: "",
     conditions: [],
+    condition_logic: "and",
     actions: [],
   };
 }
@@ -292,7 +302,11 @@ export function AutomationsModal({ onClose }: { onClose: () => void }) {
               onEdit={(r) => setView({
                 mode: "edit",
                 draft: { name: r.name, enabled: r.enabled, trigger_kind: r.trigger_kind,
-                  trigger_path: r.trigger_path, conditions: r.conditions, actions: r.actions },
+                  trigger_path: r.trigger_path, conditions: r.conditions,
+                  // Defensive fallback for legacy rules deserialized without the field
+                  // (defaults already handle this server-side, but belt-and-braces).
+                  condition_logic: r.condition_logic ?? "and",
+                  actions: r.actions },
                 originalId: r.id,
               })}
               onRun={(r) => setView({ mode: "run", rule: r })}
@@ -334,6 +348,7 @@ export function AutomationsModal({ onClose }: { onClose: () => void }) {
                       trigger_kind: d.trigger_kind,
                       trigger_path: d.trigger_path,
                       conditions: d.conditions,
+                      condition_logic: d.condition_logic,
                       actions: d.actions,
                       context_id: 0,
                     } });
@@ -344,6 +359,7 @@ export function AutomationsModal({ onClose }: { onClose: () => void }) {
                       trigger_kind: d.trigger_kind,
                       trigger_path: d.trigger_path,
                       conditions: d.conditions,
+                      condition_logic: d.condition_logic,
                       actions: d.actions,
                     } });
                   }
@@ -522,9 +538,15 @@ function triggerLabel(kind: TriggerKind, t: ReturnType<typeof useTranslation>): 
 }
 
 function summarizeRule(r: AutomationRule, t: ReturnType<typeof useTranslation>): string {
+  // Only mention the logic when it's both visible (2+ conditions) AND non-default
+  // (OR). A single AND condition doesn't need a "(all)" parenthetical — that would
+  // be noise on the vast majority of rules.
+  const logicHint = r.conditions.length >= 2 && r.condition_logic === "or"
+    ? ` ${t.automationSummaryAnyHint}`
+    : "";
   const conds = r.conditions.length === 0
     ? t.automationSummaryNoConditions
-    : `${r.conditions.length} ${r.conditions.length > 1 ? t.automationSummaryConditionsPlural : t.automationSummaryConditionsSingular}`;
+    : `${r.conditions.length} ${r.conditions.length > 1 ? t.automationSummaryConditionsPlural : t.automationSummaryConditionsSingular}${logicHint}`;
   const acts = `${r.actions.length} ${r.actions.length > 1 ? t.automationSummaryActionsPlural : t.automationSummaryActionsSingular}`;
   return `${conds} → ${acts}`;
 }
@@ -623,6 +645,30 @@ function RuleEditor({
           >
             <Plus size={10} /> {t.automationAddCondition}
           </button>
+        </div>
+        {/* AND / OR combinator — only useful from 2 conditions onward but always
+            shown so the user understands the default and can pre-set the mode
+            before adding their second condition. Disabled visual state when
+            there's 0 or 1 condition would feel clunky. */}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-text-muted shrink-0">
+            {t.automationConditionLogicLabel}
+          </span>
+          <div className="flex gap-0.5 rounded bg-surface-2 border border-border p-0.5">
+            {(["and", "or"] as const).map((logic) => (
+              <button
+                key={logic}
+                onClick={() => onChange({ ...draft, condition_logic: logic })}
+                className={`px-2 h-5 rounded text-[10px] font-medium transition-colors ${
+                  draft.condition_logic === logic
+                    ? "bg-accent text-white"
+                    : "text-text-secondary hover:text-text-primary"
+                }`}
+              >
+                {logic === "and" ? t.automationConditionLogicAll : t.automationConditionLogicAny}
+              </button>
+            ))}
+          </div>
         </div>
         {draft.conditions.length === 0 ? (
           <p className="text-[10px] text-text-muted italic">{t.automationNoConditions}</p>

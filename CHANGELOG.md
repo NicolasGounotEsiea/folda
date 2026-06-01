@@ -2,6 +2,55 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.9] - 2026-06-01
+
+### Added
+
+- **Git integration (V1, read-only, opt-in)** — when browsing a folder inside a git repository, nxs surfaces git context inline. Read-only by design: no commit / push / pull, only checkout (the one navigation-only write op). Toggle in Settings → Git so non-dev users pay zero runtime cost.
+  - **Detection** with LRU cache (64 entries, positive AND negative) via `Repository::discover` — handles `.git` files for worktrees and submodules. Negative caching is what keeps the integration cheap for the 99% of folders that aren't repos.
+  - **Per-file status badges** in the FileList: 6 px colored dot (modified = amber, added = emerald, deleted = red, renamed = blue, untracked = sky, ignored = muted, conflicted = pink). Palette matches VSCode SCM gutter so the legend is already familiar.
+  - **`.gitignored` files dimmed** to 50% opacity (toggle-able in Settings).
+  - **Sidebar `GitPanel`** with collapsible sections: current branch + ahead/behind, changed files (each row expandable to its inline diff), local branches list, recent commits. Cap total height at 45 vh with sticky header + scrollable body region — a repo with 100 changed files no longer pushes the bottom Sidebar sections off-screen.
+  - **Diff viewer** built in: simple colored unified-diff `<pre>` rendering (no `@codemirror/merge` dep — saves bundle for V1). Per-diff height cap at 300 px with internal scroll so a single giant diff can't dominate the panel.
+  - **Per-file Git tab in `PreviewPanel`** — alongside the existing Info / History tabs. Shows status, diff vs HEAD, and a per-file commit history (last 20 commits that touched THIS file, each expandable to see what changed in this file in that commit). Hidden in the tab bar when git is disabled or the file isn't inside a repo.
+  - **Branch checkout** — click any local branch → `window.confirm` → `git_checkout_branch` runs in libgit2 `safe()` mode. Refuses to switch when uncommitted changes would conflict (no `force()` exposed, ever — protecting the user's working tree is non-negotiable). Surface clear errors and toast on success/failure. After success, refresh git state + reload the current folder so the file list reflects the new branch immediately.
+  - **GitPanel collapsible** via a chevron in the header — folded state shows only the branch line + ahead/behind, freeing screen real estate without unmounting.
+  - **Bundles `git2 = "0.19"` with vendored libgit2** so we don't depend on system git being installed. Adds ~3 MB to the binary whether the feature is enabled or not (Rust deps are linked at build time, no way around it) — disclosed transparently in Settings.
+- **Quick Look (Space bar) expanded coverage** — previously only image / video / audio / text. Now also:
+  - **PDF** via the WebView2 native `<embed type="application/pdf">` viewer. Zero JS lib loaded for the QuickLook path — pdfjs (~990 KB) only kicks in when the user opens the PDF in the full viewer.
+  - **DOCX / ODT / XLSX / ODS / PPTX / ODP** via the existing `preview_file` Tauri command — shows the extracted plain text (up to 3000 chars). Same UX as the existing TEXT branch: instant peek, double-click for the full styled viewer.
+  - **IPYNB** with cell-typed rendering — markdown cells and code cells get distinct backgrounds + an uppercase cell-type label and execution count for code cells. Outputs are intentionally not rendered (notebooks with base64 images can be tens of MB; staying lean keeps Space-bar peek sub-100 ms). Hard cap at 2 MB to avoid `JSON.parse` blocking the UI on huge notebooks.
+- **Automation conditions: AND / OR combinator** — new `condition_logic` field on each rule (default `and`, preserves identical behavior for existing rules). Segmented `ALL / ANY` toggle in the rule editor with a "(any)" hint in the summary when relevant. `evaluate_conditions(conds, logic, ctx)` is a pure function — empty list ALWAYS matches regardless of logic (vacuously-false OR would be too easy to trigger accidentally).
+- **Resizable Sidebar** with drag handle on its right edge (4 px column, hover-accent affordance). Width is persisted to `localStorage` across sessions (`nxs.sidebarWidth`), unlike the PreviewPanel which stays ephemeral. **Double-click the handle to reset** to the default 210 px and clear the saved value. Range 200–480 px.
+- **Per-file Git history backend** — new `git_get_file_history(repo_root, path, n)` Tauri command. Revwalk from HEAD, filters to commits that actually touched the file (via pathspec + delta-foreach to confirm), formats per-commit diff for the file. Bounded traversal at 1000 commits with cap on returned entries at 50.
+
+### Improved
+
+- **Shared `useResizable` hook** in `src/utils/useResizable.ts` — extracted from PreviewPanel, extended with `side: "left" | "right"`, optional `storageKey` for persistence, and a `reset()` callback for the double-click-to-restore-default pattern. Sidebar and PreviewPanel both consume it now — single source of truth for drag-resize behavior.
+- **Toast `action` field** — `Toast.action: { label, onClick }` for inline CTAs (used by the rate-limit warning's "Open Automations" jump-to-panel button). Click runs the handler and auto-dismisses.
+- **Toast `detail` wraps to 3 lines** instead of single-line truncate — long explanations like the git rate-limit warning are now readable in full; short details still render on one line, no regression.
+- **GitPanel visual polish** — dropped the per-row `border-b` between commits and changed-files (the harsh white rails in dark mode), replaced section dividers with `border-border-subtle/25` + a faint `bg-surface-2/30` tint on section headers. The whole panel reads quieter, closer to the VSCode Source Control look.
+- **`AutomationsModal` open state lifted to `useStore`** — matches the existing `shareModalOpen` pattern. Lets the rate-limit toast's "Open Automations" CTA open the modal from outside the Sidebar.
+
+### Fixed
+
+- **`watch_directory` regression with multi-folder workspaces** — previously the watcher was REPLACED on every call to `watch_directory`, silently dropping prior watches. A workspace with N watched folders only received events for the LAST one added — auto-tag-on-create, live tag refresh, content reindexing on modify were all broken for every other folder. Now accumulates paths into a single shared `RecommendedWatcher`. Fix actually landed alongside automation in v0.1.8 but is worth re-flagging here because it silently affected anyone with more than one folder per workspace.
+- **"Open with nxs" Windows context menu now actually opens files** — previously the registry entry navigated to the parent folder for files too, which was useful for "Reveal" semantics but not for "Open". Split into TWO verbs: `nxs` → **"Reveal in nxs"** (navigate to parent, current behavior preserved) and `nxsOpen` → **"Open with nxs"** (actually opens the file in the viewer via the new `--open` argv flag). Folders keep the single entry. `LaunchPath` now carries `intent: "open" | "reveal"` so the frontend can branch. `self_heal_registration` detects the missing `nxsOpen` verb on upgrade and writes it silently — existing users see both entries appear after their first launch on v0.1.9 without touching Settings.
+- **Indexing badge invisible after adding a first folder to a workspace** — the badge mounted before `scan_directory` populated the `files` table, so `get_indexing_stats` returned `[0, 0]` and the badge self-hid. Subsequent `content-indexed` events were matched by `total` which stayed 0 forever, so the badge stayed invisible until you switched workspaces and came back. Now `handleAddFolder` re-seeds the badge state after the scan resolves — badge appears immediately.
+- **Quick Look arrow-key navigation only moved one step** — `curIdx` was derived from `entry.path` (the prop the modal opened with, immutable for the modal's lifetime), so every ArrowRight repeatedly landed on the same `siblings[entry.idx + 1]`. Now derived from `current.path` (the displayed file), which updates with each navigation.
+
+### Performance
+
+- **Negative-cached git detection** — the LRU stores both "this path IS in a repo at X" and "this path is NOT in a repo". The negative entries are what make navigation in non-git folders zero-cost after the first probe. Without them, every directory change would walk up the filesystem looking for `.git`.
+- **Stale-response guard in `useGitStore.refresh`** — records `currentPath = path` before the first invoke and discards the response if `currentPath` changed mid-flight. Stops slow status queries for repo A from flashing data into the panel when the user has already navigated to repo B.
+- **`statusByPath: Map<rel, FileStatusEntry>`** is built once when status changes, so FileList does O(1) lookups per row instead of scanning the changed_files array on every render.
+
+### Testing
+
+- **48 Rust unit tests** total (up from 36 in v0.1.8 — git module adds 7 + automation AND/OR adds 5):
+  - Git: detection cache LRU eviction, negative caching semantics, path normalization, status flag mapping (conflict-dominates, ignored, staged, clean-returns-none)
+  - Automation: empty-conditions-always-matches (regardless of logic), AND requires-all, OR requires-any, single-condition acts identically under either mode, `ConditionLogic` defaults to `And`
+
 ## [0.1.8] - 2026-05-31
 
 ### Added

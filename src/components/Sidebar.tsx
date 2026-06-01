@@ -11,11 +11,13 @@ import { useStore } from "../store/useStore";
 import { useIndexingStore, seedIndexingProgress } from "../store/useIndexingStore";
 import type { Context, FileEntry, ListEntry, PinnedItem, SavedView, Tag as TagType } from "../types";
 import { AutomationsModal } from "./AutomationsModal";
+import { GitPanel } from "./GitPanel";
 import { JoinModal } from "./JoinModal";
 import { ShareModal } from "./ShareModal";
 import { TagRulesModal } from "./TagRulesModal";
 import { TrashModal } from "./TrashModal";
 import { useTranslation } from "../utils/i18n";
+import { useResizable } from "../utils/useResizable";
 
 const COLOR_PALETTE = [
   "#6366f1","#ec4899","#f59e0b","#10b981","#3b82f6",
@@ -676,6 +678,17 @@ export function Sidebar() {
         const tl = await invoke<TagType[]>("get_tags"); _setTags(tl);
         const entries = await invoke<ListEntry[]>("list_directory", { path: selected as string, contextId: activeCtx.id });
         setListEntries(entries);
+        // Re-seed the IndexingBadge for this folder. Without this, the badge mounted
+        // at addFolder-time saw total=0 (scan hadn't populated `files` yet) and the
+        // store treats subsequent `content-indexed` events as "no matching badge"
+        // because match is by `st.total === event.total`. Result: badge stays hidden
+        // until the user switches workspaces, forcing a remount + re-fetch.
+        // Re-seeding now (post-scan, pre-indexer) replaces the stale 0/0 slot with
+        // the real totals so the badge appears immediately and tracks progress.
+        try {
+          const [total, indexed] = await invoke<[number, number]>("get_indexing_stats", { path: selected as string });
+          seedIndexingProgress(selected as string, total, indexed);
+        } catch { /* badge can self-recover on next mount */ }
         // Trigger async content extraction in background for all unindexed files
         // (PDFs, DOCX, etc. skipped during scan due to size). Fire and forget.
         // Only when content indexing is enabled in settings.
@@ -783,9 +796,24 @@ export function Sidebar() {
     setPinnedItems(updated);
   };
 
+  // Resizable sidebar. Width is persisted across sessions (different from the
+  // PreviewPanel which is ephemeral) because the user sets sidebar width once
+  // and expects it to stick. Double-click on the handle resets to default.
+  const { width: sidebarWidth, onDragStart: sidebarDragStart, reset: sidebarReset } =
+    useResizable({ defaultWidth: 210, min: 200, max: 480, side: "left", storageKey: "nxs.sidebarWidth" });
+
   return (
-    <aside className="flex flex-col w-[210px] bg-surface-1 border-r shrink-0 overflow-hidden"
-      style={{ borderColor: "#1f1f1f" }}>
+    <aside className="flex flex-col bg-surface-1 border-r shrink-0 overflow-hidden relative"
+      style={{ width: sidebarWidth, borderColor: "#1f1f1f" }}>
+      {/* Resize handle — thin 4px column on the right edge. Double-click resets
+          to the default width. position absolute keeps it from disturbing the
+          sidebar's flex layout. z-10 to sit above content. */}
+      <div
+        onMouseDown={sidebarDragStart}
+        onDoubleClick={sidebarReset}
+        title="Drag to resize · double-click to reset"
+        className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-accent/40 transition-colors z-10"
+      />
 
       {/* ── Workspace switcher ── */}
       <WorkspaceSwitcher
@@ -1092,6 +1120,9 @@ export function Sidebar() {
       </div>
 
       {showRulesModal && <TagRulesModal onClose={() => setShowRulesModal(false)} />}
+
+      {/* ── Git panel (opt-in via Settings; self-hides if currentPath not in a repo) ── */}
+      <GitPanel />
 
       {/* ── Automations ── */}
       <div className="shrink-0 border-t border-border-subtle px-3 py-1.5">

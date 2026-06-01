@@ -25,6 +25,17 @@ export interface AppSettings {
   ollamaUrl: string;
   contentIndexing: boolean;
   aiInstructions: string;
+  // ── Git integration (opt-in, read-only) ──────────────────────────────────
+  /// Master switch. When false, the Git module makes zero backend calls and the
+  /// GitPanel doesn't render. Default false to keep the file manager untouched
+  /// for non-dev users.
+  gitEnabled: boolean;
+  /// When true, files matched by .gitignore render at 50% opacity in the FileList.
+  /// Only consulted when gitEnabled is true.
+  gitDimIgnored: boolean;
+  /// Cap on the number of commits the GitPanel log shows. Backend hard-clamps
+  /// at 200 regardless.
+  gitRecentCommitsCount: number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -54,6 +65,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ollamaUrl: "http://localhost:11434",
   contentIndexing: true,
   aiInstructions: "",
+  gitEnabled: false,
+  gitDimIgnored: true,
+  gitRecentCommitsCount: 20,
 };
 
 export interface AccentPreset {
@@ -137,5 +151,10 @@ export function deserializeSettings(raw: Record<string, string>): AppSettings {
     ollamaUrl:          raw.ollamaUrl ?? d.ollamaUrl,
     contentIndexing:    raw.contentIndexing !== undefined ? raw.contentIndexing === "true" : d.contentIndexing,
     aiInstructions:     raw.aiInstructions ?? d.aiInstructions,
+    gitEnabled:         raw.gitEnabled !== undefined ? raw.gitEnabled === "true" : d.gitEnabled,
+    gitDimIgnored:      raw.gitDimIgnored !== undefined ? raw.gitDimIgnored === "true" : d.gitDimIgnored,
+    gitRecentCommitsCount: raw.gitRecentCommitsCount !== undefined
+      ? Math.max(5, Math.min(200, Number(raw.gitRecentCommitsCount)))
+      : d.gitRecentCommitsCount,
   };
 }

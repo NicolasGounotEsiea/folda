@@ -1,6 +1,6 @@
 [package]
 name = "nxs"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 
 [lib]
@@ -29,6 +29,10 @@ tauri-plugin-drag = "2"
 tauri-plugin-single-instance = "2"
 pdf-extract = "0.7"
 regex-lite = "0.1"
+# git2 bundled with vendored libgit2 + openssl so we don't depend on system git
+# being installed. Adds ~3-4 MB to the release binary; the integration is
+# opt-in via Settings → Git so non-dev users pay zero runtime cost when disabled.
+git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = ["Win32_System_Threading", "Win32_UI_Shell"] }

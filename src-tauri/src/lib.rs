@@ -51,8 +51,10 @@ pub fn run() {
                 let _ = window.set_focus();
             }
             // If the second-launch argv contains a path, forward it to the frontend.
-            if let Some(raw) = commands::winintegration::parse_launch_path_from_args(&args) {
-                let payload = commands::winintegration::classify_launch_path(raw);
+            // The parser now also returns intent (Reveal | Open) so the frontend can
+            // distinguish "navigate to parent" from "open the file in nxs's viewer".
+            if let Some((raw, intent)) = commands::winintegration::parse_launch_path_from_args(&args) {
+                let payload = commands::winintegration::classify_launch_path(raw, intent);
                 let _ = app.emit("shell-launch", payload);
             }
         }))
@@ -204,6 +206,16 @@ pub fn run() {
             commands::automation::delete_automation_rule,
             commands::automation::toggle_automation_rule,
             commands::automation::run_automation_rule_manual,
+            // Git integration (read-only — opt-in via Settings)
+            commands::git::git_get_repo_root,
+            commands::git::git_clear_detection_cache,
+            commands::git::git_get_repo_status,
+            commands::git::git_get_branches,
+            commands::git::git_get_recent_commits,
+            commands::git::git_get_file_diff,
+            commands::git::git_get_commit_diff,
+            commands::git::git_get_file_history,
+            commands::git::git_checkout_branch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

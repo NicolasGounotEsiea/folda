@@ -1,7 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
 import hljs from "highlight.js/lib/core";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import bash from "highlight.js/lib/languages/bash";
 import cpp from "highlight.js/lib/languages/cpp";
 import css from "highlight.js/lib/languages/css";
@@ -14,11 +14,13 @@ import rust from "highlight.js/lib/languages/rust";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
-import { Calendar, Clock, File, Folder, HardDrive, History, Info, PanelRightClose, Tag, X } from "lucide-react";
+import { Calendar, ChevronDown, ChevronRight, Clock, File, Folder, GitBranch, HardDrive, History, Info, PanelRightClose, Tag, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useStore } from "../store/useStore";
+import { useGitStore, statusForAbsolutePath, type CommitInfo, type FileStatus } from "../store/useGitStore";
+import { DiffView, FileDiff, formatRelativeDate, statusColor, statusLetter } from "./GitPanel";
 import type { FolderStats, ListEntry, Tag as TagType } from "../types";
 import { useTranslation } from "../utils/i18n";
 import { getCachedFolderStats, cacheFolderStats } from "../utils/folderSizeCache";
@@ -31,6 +33,174 @@ interface ActivityEntry {
   action: string;
   timestamp: number;
   app_name: string | null;
+}
+
+// ── Per-file Git tab ─────────────────────────────────────────────────────────
+//
+// Resolves the repo for the selected file's path, then shows: current status,
+// diff vs HEAD (working tree), and history of commits that touched this file
+// (each commit expandable to see what changed in this file specifically).
+//
+// Hidden in the tab bar when git is disabled or the file isn't inside a repo
+// — so this component only renders when there's actually something to show.
+
+interface FileHistoryEntry {
+  commit: CommitInfo;
+  diff: string;
+}
+
+function FileGitTab({ filePath }: { filePath: string }) {
+  const t = useTranslation();
+  // Reuse the sidebar's resolved status/map when the file lives in the same
+  // repo as currentPath — avoids an extra status query for the common case.
+  const sidebarStatus = useGitStore((s) => s.status);
+  const sidebarMap = useGitStore((s) => s.statusByPath);
+
+  const [repoRoot, setRepoRoot] = useState<string | null>(null);
+  const [relPath, setRelPath] = useState<string | null>(null);
+  const [resolving, setResolving] = useState(true);
+
+  const [history, setHistory] = useState<FileHistoryEntry[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [expandedSha, setExpandedSha] = useState<string | null>(null);
+
+  // Step 1: figure out the repo + relative path. If the file shares the
+  // sidebar repo, we can derive both for free (zero extra invoke).
+  useEffect(() => {
+    let cancelled = false;
+    setRepoRoot(null);
+    setRelPath(null);
+    setResolving(true);
+
+    const fromSidebar = statusForAbsolutePath(filePath, sidebarStatus, sidebarMap);
+    if (sidebarStatus) {
+      const root = sidebarStatus.info.repo_root.replace(/\\/g, "/").replace(/\/+$/, "");
+      const abs = filePath.replace(/\\/g, "/");
+      if (abs.startsWith(root + "/")) {
+        setRepoRoot(sidebarStatus.info.repo_root);
+        setRelPath(abs.slice(root.length + 1));
+        setResolving(false);
+        return;
+      }
+    }
+    // Fallback: discover via the file's parent dir.
+    void fromSidebar;
+    const parent = filePath.replace(/[\\/][^\\/]+$/, "");
+    invoke<string | null>("git_get_repo_root", { path: parent })
+      .then((root) => {
+        if (cancelled || !root) { setResolving(false); return; }
+        setRepoRoot(root);
+        const r = root.replace(/\\/g, "/").replace(/\/+$/, "");
+        const abs = filePath.replace(/\\/g, "/");
+        setRelPath(abs.startsWith(r + "/") ? abs.slice(r.length + 1) : null);
+        setResolving(false);
+      })
+      .catch(() => { if (!cancelled) setResolving(false); });
+
+    return () => { cancelled = true; };
+  }, [filePath, sidebarStatus, sidebarMap]);
+
+  // Step 2: load history once we have repo+rel.
+  useEffect(() => {
+    if (!repoRoot || !relPath) return;
+    let cancelled = false;
+    setHistoryLoading(true);
+    invoke<FileHistoryEntry[]>("git_get_file_history", { repoRoot, path: relPath, n: 20 })
+      .then((h) => { if (!cancelled) setHistory(h); })
+      .catch(() => { if (!cancelled) setHistory([]); })
+      .finally(() => { if (!cancelled) setHistoryLoading(false); });
+    return () => { cancelled = true; };
+  }, [repoRoot, relPath]);
+
+  if (resolving) {
+    return <div className="px-3 py-3 text-[11px] text-text-muted">{t.gitLoading}</div>;
+  }
+  if (!repoRoot || !relPath) {
+    return (
+      <div className="px-3 py-3 text-[11px] text-text-muted italic">
+        {t.gitFileNotInRepo}
+      </div>
+    );
+  }
+
+  const currentStatus: { status: FileStatus; staged: boolean } | null =
+    statusForAbsolutePath(filePath, sidebarStatus, sidebarMap)
+      ?? null;
+
+  return (
+    <div className="flex flex-col gap-3 px-3 py-3 text-[12px]">
+      {/* Status badge */}
+      <div className="flex items-center gap-2">
+        {currentStatus ? (
+          <>
+            <span className={clsx("inline-block w-2 h-2 rounded-full shrink-0", statusColor(currentStatus.status))} />
+            <span className="text-[11px] text-text-primary">
+              {statusLetter(currentStatus.status)} · {currentStatus.status}
+              {currentStatus.staged && <span className="text-emerald-400 ml-1.5 text-[9px] uppercase tracking-wide">staged</span>}
+            </span>
+          </>
+        ) : (
+          <span className="text-[11px] text-text-muted italic">{t.gitFileClean}</span>
+        )}
+      </div>
+
+      {/* Diff vs HEAD — only when modified */}
+      {currentStatus && currentStatus.status !== "untracked" && currentStatus.status !== "ignored" && (
+        <div className="border border-border-subtle rounded overflow-hidden">
+          <div className="px-2 py-1 bg-surface-2 text-[10px] uppercase tracking-widest text-text-muted">
+            {t.gitFileDiffHeader}
+          </div>
+          <div className="bg-surface-0/50">
+            <FileDiff repoRoot={repoRoot} path={relPath} />
+          </div>
+        </div>
+      )}
+
+      {/* History */}
+      <div className="flex flex-col gap-0.5">
+        <div className="px-1 pb-1 text-[10px] uppercase tracking-widest text-text-muted">
+          {t.gitFileHistoryHeader}
+        </div>
+        {historyLoading && <p className="text-[11px] text-text-muted px-1">{t.gitLoading}</p>}
+        {!historyLoading && history !== null && history.length === 0 && (
+          <p className="text-[11px] text-text-muted italic px-1">{t.gitFileNoHistory}</p>
+        )}
+        {!historyLoading && history && history.map((entry) => {
+          const expanded = expandedSha === entry.commit.sha;
+          const subject = entry.commit.message.split("\n", 1)[0] ?? "";
+          return (
+            <div key={entry.commit.sha} className="border border-border-subtle rounded overflow-hidden">
+              <button
+                onClick={() => setExpandedSha(expanded ? null : entry.commit.sha)}
+                className="w-full flex flex-col items-stretch px-2 py-1 hover:bg-surface-3 transition-colors text-left"
+              >
+                <div className="flex items-center gap-1.5">
+                  {expanded
+                    ? <ChevronDown size={9} className="text-text-muted shrink-0" />
+                    : <ChevronRight size={9} className="text-text-muted shrink-0" />}
+                  <span className="text-[11px] text-text-secondary truncate flex-1" title={subject}>
+                    {subject || "(empty message)"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 pl-4 mt-0.5 text-[9px] text-text-muted">
+                  <span className="font-mono">{entry.commit.short_sha}</span>
+                  <span>·</span>
+                  <span className="truncate">{entry.commit.author_name}</span>
+                  <span>·</span>
+                  <span className="shrink-0">{formatRelativeDate(entry.commit.date, t)}</span>
+                </div>
+              </button>
+              {expanded && (
+                <div className="bg-surface-0/50 border-t border-border-subtle">
+                  <DiffView diff={entry.diff} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function FileActivityTab({ filePath }: { filePath: string }) {
@@ -230,29 +400,11 @@ function FolderStatsView({ path }: { path: string }) {
 }
 
 // ─── Resize hook ─────────────────────────────────────────────────────────────
-function useResizable(defaultWidth: number, min = 200, max = 560) {
-  const [width, setWidth] = useState(defaultWidth);
-  const dragRef = useRef<{ startX: number; startW: number } | null>(null);
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragRef.current) return;
-      const delta = dragRef.current.startX - e.clientX;
-      setWidth(Math.max(min, Math.min(max, dragRef.current.startW + delta)));
-    };
-    const onUp = () => { dragRef.current = null; };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-  }, [min, max]);
-
-  const onDragStart = (e: React.MouseEvent) => {
-    e.preventDefault();
-    dragRef.current = { startX: e.clientX, startW: width };
-  };
-
-  return { width, onDragStart };
-}
+// Resize behavior now lives in `utils/useResizable` so the Sidebar can share
+// it. We pass `side: "right"` (this panel is on the right) and skip the
+// `storageKey` so the preview panel stays ephemeral — re-opening a file uses
+// the default width, matching the pre-refactor behavior.
+import { useResizable } from "../utils/useResizable";
 
 // ─── Folder preview ───────────────────────────────────────────────────────────
 function FolderPreview({ folder, onClose, width, onDragStart }: {
@@ -399,15 +551,15 @@ function CodePreview({ code, ext }: { code: string; ext: string }) {
 
 // ─── Main PreviewPanel ────────────────────────────────────────────────────────
 export function PreviewPanel({ onClose }: { onClose: () => void }) {
-  const { selectedFile, selectedEntry, tags, updateFileTags, activeContextId } = useStore();
+  const { selectedFile, selectedEntry, tags, updateFileTags, activeContextId, settings } = useStore();
   const t = useTranslation();
   const ctxId = activeContextId ?? 0;
   const [tagInput, setTagInput] = useState("");
   const [showTagInput, setShowTagInput] = useState(false);
   const [textPreview, setTextPreview] = useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
-  const [activeTab, setActiveTab] = useState<"info" | "history">("info");
-  const { width, onDragStart } = useResizable(280);
+  const [activeTab, setActiveTab] = useState<"info" | "history" | "git">("info");
+  const { width, onDragStart } = useResizable({ defaultWidth: 280, side: "right" });
 
   useEffect(() => {
     setTextPreview(null);
@@ -501,11 +653,30 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
         >
           <History size={10} /> {t.history}
         </button>
+        {settings.gitEnabled && (
+          <button
+            onClick={() => setActiveTab("git")}
+            className={clsx(
+              "flex items-center gap-1 px-3 h-7 text-[10px] transition-colors border-b-2",
+              activeTab === "git"
+                ? "border-accent text-accent"
+                : "border-transparent text-text-muted hover:text-text-secondary"
+            )}
+          >
+            <GitBranch size={10} /> {t.gitTabLabel}
+          </button>
+        )}
       </div>
 
       {activeTab === "history" ? (
         <div className="flex-1 overflow-y-auto">
           <FileActivityTab filePath={selectedFile.path} />
+        </div>
+      ) : null}
+
+      {activeTab === "git" && settings.gitEnabled ? (
+        <div className="flex-1 overflow-y-auto">
+          <FileGitTab filePath={selectedFile.path} />
         </div>
       ) : null}
 

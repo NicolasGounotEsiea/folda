@@ -211,7 +211,11 @@ fn create_tables(conn: &Connection) -> Result<()> {
             -- cleared back to NULL on a fully-successful run so the badge fades away.
             last_fired_at  INTEGER,
             fire_count     INTEGER NOT NULL DEFAULT 0,
-            last_error     TEXT
+            last_error     TEXT,
+            -- 'and' (every condition must match) or 'or' (at least one).
+            -- DEFAULT 'and' preserves the historical behavior for rules created
+            -- before this column existed.
+            condition_logic TEXT NOT NULL DEFAULT 'and'
         );
         CREATE INDEX IF NOT EXISTS idx_automation_enabled_trigger
             ON automation_rules(enabled, trigger_kind);
@@ -351,6 +355,11 @@ fn create_tables(conn: &Connection) -> Result<()> {
     if !has_column(conn, "automation_rules", "last_error") {
         let _ = conn.execute_batch(
             "ALTER TABLE automation_rules ADD COLUMN last_error TEXT;",
+        );
+    }
+    if !has_column(conn, "automation_rules", "condition_logic") {
+        let _ = conn.execute_batch(
+            "ALTER TABLE automation_rules ADD COLUMN condition_logic TEXT NOT NULL DEFAULT 'and';",
         );
     }
 

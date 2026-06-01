@@ -10,6 +10,7 @@ import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { QuickLookModal } from "./QuickLookModal";
 import { FolderPickerModal } from "./FolderPickerModal";
 import { useStore } from "../store/useStore";
+import { useGitStore, statusForAbsolutePath } from "../store/useGitStore";
 import { useToastStore } from "../store/useToastStore";
 import type { FileEntry, ListEntry } from "../types";
 import { useTranslation } from "../utils/i18n";
@@ -85,6 +86,21 @@ function formatDate(unixSecs: number): string {
 }
 
 const IMAGE_THUMB_EXTS = new Set(["png","jpg","jpeg","gif","webp","bmp","avif"]);
+
+// Status-dot color for the per-row git badge. Kept aligned with GitPanel's
+// statusColor() — same palette = same mental model for the user. We don't
+// import from GitPanel to avoid an unnecessary chunk dep for non-git users.
+function gitStatusDotClass(s: import("../store/useGitStore").FileStatus): string {
+  switch (s) {
+    case "modified":   return "bg-amber-400";
+    case "added":      return "bg-emerald-400";
+    case "deleted":    return "bg-red-400";
+    case "renamed":    return "bg-blue-400";
+    case "untracked":  return "bg-sky-400";
+    case "ignored":    return "bg-text-muted";
+    case "conflicted": return "bg-pink-500";
+  }
+}
 
 function GridThumbnail({ entry }: { entry: ListEntry }) {
   if (entry.is_dir || !IMAGE_THUMB_EXTS.has(entry.extension.toLowerCase())) {
@@ -177,6 +193,7 @@ const EntryRow = memo(function EntryRow({
   onClick, onDoubleClick, onNavigate, onContextMenu,
   renaming, onRenameSubmit, onRenameCancel,
   isDragTarget, onPointerDown,
+  gitStatus, gitDimmed,
 }: {
   entry: ListEntry;
   selected: boolean;
@@ -190,6 +207,10 @@ const EntryRow = memo(function EntryRow({
   onRenameCancel: () => void;
   isDragTarget?: boolean;
   onPointerDown?: (e: React.PointerEvent) => void;
+  /// Pre-resolved git status for this entry (relative-to-repo-root path lookup
+  /// happens in the parent so each row stays a pure memo'd render).
+  gitStatus?: import("../store/useGitStore").FileStatus | null;
+  gitDimmed?: boolean;
 }) {
   const [renameVal, setRenameVal] = useState(entry.name);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -224,7 +245,8 @@ const EntryRow = memo(function EntryRow({
           : selected
           ? "bg-accent/10 text-text-primary"
           : "hover:bg-surface-2 text-text-secondary hover:text-text-primary",
-        cut && "opacity-40"
+        cut && "opacity-40",
+        gitDimmed && !selected && "opacity-50"
       )}
     >
       {/* col 1: icon */}
@@ -249,6 +271,18 @@ const EntryRow = memo(function EntryRow({
       ) : (
         <>
           <div className="flex items-center gap-1.5 min-w-0">
+            {gitStatus && (
+              // 6px dot in the same row as the name. Position before the name so
+              // it doesn't shift the entry tags chip group. Color from GitPanel's
+              // palette so the legend stays single-source.
+              <span
+                className={clsx(
+                  "inline-block w-1.5 h-1.5 rounded-full shrink-0",
+                  gitStatusDotClass(gitStatus),
+                )}
+                title={`git: ${gitStatus}`}
+              />
+            )}
             <span className="truncate text-[12px]">{entry.name}</span>
             {entry.tags.length > 0 && (
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
@@ -429,6 +463,15 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
     const parts = norm.split("/");
     return parts.length <= 1 ? null : parts.slice(0, -1).join("/");
   }, [panePath, rootPaths]);
+
+  // ─── Git status (opt-in via settings, no-op when disabled) ────────────────
+  // Read just the two booleans we need so this doesn't subscribe to the whole
+  // settings object's churn.
+  const gitEnabled = useStore((s) => s.settings.gitEnabled);
+  const gitDimIgnored = useStore((s) => s.settings.gitDimIgnored);
+  // Selector-scoped to avoid re-rendering FileList on unrelated GitStore changes.
+  const gitStatus = useGitStore((s) => s.status);
+  const gitByPath = useGitStore((s) => s.statusByPath);
 
   // ─── Filtered + sorted entries ─────────────────────────────────────────────
   const visibleEntries = useMemo(() => {
@@ -1277,23 +1320,30 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
           </div>
         )}
 
-        {visibleEntries.map((e) => (
-          <EntryRow
-            key={e.path}
-            entry={e}
-            selected={paneSelectedPaths.includes(e.path)}
-            cut={clipboard?.action === "cut" && clipboard.paths.includes(e.path)}
-            renaming={renamingPath === e.path}
-            onClick={(ev) => handleClick(ev, e)}
-            onDoubleClick={() => handleOpen(e)}
-            onNavigate={navigate}
-            onContextMenu={handleContextMenu}
-            onRenameSubmit={(name) => handleRenameSubmit(e, name)}
-            onRenameCancel={() => setRenamingPath(null)}
-            isDragTarget={dropTarget === e.path}
-            onPointerDown={(ev) => handleEntryPointerDown(ev, e)}
-          />
-        ))}
+        {visibleEntries.map((e) => {
+          // Resolve git status once per row, only when git is on. Cheap Map.get
+          // lookup; falls through to undefined for non-tracked / non-changed files.
+          const gs = gitEnabled ? statusForAbsolutePath(e.path, gitStatus, gitByPath) : null;
+          return (
+            <EntryRow
+              key={e.path}
+              entry={e}
+              selected={paneSelectedPaths.includes(e.path)}
+              cut={clipboard?.action === "cut" && clipboard.paths.includes(e.path)}
+              renaming={renamingPath === e.path}
+              onClick={(ev) => handleClick(ev, e)}
+              onDoubleClick={() => handleOpen(e)}
+              onNavigate={navigate}
+              onContextMenu={handleContextMenu}
+              onRenameSubmit={(name) => handleRenameSubmit(e, name)}
+              onRenameCancel={() => setRenamingPath(null)}
+              isDragTarget={dropTarget === e.path}
+              onPointerDown={(ev) => handleEntryPointerDown(ev, e)}
+              gitStatus={gs?.status ?? null}
+              gitDimmed={gitDimIgnored && gs?.status === "ignored"}
+            />
+          );
+        })}
 
         {/* Rubber-band selection rect */}
         {rubberBand && (() => {

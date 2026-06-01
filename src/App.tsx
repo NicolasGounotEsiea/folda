@@ -45,6 +45,7 @@ import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { OnboardingModal } from "./components/OnboardingModal";
 import { ToastContainer } from "./components/ToastContainer";
 import { useToastStore } from "./store/useToastStore";
+import { useGitStore } from "./store/useGitStore";
 
 interface FileChangedPayload {
   path: string;
@@ -206,10 +207,10 @@ export function App() {
       }
 
       // If launched from Windows shell context menu, navigate there directly.
-      // The backend now returns { path, is_dir } via fs::metadata — far more
-      // reliable than the previous string heuristic that broke on dotted folder
-      // names and extension-less files.
-      const launchPath = await invoke<{ path: string; is_dir: boolean } | null>("get_launch_path").catch(() => null);
+      // The backend now returns { path, is_dir, intent } — intent="open" comes
+      // from the new "Open with nxs" verb and means we should actually open the
+      // file in the viewer (not just navigate to its parent folder).
+      const launchPath = await invoke<{ path: string; is_dir: boolean; intent: "open" | "reveal" } | null>("get_launch_path").catch(() => null);
       if (launchPath && launchPath.path) {
         const targetDir = launchPath.is_dir
           ? launchPath.path
@@ -218,6 +219,15 @@ export function App() {
         pushNav(targetDir);
         const entries = await invoke<ListEntry[]>("list_directory", { path: targetDir, contextId: ctxId }).catch(() => [] as ListEntry[]);
         setListEntries(entries);
+        // Open intent on a file → open the file in nxs's viewer (PDF, image, editor).
+        // For folders, "open" and "reveal" collapse to the same navigate-into action,
+        // which we just did above.
+        if (launchPath.intent === "open" && !launchPath.is_dir) {
+          const name = launchPath.path.replace(/\\/g, "/").split("/").pop() ?? "";
+          const dot = name.lastIndexOf(".");
+          const extension = dot > 0 ? name.slice(dot + 1) : "";
+          openFile({ id: -1, path: launchPath.path, name, extension, size: 0, created_at: 0, modified_at: 0, accessed_at: 0, tags: [] });
+        }
         return;
       }
 
@@ -342,6 +352,16 @@ export function App() {
           setListEntries(entries);
           const tags = await invoke<Tag[]>("get_tags");
           setTags(tags);
+          // Git status may also have changed (file added/modified/deleted in a
+          // tracked folder). Refresh through the store; it self-bails if git is
+          // disabled or currentPath isn't in a repo.
+          const st = useStore.getState();
+          if (st.settings.gitEnabled && currentPath) {
+            void useGitStore.getState().refresh(currentPath, {
+              dimIgnored: st.settings.gitDimIgnored,
+              recentCommitsCount: st.settings.gitRecentCommitsCount,
+            });
+          }
         } catch { markFileModified(path, timestamp); }
       }, 300);
     });
@@ -363,7 +383,7 @@ export function App() {
   // path here and navigate the existing window instead of opening a new one.
   useEffect(() => {
     if (IS_POPUP) return; // popups don't handle global shell launches
-    const unlisten = listen<{ path: string; is_dir: boolean }>("shell-launch", async (event) => {
+    const unlisten = listen<{ path: string; is_dir: boolean; intent: "open" | "reveal" }>("shell-launch", async (event) => {
       const p = event.payload;
       if (!p?.path) return;
       const targetDir = p.is_dir ? p.path : p.path.replace(/[/\\][^/\\]+$/, "");
@@ -375,6 +395,14 @@ export function App() {
         setCurrentPath(targetDir);
         pushNav(targetDir);
         setListEntries(entries);
+        // Open intent on a file → also open the file in the viewer. Mirrors the
+        // cold-start handler so the warm-instance UX matches.
+        if (p.intent === "open" && !p.is_dir) {
+          const name = p.path.replace(/\\/g, "/").split("/").pop() ?? "";
+          const dot = name.lastIndexOf(".");
+          const extension = dot > 0 ? name.slice(dot + 1) : "";
+          openFile({ id: -1, path: p.path, name, extension, size: 0, created_at: 0, modified_at: 0, accessed_at: 0, tags: [] });
+        }
       } catch { /* path may have moved — ignore */ }
     });
     return () => { unlisten.then((fn) => fn()); };

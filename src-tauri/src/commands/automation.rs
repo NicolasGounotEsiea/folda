@@ -85,6 +85,19 @@ pub enum TriggerKind {
     Manual,
 }
 
+/// How a rule's conditions combine. `And` (default) requires every condition to
+/// match; `Or` requires at least one. An empty conditions list ALWAYS matches
+/// regardless of the chosen logic — vacuously-false OR is too easy to trigger
+/// accidentally when a user clears their conditions while in OR mode, so we
+/// preserve the existing "no conditions = match everything" UX.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ConditionLogic {
+    #[default]
+    And,
+    Or,
+}
+
 // ── Rule ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +108,10 @@ pub struct AutomationRule {
     pub trigger_kind: TriggerKind,
     pub trigger_path: String,
     pub conditions: Vec<Condition>,
+    /// AND (all must match — default) or OR (at least one must match). Default
+    /// makes legacy rules from before this field existed evaluate identically.
+    #[serde(default)]
+    pub condition_logic: ConditionLogic,
     pub actions: Vec<Action>,
     pub context_id: i64,
     pub created_at: i64,
@@ -121,6 +138,8 @@ pub struct NewRule {
     #[serde(default)]
     pub conditions: Vec<Condition>,
     #[serde(default)]
+    pub condition_logic: ConditionLogic,
+    #[serde(default)]
     pub actions: Vec<Action>,
     #[serde(default)]
     pub context_id: i64,
@@ -134,6 +153,7 @@ pub struct RulePatch {
     pub trigger_kind: Option<TriggerKind>,
     pub trigger_path: Option<String>,
     pub conditions: Option<Vec<Condition>>,
+    pub condition_logic: Option<ConditionLogic>,
     pub actions: Option<Vec<Action>>,
     pub context_id: Option<i64>,
 }
@@ -149,6 +169,14 @@ fn row_to_rule(row: &rusqlite::Row) -> rusqlite::Result<AutomationRule> {
         .unwrap_or(TriggerKind::Manual);
     let conditions: Vec<Condition> = serde_json::from_str(&conditions_json).unwrap_or_default();
     let actions: Vec<Action> = serde_json::from_str(&actions_json).unwrap_or_default();
+    // condition_logic column may be missing on a very fresh upgrade if the migration
+    // hasn't run yet (shouldn't happen in practice — init runs before any read —
+    // but row_to_rule is called from places we don't fully control, so be defensive).
+    let condition_logic: ConditionLogic = row
+        .get::<_, String>("condition_logic")
+        .ok()
+        .and_then(|s| serde_json::from_str::<ConditionLogic>(&format!("\"{}\"", s)).ok())
+        .unwrap_or_default();
 
     Ok(AutomationRule {
         id: row.get("id")?,
@@ -157,6 +185,7 @@ fn row_to_rule(row: &rusqlite::Row) -> rusqlite::Result<AutomationRule> {
         trigger_kind,
         trigger_path: row.get("trigger_path")?,
         conditions,
+        condition_logic,
         actions,
         context_id: row.get("context_id")?,
         created_at: row.get("created_at")?,
@@ -176,6 +205,13 @@ fn trigger_kind_to_db(t: TriggerKind) -> &'static str {
         TriggerKind::FileModified => "file_modified",
         TriggerKind::FileRenamed => "file_renamed",
         TriggerKind::Manual => "manual",
+    }
+}
+
+fn condition_logic_to_db(l: ConditionLogic) -> &'static str {
+    match l {
+        ConditionLogic::And => "and",
+        ConditionLogic::Or => "or",
     }
 }
 
@@ -253,8 +289,8 @@ pub fn create_automation_rule(
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.execute(
         "INSERT INTO automation_rules
-            (name, enabled, trigger_kind, trigger_path, conditions, actions, context_id)
-         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6)",
+            (name, enabled, trigger_kind, trigger_path, conditions, actions, context_id, condition_logic)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             name,
             trigger_kind_to_db(rule.trigger_kind),
@@ -262,6 +298,7 @@ pub fn create_automation_rule(
             conditions_json,
             actions_json,
             rule.context_id,
+            condition_logic_to_db(rule.condition_logic),
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -304,6 +341,10 @@ pub fn update_automation_rule(
         let json = serde_json::to_string(&conditions).map_err(|e| e.to_string())?;
         sets.push("conditions = ?");
         params.push(Box::new(json));
+    }
+    if let Some(condition_logic) = patch.condition_logic {
+        sets.push("condition_logic = ?");
+        params.push(Box::new(condition_logic_to_db(condition_logic).to_string()));
     }
     if let Some(actions) = patch.actions {
         if actions.is_empty() {
@@ -498,6 +539,19 @@ pub fn evaluate_condition(cond: &Condition, file: &FileCtx) -> bool {
             let needle = value.to_lowercase();
             file.tags_lower.iter().any(|t| t == &needle)
         }
+    }
+}
+
+/// Combine a list of conditions under the chosen logic against a file context.
+/// Empty list ALWAYS matches regardless of logic — see ConditionLogic docs.
+/// Pure function over slice + enum + ctx, no IO. Perfectly testable.
+pub fn evaluate_conditions(conds: &[Condition], logic: ConditionLogic, file: &FileCtx) -> bool {
+    if conds.is_empty() {
+        return true;
+    }
+    match logic {
+        ConditionLogic::And => conds.iter().all(|c| evaluate_condition(c, file)),
+        ConditionLogic::Or => conds.iter().any(|c| evaluate_condition(c, file)),
     }
 }
 
@@ -970,9 +1024,11 @@ pub fn run_rule_against(
             Some(c) => c,
             None => continue,
         };
-        // AND of all conditions. Empty conditions list = matches everything.
-        let all_match = rule.conditions.iter().all(|c| evaluate_condition(c, &ctx));
-        if !all_match {
+        // Combine according to the rule's logic. Empty conditions ALWAYS match
+        // (we don't want vacuously-false OR to surprise users who clear their
+        // conditions while in OR mode — empty = match everything either way).
+        let matches = evaluate_conditions(&rule.conditions, rule.condition_logic, &ctx);
+        if !matches {
             continue;
         }
         report.matched_files += 1;
@@ -1681,6 +1737,72 @@ mod tests {
             "C:\\users\\me\\downloads",
             Path::new("C:\\Users\\Me\\Downloads\\report.pdf"),
         ));
+    }
+
+    // ── evaluate_conditions: AND / OR / empty ───────────────────────────────
+
+    fn pdf_ctx() -> FileCtx {
+        ctx("report", "pdf", 10_000, 0, &["work"])
+    }
+
+    #[test]
+    fn evaluate_conditions_empty_list_always_matches_regardless_of_logic() {
+        let f = pdf_ctx();
+        assert!(evaluate_conditions(&[], ConditionLogic::And, &f));
+        assert!(evaluate_conditions(&[], ConditionLogic::Or, &f),
+                "vacuously-false OR is too easy to trigger accidentally; empty must match");
+    }
+
+    #[test]
+    fn evaluate_conditions_and_requires_all_matches() {
+        let f = pdf_ctx();
+        let pass = vec![
+            Condition::Ext { value: "pdf".into() },
+            Condition::TagHas { value: "work".into() },
+        ];
+        let fail_one = vec![
+            Condition::Ext { value: "pdf".into() },
+            Condition::TagHas { value: "personal".into() }, // not in tags
+        ];
+        assert!(evaluate_conditions(&pass, ConditionLogic::And, &f));
+        assert!(!evaluate_conditions(&fail_one, ConditionLogic::And, &f),
+                "AND must reject when any single condition fails");
+    }
+
+    #[test]
+    fn evaluate_conditions_or_requires_at_least_one_match() {
+        let f = pdf_ctx();
+        let any_pass = vec![
+            Condition::Ext { value: "docx".into() },        // fails
+            Condition::TagHas { value: "work".into() },     // passes
+        ];
+        let all_fail = vec![
+            Condition::Ext { value: "docx".into() },
+            Condition::TagHas { value: "personal".into() },
+        ];
+        assert!(evaluate_conditions(&any_pass, ConditionLogic::Or, &f),
+                "OR must match when at least one condition passes");
+        assert!(!evaluate_conditions(&all_fail, ConditionLogic::Or, &f),
+                "OR must reject when all conditions fail");
+    }
+
+    #[test]
+    fn evaluate_conditions_single_condition_acts_same_under_and_or() {
+        let f = pdf_ctx();
+        let single = vec![Condition::Ext { value: "pdf".into() }];
+        assert_eq!(
+            evaluate_conditions(&single, ConditionLogic::And, &f),
+            evaluate_conditions(&single, ConditionLogic::Or, &f),
+            "single condition should match identically in either mode",
+        );
+    }
+
+    #[test]
+    fn condition_logic_defaults_to_and() {
+        // Important for backwards compat: legacy rules without the field must
+        // deserialize / default to AND so they keep firing as before.
+        let logic: ConditionLogic = Default::default();
+        assert_eq!(logic, ConditionLogic::And);
     }
 
     // ── compute_diagnostics_update ──────────────────────────────────────────

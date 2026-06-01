@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { clsx } from "clsx";
-import { Activity, BookOpen, Bot, CheckCircle2, ChevronDown, Eye, FileText, FolderOpen, Info, LayoutList, Loader2, Palette, RefreshCw, Trash2, X, XCircle } from "lucide-react";
+import { Activity, BookOpen, Bot, CheckCircle2, ChevronDown, Eye, FileText, FolderOpen, GitBranch, Info, LayoutList, Loader2, Palette, RefreshCw, Trash2, X, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { clearLog, getLogPath } from "../utils/errorLog";
 import { useStore } from "../store/useStore";
@@ -12,7 +12,7 @@ import { useTranslation } from "../utils/i18n";
 const T = {
   en: {
     settings: "Settings", saved: "Saved",
-    sections: { appearance: "Appearance", explorer: "Explorer", editor: "Editor", activity: "Activity", ai: "AI Assistant", about: "About" },
+    sections: { appearance: "Appearance", explorer: "Explorer", editor: "Editor", activity: "Activity", ai: "AI Assistant", git: "Git", about: "About" },
     ai: {
       desc: "Enable a Claude-powered assistant that can browse your files, search, read content, and help you stay organized. Your file paths are sent to Anthropic when you use the assistant.",
       enable: "Enable AI Assistant",
@@ -54,6 +54,13 @@ const T = {
       purge: "Delete all activity now",
       purged: (n: number) => `${n} record${n !== 1 ? "s" : ""} deleted`,
     },
+    git: {
+      desc: "Show branch, modified files, recent commits and diffs when browsing folders inside a git repository. Read-only — nxs never writes to your repo. Outside git folders this feature is a no-op (zero overhead).",
+      enable: "Enable git integration",
+      dimIgnored: "Dim .gitignored files in the file list",
+      recentCommits: "Number of recent commits to show",
+      bundleNote: "Bundles ~3 MB of libgit2 in the installer whether enabled or not. The runtime cost is paid only when the toggle is on AND you browse a git folder.",
+    },
     about: {
       version: "Version", builtWith: "Built with Tauri 2 + React + Rust",
       changelog: "View changelog",
@@ -69,7 +76,7 @@ const T = {
   },
   fr: {
     settings: "Paramètres", saved: "Enregistré",
-    sections: { appearance: "Apparence", explorer: "Explorateur", editor: "Éditeur", activity: "Activité", ai: "Assistant IA", about: "À propos" },
+    sections: { appearance: "Apparence", explorer: "Explorateur", editor: "Éditeur", activity: "Activité", ai: "Assistant IA", git: "Git", about: "À propos" },
     ai: {
       desc: "Activez un assistant alimenté par Claude qui peut parcourir vos fichiers, rechercher, lire du contenu et vous aider à vous organiser. Vos chemins de fichiers sont envoyés à Anthropic lors de l'utilisation de l'assistant.",
       enable: "Activer l'assistant IA",
@@ -111,6 +118,13 @@ const T = {
       purge: "Supprimer toute l'activité",
       purged: (n: number) => `${n} entrée${n !== 1 ? "s" : ""} supprimée${n !== 1 ? "s" : ""}`,
     },
+    git: {
+      desc: "Affiche la branche, les fichiers modifiés, les derniers commits et les diffs quand vous parcourez un dossier dans un dépôt git. Lecture seule — nxs n'écrit jamais dans votre dépôt. Hors dossiers git, la fonctionnalité ne consomme rien.",
+      enable: "Activer l'intégration git",
+      dimIgnored: "Atténuer les fichiers .gitignored dans la liste",
+      recentCommits: "Nombre de commits récents à afficher",
+      bundleNote: "Embarque ~3 Mo de libgit2 dans l'installateur, activée ou non. Le coût runtime n'est payé que si le toggle est sur ON ET que vous êtes dans un dossier git.",
+    },
     about: {
       version: "Version", builtWith: "Construit avec Tauri 2 + React + Rust",
       changelog: "Voir le changelog",
@@ -127,7 +141,7 @@ const T = {
 } as const;
 
 type Lang = keyof typeof T;
-type Section = "appearance" | "explorer" | "editor" | "activity" | "ai" | "about";
+type Section = "appearance" | "explorer" | "editor" | "activity" | "ai" | "git" | "about";
 
 const SECTIONS: { id: Section; icon: React.ReactNode }[] = [
   { id: "appearance", icon: <Palette size={14} /> },
@@ -135,6 +149,7 @@ const SECTIONS: { id: Section; icon: React.ReactNode }[] = [
   { id: "editor",     icon: <FileText size={14} /> },
   { id: "activity",   icon: <Activity size={14} /> },
   { id: "ai",         icon: <Bot size={14} /> },
+  { id: "git",        icon: <GitBranch size={14} /> },
   { id: "about",      icon: <Info size={14} /> },
 ];
 
@@ -880,6 +895,57 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                     )}
                   </>
                 )}
+              </div>
+            )}
+
+            {/* ── Git ── */}
+            {section === "git" && (
+              <div className="flex flex-col gap-3">
+                <p className="text-[11px] text-text-muted leading-relaxed">
+                  {t.git.desc}
+                </p>
+
+                <Row label={t.git.enable}>
+                  <Toggle
+                    checked={settings.gitEnabled}
+                    onChange={(v) => {
+                      patch({ gitEnabled: v });
+                      // Drop any stale negative-cache entries so a freshly-enabled
+                      // user sees their git folders detected immediately.
+                      if (v) invoke("git_clear_detection_cache").catch(() => {});
+                    }}
+                  />
+                </Row>
+
+                {settings.gitEnabled && (
+                  <>
+                    <Row label={t.git.dimIgnored}>
+                      <Toggle
+                        checked={settings.gitDimIgnored}
+                        onChange={(v) => patch({ gitDimIgnored: v })}
+                      />
+                    </Row>
+
+                    <div className="py-2 border-t border-border-subtle">
+                      <p className="text-[12px] text-text-primary mb-1.5">{t.git.recentCommits}</p>
+                      <input
+                        type="number"
+                        min={5}
+                        max={200}
+                        value={settings.gitRecentCommitsCount}
+                        onChange={(e) => {
+                          const n = Math.max(5, Math.min(200, Number(e.target.value) || 20));
+                          patch({ gitRecentCommitsCount: n });
+                        }}
+                        className="w-24 h-7 px-2.5 rounded bg-surface-3 border border-border text-[12px] text-text-primary outline-none focus:border-accent transition-colors"
+                      />
+                    </div>
+                  </>
+                )}
+
+                <p className="text-[10px] text-text-muted italic mt-2 pt-3 border-t border-border-subtle leading-relaxed">
+                  {t.git.bundleNote}
+                </p>
               </div>
             )}
 

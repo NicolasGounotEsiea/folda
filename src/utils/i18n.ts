@@ -238,6 +238,11 @@ type AppStrings = {
   automationSummaryConditionsPlural: string;
   automationSummaryActionsSingular: string;
   automationSummaryActionsPlural: string;
+  automationSummaryAnyHint: string;          // "(any)" shown next to conditions when OR mode
+
+  automationConditionLogicLabel: string;     // label before the segmented toggle
+  automationConditionLogicAll: string;       // "ALL must match" pill
+  automationConditionLogicAny: string;       // "ANY must match" pill
 
   automationRunTargetDir: string;
   automationRunTargetDirPh: string;
@@ -280,6 +285,39 @@ type AppStrings = {
   automationPresetCleanTmpDesc: string;
 
   automationDragToReorder: string;     // tooltip on the action drag handle
+
+  // ── git integration (sidebar GitPanel) ────────────────────────────────────
+  gitLoading: string;
+  gitStaleHint: string;
+  gitAheadBehindTitle: string;
+  gitChanges: string;
+  gitBranches: string;
+  gitCommits: string;
+  gitNoChanges: string;
+  gitNoBranches: string;
+  gitNoCommits: string;
+  gitJustNow: string;
+  gitMinutesAgo: string;
+  gitHoursAgo: string;
+  gitDaysAgo: string;
+
+  // ── git integration (per-file tab in PreviewPanel) ────────────────────────
+  gitTabLabel: string;
+  gitFileClean: string;
+  gitFileNotInRepo: string;
+  gitFileDiffHeader: string;
+  gitFileHistoryHeader: string;
+  gitFileNoHistory: string;
+
+  // ── git: collapse + checkout ──────────────────────────────────────────────
+  gitCollapse: string;
+  gitExpand: string;
+  gitCurrentBranch: string;            // tooltip on the row of the current branch
+  gitClickToCheckout: string;          // tooltip on other local branches
+  gitRemoteBranchUnclickable: string;  // tooltip on remote branches (if shown)
+  gitCheckoutConfirm: string;          // window.confirm("Switch to {name}?")
+  gitCheckoutSuccess: string;          // toast message
+  gitCheckoutFailed: string;           // toast title (detail = libgit2 message)
 };
 
 const translations: Record<string, AppStrings> = {
@@ -507,6 +545,11 @@ const translations: Record<string, AppStrings> = {
     automationSummaryConditionsPlural: "conditions",
     automationSummaryActionsSingular: "action",
     automationSummaryActionsPlural: "actions",
+    automationSummaryAnyHint: "(any)",
+
+    automationConditionLogicLabel: "Match:",
+    automationConditionLogicAll: "ALL",
+    automationConditionLogicAny: "ANY",
 
     automationRunTargetDir: "Target folder",
     automationRunTargetDirPh: "Pick the folder to scan",
@@ -547,6 +590,36 @@ const translations: Record<string, AppStrings> = {
     automationPresetCleanTmpDesc: "Manual run · trashes .tmp files that haven't been touched in a week.",
 
     automationDragToReorder: "Drag to reorder",
+
+    gitLoading: "Loading git status…",
+    gitStaleHint: "Index was locked by another process — showing slightly stale data",
+    gitAheadBehindTitle: "Commits ahead of / behind the upstream branch",
+    gitChanges: "Changes",
+    gitBranches: "Branches",
+    gitCommits: "Recent commits",
+    gitNoChanges: "Working tree is clean",
+    gitNoBranches: "No branches",
+    gitNoCommits: "No commits yet",
+    gitJustNow: "just now",
+    gitMinutesAgo: "{n}m ago",
+    gitHoursAgo: "{n}h ago",
+    gitDaysAgo: "{n}d ago",
+
+    gitTabLabel: "Git",
+    gitFileClean: "Clean — no uncommitted changes",
+    gitFileNotInRepo: "This file isn't inside a git repository.",
+    gitFileDiffHeader: "Changes vs HEAD",
+    gitFileHistoryHeader: "Recent commits touching this file",
+    gitFileNoHistory: "No history found within the last 1000 commits.",
+
+    gitCollapse: "Collapse git panel",
+    gitExpand: "Expand git panel",
+    gitCurrentBranch: "Current branch",
+    gitClickToCheckout: "Click to switch to this branch",
+    gitRemoteBranchUnclickable: "Remote branch — check it out via your git client",
+    gitCheckoutConfirm: "Switch to branch \"{name}\"?\n\nThis will update your files on disk. Uncommitted changes will block the switch.",
+    gitCheckoutSuccess: "Switched to {name}",
+    gitCheckoutFailed: "Could not switch branch",
   },
 
   fr: {
@@ -773,6 +846,11 @@ const translations: Record<string, AppStrings> = {
     automationSummaryConditionsPlural: "conditions",
     automationSummaryActionsSingular: "action",
     automationSummaryActionsPlural: "actions",
+    automationSummaryAnyHint: "(au moins une)",
+
+    automationConditionLogicLabel: "Correspondance :",
+    automationConditionLogicAll: "TOUTES",
+    automationConditionLogicAny: "AU MOINS UNE",
 
     automationRunTargetDir: "Dossier cible",
     automationRunTargetDirPh: "Choisissez le dossier à analyser",
@@ -813,6 +891,36 @@ const translations: Record<string, AppStrings> = {
     automationPresetCleanTmpDesc: "Exécution manuelle · met à la corbeille les .tmp non touchés depuis une semaine.",
 
     automationDragToReorder: "Glisser pour réorganiser",
+
+    gitLoading: "Chargement du statut git…",
+    gitStaleHint: "L'index est verrouillé par un autre processus — données potentiellement périmées",
+    gitAheadBehindTitle: "Commits en avance / en retard par rapport à la branche distante",
+    gitChanges: "Modifications",
+    gitBranches: "Branches",
+    gitCommits: "Commits récents",
+    gitNoChanges: "Aucune modification",
+    gitNoBranches: "Aucune branche",
+    gitNoCommits: "Aucun commit",
+    gitJustNow: "à l'instant",
+    gitMinutesAgo: "il y a {n}min",
+    gitHoursAgo: "il y a {n}h",
+    gitDaysAgo: "il y a {n}j",
+
+    gitTabLabel: "Git",
+    gitFileClean: "Propre — aucune modification non commitée",
+    gitFileNotInRepo: "Ce fichier n'est pas dans un dépôt git.",
+    gitFileDiffHeader: "Modifications vs HEAD",
+    gitFileHistoryHeader: "Commits récents touchant ce fichier",
+    gitFileNoHistory: "Aucun historique trouvé dans les 1000 derniers commits.",
+
+    gitCollapse: "Replier le panneau git",
+    gitExpand: "Déplier le panneau git",
+    gitCurrentBranch: "Branche actuelle",
+    gitClickToCheckout: "Cliquer pour basculer sur cette branche",
+    gitRemoteBranchUnclickable: "Branche distante — utilisez votre client git pour la checkout",
+    gitCheckoutConfirm: "Basculer sur la branche « {name} » ?\n\nVos fichiers sur le disque seront mis à jour. Les modifications non commitées bloqueront le changement.",
+    gitCheckoutSuccess: "Basculé sur {name}",
+    gitCheckoutFailed: "Impossible de changer de branche",
   },
 };
 
