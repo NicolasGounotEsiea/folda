@@ -71,6 +71,33 @@ export interface ListEntry {
   extension: string;
   id: number | null;
   tags: Tag[];
+  /// Set by the Toolbar/CommandPalette when a file appears in search results
+  /// because its INDEXED CONTENT matched the query (not just the filename).
+  /// Undefined / false for regular list_directory results. Drives the small
+  /// "contenu" badge that explains why a non-name-matching file is in the list.
+  matched_content?: boolean;
+  /// FTS5-generated excerpt of the matched content, with the matched terms
+  /// wrapped in `<b>` / `</b>` markers. Only present when matched_content is
+  /// true. The frontend renders the markers as React `<mark>` elements —
+  /// never via dangerouslySetInnerHTML.
+  match_snippet?: string;
+}
+
+/// Backend payload from `search_files`. Wraps a FileEntry-like row with origin
+/// metadata so the UI can show why each result matched.
+export interface SearchHit {
+  id: number;
+  path: string;
+  name: string;
+  extension: string;
+  size: number;
+  created_at: number;
+  modified_at: number;
+  accessed_at: number;
+  tags: Tag[];
+  matched_name: boolean;
+  matched_content: boolean;
+  snippet: string | null;
 }
 
 export interface TagRule {

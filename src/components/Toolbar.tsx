@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search, Settings, Columns2, BarChart2, Sparkles, StickyNote } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
-import type { FileEntry, ListEntry } from "../types";
+import type { ListEntry, SearchHit } from "../types";
 import { clsx } from "clsx";
 import { useTranslation } from "../utils/i18n";
 
@@ -92,10 +92,15 @@ export function Toolbar({
     try {
       const [fileEntries, folderEntries] = await Promise.all([
         type !== "folders"
-          ? invoke<FileEntry[]>("search_files", { query: q }).then((files) =>
-              files.map((f): ListEntry => ({
+          ? invoke<SearchHit[]>("search_files", { query: q }).then((hits) =>
+              hits.map((f): ListEntry => ({
                 is_dir: false, name: f.name, path: f.path, size: f.size,
                 created_at: f.created_at, modified_at: f.modified_at, extension: f.extension, id: f.id, tags: f.tags,
+                // Surface the origin + excerpt so the FileList row can show
+                // both the "contenu" badge AND the highlighted snippet under
+                // the file name (when match came from indexed content).
+                matched_content: f.matched_content,
+                match_snippet: f.snippet ?? undefined,
               }))
             )
           : Promise.resolve([] as ListEntry[]),

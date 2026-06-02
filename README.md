@@ -157,6 +157,12 @@ The host starts sharing from the sidebar — the app binds a WebSocket server on
 - [ ] **Global search palette** — Ctrl+Shift+F across all workspaces simultaneously
 - [ ] **Content-hash duplicate detection** — current `find_duplicates` matches by (name, size); content hashing would catch renamed copies too
 
+### Remote Filesystems (top priority for v1.0)
+- [ ] **SFTP** — browse and edit files on remote SSH servers as if local. Connection manager with OS keyring for credentials, key-based and password auth, integrated with workspaces / tags / AI / automation
+- [ ] **WebDAV** — same for Nextcloud, Synology, Box, iCloud Drive, Apache mod_dav. Basic auth + bearer token
+- [ ] **Connection status indicators** — green/amber/red dots in sidebar, auto-reconnect with exponential backoff
+- [ ] **Optional remote content indexing** — gated per-connection, off by default
+
 ### Cloud & Sync
 - [ ] **Workspace sync** — sync metadata, tags, and saved views across machines
 - [x] **Guest permissions** — granular per-path permissions (list, read, create, edit, delete)

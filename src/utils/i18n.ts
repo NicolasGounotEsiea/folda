@@ -318,6 +318,12 @@ type AppStrings = {
   gitCheckoutConfirm: string;          // window.confirm("Switch to {name}?")
   gitCheckoutSuccess: string;          // toast message
   gitCheckoutFailed: string;           // toast title (detail = libgit2 message)
+
+  // ── search: match-origin badges ───────────────────────────────────────────
+  commandPaletteContentBadge: string;       // "content" / "contenu" chip label
+  commandPaletteContentBadgeTitle: string;  // hover tooltip explaining the badge
+
+  previewExtractedText: string;             // "Extracted text" header in PreviewPanel
 };
 
 const translations: Record<string, AppStrings> = {
@@ -620,6 +626,11 @@ const translations: Record<string, AppStrings> = {
     gitCheckoutConfirm: "Switch to branch \"{name}\"?\n\nThis will update your files on disk. Uncommitted changes will block the switch.",
     gitCheckoutSuccess: "Switched to {name}",
     gitCheckoutFailed: "Could not switch branch",
+
+    commandPaletteContentBadge: "content",
+    commandPaletteContentBadgeTitle: "This result matched on indexed file content, not its name",
+
+    previewExtractedText: "Extracted text",
   },
 
   fr: {
@@ -921,6 +932,11 @@ const translations: Record<string, AppStrings> = {
     gitCheckoutConfirm: "Basculer sur la branche « {name} » ?\n\nVos fichiers sur le disque seront mis à jour. Les modifications non commitées bloqueront le changement.",
     gitCheckoutSuccess: "Basculé sur {name}",
     gitCheckoutFailed: "Impossible de changer de branche",
+
+    commandPaletteContentBadge: "contenu",
+    commandPaletteContentBadgeTitle: "Ce résultat correspond au contenu indexé du fichier, pas à son nom",
+
+    previewExtractedText: "Texte extrait",
   },
 };
 

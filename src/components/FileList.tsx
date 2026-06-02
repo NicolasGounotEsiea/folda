@@ -11,6 +11,7 @@ import { QuickLookModal } from "./QuickLookModal";
 import { FolderPickerModal } from "./FolderPickerModal";
 import { useStore } from "../store/useStore";
 import { useGitStore, statusForAbsolutePath } from "../store/useGitStore";
+import { highlightSnippet } from "../utils/highlightSnippet";
 import { useToastStore } from "../store/useToastStore";
 import type { FileEntry, ListEntry } from "../types";
 import { useTranslation } from "../utils/i18n";
@@ -284,6 +285,27 @@ const EntryRow = memo(function EntryRow({
               />
             )}
             <span className="truncate text-[12px]">{entry.name}</span>
+            {/* Match-by-content badge for search results. Surfaces WHY a file
+                whose name doesn't contain the query is showing up — without
+                this, users assume the search is broken when a content match
+                appears. Always visible (not gated on hover) because that's the
+                user's whole question when they see the row. */}
+            {entry.matched_content && (
+              <span
+                className="text-[9px] uppercase tracking-wide text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded shrink-0"
+                title="Match in indexed file content"
+              >
+                contenu
+              </span>
+            )}
+            {/* Inline snippet from FTS5 — first 24 tokens around the matched
+                terms, with `<mark>` highlights via the safe parser. Truncated
+                with CSS so a long line doesn't blow the row height. */}
+            {entry.match_snippet && (
+              <span className="text-[10px] text-text-muted truncate min-w-0 italic" title={entry.match_snippet.replace(/<\/?b>/g, "")}>
+                {highlightSnippet(entry.match_snippet)}
+              </span>
+            )}
             {entry.tags.length > 0 && (
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                 {entry.tags.slice(0, 2).map((t) => (
@@ -473,12 +495,28 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   const gitStatus = useGitStore((s) => s.status);
   const gitByPath = useGitStore((s) => s.statusByPath);
 
+  // Whether we're currently showing search results. When true, we honor the
+  // backend's relevance ordering instead of column sort — otherwise the user
+  // searches "focus" and the column sort puts `_kakemono.pdf` (content match,
+  // alphabetically first) before `FOCUS_logo.pdf` (name match, alphabetically
+  // later). Search intent always beats column sort.
+  const searchQuery = useStore((s) => s.searchQuery);
+  const inSearchMode = searchQuery.trim() !== "";
+
   // ─── Filtered + sorted entries ─────────────────────────────────────────────
   const visibleEntries = useMemo(() => {
     let entries = paneEntries;
     if (!showHidden) entries = entries.filter((e) => !e.name.startsWith("."));
     if (selectedTagIds.length > 0)
       entries = entries.filter((e) => e.is_dir || selectedTagIds.every((tid) => e.tags.some((t) => t.id === tid)));
+
+    // In search mode, preserve backend order (Toolbar already concatenates
+    // folders-first then file relevance). Column header clicks are visually
+    // inert during search — that's an acceptable trade for unambiguous
+    // relevance ranking. Clear the search to get column sort back.
+    if (inSearchMode) {
+      return entries;
+    }
 
     return [...entries].sort((a, b) => {
       // Dirs always first
@@ -490,7 +528,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
       else if (sortBy === "type") cmp = a.extension.localeCompare(b.extension);
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [paneEntries, showHidden, selectedTagIds, sortBy, sortDir]);
+  }, [paneEntries, showHidden, selectedTagIds, sortBy, sortDir, inSearchMode]);
 
   const selectedSize = useMemo(() =>
     visibleEntries

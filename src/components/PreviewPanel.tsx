@@ -558,11 +558,17 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
   const [showTagInput, setShowTagInput] = useState(false);
   const [textPreview, setTextPreview] = useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
+  /// Cached extracted text from the indexer for non-text formats (PDF, DOCX, XLSX, …).
+  /// Lives separately from `textPreview` because the latter reads raw bytes for
+  /// real text files, while this one consults the DB cache populated during
+  /// content indexing. Always null for formats we don't index.
+  const [indexedContent, setIndexedContent] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"info" | "history" | "git">("info");
   const { width, onDragStart } = useResizable({ defaultWidth: 280, side: "right" });
 
   useEffect(() => {
     setTextPreview(null);
+    setIndexedContent(null);
     setShowTagInput(false);
     setTagInput("");
     setActiveTab("info");
@@ -573,6 +579,30 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
       .then((v) => { if (!cancelled) setTextPreview(v); })
       .catch(() => { if (!cancelled) setTextPreview(null); })
       .finally(() => { if (!cancelled) setLoadingPreview(false); });
+
+    // For office-style formats, ALSO try the indexed-content cache. preview_file
+    // is a sync DB lookup (~1ms on a cache hit) and may trigger on-demand
+    // extraction on a miss (~100-500ms for DOCX/PDF). We fire-and-forget — the
+    // UI never blocks on it, and a slow extract just means the section appears
+    // a little later. Extensions list mirrors what the indexer supports.
+    const INDEXED_EXTS = new Set([
+      "pdf", "docx", "odt", "xlsx", "ods", "pptx", "odp",
+    ]);
+    const ext = selectedFile.extension.toLowerCase();
+    if (INDEXED_EXTS.has(ext)) {
+      invoke<string>("preview_file", { path: selectedFile.path })
+        .then((s) => {
+          if (cancelled) return;
+          // Backend returns "Cannot access: …" for unreadable files — filter out
+          // along with empty (= unindexed yet) so we don't render an empty box.
+          const trimmed = (s ?? "").trim();
+          if (trimmed && !trimmed.startsWith("Cannot access:")) {
+            setIndexedContent(trimmed);
+          }
+        })
+        .catch(() => { /* ignore — section just won't appear */ });
+    }
+
     return () => { cancelled = true; };
   }, [selectedFile?.id]);
 
@@ -757,6 +787,28 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
               );
             })()}
           </div>
+
+          {/* Indexed content excerpt — small section, only shown for PDFs / DOCX /
+              spreadsheets etc. that have content in the cache. Doesn't replace
+              the hero preview at the top; sits as a discrete info row so the
+              user can scan the doc's gist while still seeing the format icon. */}
+          {indexedContent !== null && (
+            <div>
+              <div className="flex items-center gap-1 mb-2">
+                <span className="text-[10px] text-text-muted uppercase tracking-widest font-semibold">
+                  {t.previewExtractedText}
+                </span>
+              </div>
+              <div className="bg-surface-2 border border-border-subtle rounded p-2.5 max-h-32 overflow-y-auto">
+                <p className="text-[10px] text-text-secondary leading-relaxed whitespace-pre-wrap break-words">
+                  {indexedContent.slice(0, 800)}
+                  {indexedContent.length > 800 && (
+                    <span className="text-text-muted">…</span>
+                  )}
+                </p>
+              </div>
+            </div>
+          )}
 
           <div>
             <div className="flex items-center justify-between mb-2">

@@ -6,7 +6,9 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
-import type { FileEntry, ListEntry } from "../types";
+import type { FileEntry, ListEntry, SearchHit } from "../types";
+import { useTranslation } from "../utils/i18n";
+import { highlightSnippet } from "../utils/highlightSnippet";
 
 interface Command {
   id: string;
@@ -15,6 +17,14 @@ interface Command {
   icon: React.ReactNode;
   group: string;
   action: () => void;
+  /// Optional one-or-two-word chip rendered on the right of the row. Used by
+  /// search results to flag matches that came from indexed CONTENT rather than
+  /// the filename — without this, users see "test.pdf" appear when searching
+  /// "compta 2023" and assume the search is broken.
+  badge?: string;
+  /// FTS5 snippet with `<b>` markers — rendered with safe parsing as a small
+  /// excerpt below the path, explaining the context of the content match.
+  snippet?: string;
 }
 
 function score(text: string, query: string): number {
@@ -47,6 +57,7 @@ function saveRecentQuery(q: string) {
 }
 
 export function CommandPalette({ onClose }: { onClose: () => void }) {
+  const t = useTranslation();
   const {
     rootPaths, setCurrentPath, setListEntries, pushNav, selectFile,
     setViewMode, setLayoutMode, viewMode, layoutMode, toggleShowHidden, showHidden,
@@ -173,9 +184,20 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     if (query.length < 2) { setSearchResults([]); return; }
     const timer = setTimeout(async () => {
       const q = query;
-      const toCmd = (f: FileEntry, group: string): Command => ({
+      // `badge` is set when the result came from a content match — explains
+      // why a result with no name-match still appears, instead of looking like
+      // a bug. Live-search results never carry it (no content indexing for
+      // those — they're a raw filesystem walk).
+      const toCmd = (
+        f: { path: string; name: string },
+        group: string,
+        badge?: string,
+        snippet?: string,
+      ): Command => ({
         id: `file:${f.path}`, label: f.name, description: f.path, group,
         icon: <File size={13} className="text-text-muted" />,
+        badge,
+        snippet,
         action: async () => {
           saveRecentQuery(q);
           setRecentQueries(loadRecentQueries());
@@ -187,7 +209,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       try {
         // Run DB search and live search in parallel
         const [dbResults, liveResults] = await Promise.all([
-          invoke<FileEntry[]>("search_files", { query: q }).catch(() => [] as FileEntry[]),
+          invoke<SearchHit[]>("search_files", { query: q }).catch(() => [] as SearchHit[]),
           currentPath
             ? invoke<FileEntry[]>("search_live", { query: q, path: currentPath }).catch(() => [] as FileEntry[])
             : Promise.resolve([] as FileEntry[]),
@@ -198,7 +220,17 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
         const liveOnly = liveResults.filter((f) => !dbPaths.has(f.path));
 
         setSearchResults([
-          ...dbResults.slice(0, 8).map((f) => toCmd(f, "Files")),
+          ...dbResults.slice(0, 8).map((f) => toCmd(
+            f,
+            "Files",
+            // Show badge ONLY when the match is content-only. If the name
+            // also matched, the filename in the row makes it obvious — adding
+            // "contenu" then would be noise on the common case.
+            !f.matched_name && f.matched_content ? t.commandPaletteContentBadge : undefined,
+            // Snippet always shown if present — it's the actual matched excerpt,
+            // useful even when name also matched (gives context on WHERE in the doc).
+            f.snippet ?? undefined,
+          )),
           ...liveOnly.slice(0, 5).map((f) => toCmd(f, "Here")),
         ]);
       } catch { setSearchResults([]); }
@@ -322,7 +354,25 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
                       {cmd.description && (
                         <span className="text-[10px] text-text-muted truncate block">{cmd.description}</span>
                       )}
+                      {cmd.snippet && (
+                        // Snippet with highlighted match terms. Truncated to a
+                        // single line in the palette to keep row heights uniform.
+                        <span
+                          className="text-[10px] text-text-secondary truncate block italic"
+                          title={cmd.snippet.replace(/<\/?b>/g, "")}
+                        >
+                          {highlightSnippet(cmd.snippet)}
+                        </span>
+                      )}
                     </span>
+                    {cmd.badge && (
+                      <span
+                        className="shrink-0 text-[9px] uppercase tracking-wide text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded"
+                        title={t.commandPaletteContentBadgeTitle}
+                      >
+                        {cmd.badge}
+                      </span>
+                    )}
                     {isActive && (
                       <kbd className="text-[10px] text-text-muted bg-surface-3 px-1.5 py-0.5 rounded border border-border shrink-0">↵</kbd>
                     )}
