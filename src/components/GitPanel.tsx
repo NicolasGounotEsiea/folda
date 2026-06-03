@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight, FileText, GitBranch, GitCommit, History, Loader2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useGitStore, type CommitDiff, type CommitInfo, type FileStatus } from "../store/useGitStore";
 import { useStore } from "../store/useStore";
 import { useToastStore } from "../store/useToastStore";
@@ -42,7 +42,21 @@ export function statusLetter(s: FileStatus): string {
 // styled <pre> rows so we don't pay the bundle cost. Side-by-side mode lands
 // in V2 if anyone asks.
 
-export function DiffView({ diff }: { diff: string }) {
+export function DiffView({
+  diff, inlineMarkers = false, maxHeight = 300,
+}: {
+  diff: string;
+  /// Parse `<del>...</del>` (on `-` lines) and `<ins>...</ins>` (on `+` lines)
+  /// and render with stronger highlights — Notepad++-style intra-line diff.
+  /// Default false because git diff output doesn't carry these markers, and
+  /// a code file with literal `<del>` shouldn't get misinterpreted.
+  inlineMarkers?: boolean;
+  maxHeight?: number | string;
+}) {
+  return _DiffViewImpl({ diff, inlineMarkers, maxHeight });
+}
+
+function _DiffViewImpl({ diff, inlineMarkers, maxHeight }: { diff: string; inlineMarkers: boolean; maxHeight: number | string }) {
   if (!diff) {
     return (
       <p className="text-[10px] text-text-muted italic px-3 py-2">No textual diff (binary file, mode change, or already clean)</p>
@@ -52,7 +66,7 @@ export function DiffView({ diff }: { diff: string }) {
   // Cap visual height — large diffs would otherwise hog the entire scroll region.
   // Internal scroll keeps the diff scannable without breaking the panel layout.
   return (
-    <pre className="text-[10px] leading-tight font-mono overflow-auto" style={{ maxHeight: 300 }}>
+    <pre className="text-[10px] leading-tight font-mono overflow-auto" style={{ maxHeight }}>
       {lines.map((line, i) => {
         // We never strip the leading +/-/space because the backend already
         // ensures every non-header line starts with one of them.
@@ -65,14 +79,39 @@ export function DiffView({ diff }: { diff: string }) {
           cls = "text-emerald-400 bg-emerald-500/5";
         else if (line.startsWith("-"))
           cls = "text-red-400 bg-red-500/5";
+        const isChange = line.startsWith("+") || line.startsWith("-");
         return (
           <div key={i} className={`px-3 ${cls}`}>
-            {line || " "}
+            {inlineMarkers && isChange
+              ? renderInlineMarkers(line, line.startsWith("+") ? "ins" : "del")
+              : (line || " ")}
           </div>
         );
       })}
     </pre>
   );
+}
+
+/// Parse `<del>...</del>` (on `-` lines) or `<ins>...</ins>` (on `+` lines)
+/// markers and render with stronger intra-line highlights. Safe-by-construction
+/// parser: never uses dangerouslySetInnerHTML. Cross-side or malformed markers
+/// render as literal text rather than crash.
+function renderInlineMarkers(line: string, side: "del" | "ins"): React.ReactNode {
+  if (!line) return " ";
+  const re = side === "del" ? /(<del>[\s\S]*?<\/del>)/g : /(<ins>[\s\S]*?<\/ins>)/g;
+  const tagOpen = side === "del" ? "<del>" : "<ins>";
+  const tagClose = side === "del" ? "</del>" : "</ins>";
+  const cls = side === "del"
+    ? "bg-red-500/40 text-red-100 rounded-sm"
+    : "bg-emerald-500/40 text-emerald-100 rounded-sm";
+  const parts = line.split(re);
+  return parts.map((p, i) => {
+    if (p.startsWith(tagOpen) && p.endsWith(tagClose)) {
+      const inner = p.slice(tagOpen.length, p.length - tagClose.length);
+      return <span key={i} className={cls}>{inner}</span>;
+    }
+    return <React.Fragment key={i}>{p}</React.Fragment>;
+  });
 }
 
 // ── Per-file inline diff (working tree vs HEAD) ───────────────────────────────

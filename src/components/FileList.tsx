@@ -12,6 +12,7 @@ import { FolderPickerModal } from "./FolderPickerModal";
 import { useStore } from "../store/useStore";
 import { useGitStore, statusForAbsolutePath } from "../store/useGitStore";
 import { highlightSnippet } from "../utils/highlightSnippet";
+import { DiffCompareModal } from "./DiffCompareModal";
 import { useToastStore } from "../store/useToastStore";
 import type { FileEntry, ListEntry } from "../types";
 import { useTranslation } from "../utils/i18n";
@@ -476,6 +477,9 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   const [extractTarget, setExtractTarget] = useState<string | null>(null);
   // Zip name prompt
   const [zipPending, setZipPending] = useState<{ paths: string[]; defaultName: string } | null>(null);
+  // Two-file diff modal — tuple of paths or null. Set by the "Compare files"
+  // context menu entry, cleared on close.
+  const [diffTargets, setDiffTargets] = useState<[string, string] | null>(null);
 
   // ─── Derived: parent path for ".." row ─────────────────────────────────────
   const parentPath = useMemo(() => {
@@ -854,6 +858,16 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
 
     if (isMulti && paneSelectedPaths.length > 1) {
       items.push({ label: `${t.bulkRename} (${targets.length})`, onClick: () => setBulkRenameOpen(true) });
+      items.push({ separator: true });
+    }
+
+    // Compare files — only when EXACTLY 2 files (not folders) are selected.
+    // Notepad++ Compare-style: unified diff in a modal.
+    if (isMulti && targets.length === 2 && targets.every((e) => !e.is_dir)) {
+      items.push({
+        label: t.diffCompareFiles,
+        onClick: () => setDiffTargets([targets[0].path, targets[1].path]),
+      });
       items.push({ separator: true });
     }
 
@@ -1424,6 +1438,14 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
             { label: "New folder", onClick: () => { setEmptyCtxMenu(null); setShowNewFolder(true); setTimeout(() => newFolderRef.current?.focus(), 50); } },
             ...(clipboard ? [{ separator: true as const }, { label: "Paste", shortcut: "Ctrl+V", onClick: () => { setEmptyCtxMenu(null); handlePaste(); } }] : []),
           ]}
+        />
+      )}
+
+      {diffTargets && (
+        <DiffCompareModal
+          pathA={diffTargets[0]}
+          pathB={diffTargets[1]}
+          onClose={() => setDiffTargets(null)}
         />
       )}
 

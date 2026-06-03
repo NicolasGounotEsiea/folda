@@ -99,6 +99,7 @@ pub fn run() {
             commands::files::index_directory_content,
             commands::files::get_indexing_stats,
             commands::files::copy_with_progress,
+            commands::files::diff_files,
             commands::folders::create_directory,
             commands::folders::get_folder_tags,
             commands::folders::add_tag_to_folder,

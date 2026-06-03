@@ -6,12 +6,15 @@ import { css } from "@codemirror/lang-css";
 import { html } from "@codemirror/lang-html";
 import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
+import { search, openSearchPanel } from "@codemirror/search";
 import { oneDark } from "@codemirror/theme-one-dark";
 import type { Extension } from "@codemirror/state";
+import type { EditorView as CMEditorView } from "@codemirror/view";
 import CodeMirror, { type Statistics } from "@uiw/react-codemirror";
 import { Ban, FileCode, History, Save, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
+import { useViewerFindStore } from "../store/useViewerFindStore";
 import { SnapshotPanel } from "./SnapshotPanel";
 
 // These extensions are handled by MediaViewer or DocumentViewer — EditorView only sees them
@@ -169,7 +172,24 @@ export function EditorView() {
     );
   }
   const langExt = getLangExtension(ext);
-  const extensions: Extension[] = [oneDark];
+  // Capture the CodeMirror EditorView so we can programmatically open the
+  // search panel when the Toolbar's Ctrl+F handler defers to us via the
+  // viewer-find store. `basicSetup.searchKeymap = true` already installs the
+  // keymap, but we also want the externally-triggered open path for
+  // consistency with future viewers that might lack a native keymap.
+  const cmViewRef = useRef<CMEditorView | null>(null);
+
+  useEffect(() => {
+    useViewerFindStore.getState().setHandler(() => {
+      const view = cmViewRef.current;
+      if (view) openSearchPanel(view);
+    });
+    return () => useViewerFindStore.getState().setHandler(null);
+  }, []);
+
+  // Include the search extension so the panel UI is available. Without this
+  // the keymap exists but there's no panel implementation to open.
+  const extensions: Extension[] = [oneDark, search()];
   if (langExt) extensions.push(langExt);
   const langName = LANG_NAMES[ext] ?? (ext ? ext.toUpperCase() : "Plain Text");
 
@@ -251,6 +271,7 @@ export function EditorView() {
             value={content}
             height="100%"
             extensions={extensions}
+            onCreateEditor={(view) => { cmViewRef.current = view; }}
             onChange={(val) => {
               setContent(val);
               // Only update cache after the file has been loaded (guards against empty-state pollution)

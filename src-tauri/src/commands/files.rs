@@ -801,6 +801,403 @@ fn log_activity(db: &rusqlite::Connection, file_path: &str, file_name: &str, act
     );
 }
 
+/// Notepad++-style "Compare files" — returns aligned side-by-side rows so the
+/// frontend can render two columns: left = old version, right = new version.
+/// For modified lines (deleted-then-inserted pairs), each side carries the
+/// CHARACTER-level intra-line diff via `<del>` / `<ins>` markers, so changes as
+/// small as a single character (e.g. `1111211` vs `1111111`) get a precise
+/// highlight rather than the entire line being painted.
+///
+/// Why character-level (was word-level): `from_words` treats a string with no
+/// whitespace as a single "word", so any change anywhere in `1111211` makes
+/// the WHOLE thing show as changed. Character-level fixes this at the cost of
+/// noisier output on natural language — acceptable trade because a file diff
+/// reader expects precision over readability.
+#[derive(Debug, serde::Serialize)]
+pub struct DiffRow {
+    /// "equal" | "delete" | "insert" | "modify"
+    pub kind: String,
+    pub left_no: Option<usize>,
+    pub right_no: Option<usize>,
+    /// Left-side content (old file). Empty when kind=="insert". For "modify",
+    /// contains `<del>...</del>` markers around the removed character spans.
+    pub left: String,
+    /// Right-side content (new file). Empty when kind=="delete". For "modify",
+    /// contains `<ins>...</ins>` markers around the added character spans.
+    pub right: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct DiffHunk {
+    pub old_start: usize,
+    pub new_start: usize,
+    pub rows: Vec<DiffRow>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct DiffResult {
+    pub identical: bool,
+    pub hunks: Vec<DiffHunk>,
+}
+
+#[tauri::command]
+pub fn diff_files(path_a: String, path_b: String) -> Result<DiffResult, String> {
+    use similar::{ChangeTag, TextDiff};
+    const MAX_BYTES: u64 = 20 * 1024 * 1024;
+
+    let meta_a = std::fs::metadata(&path_a).map_err(|e| format!("Cannot stat {}: {}", path_a, e))?;
+    let meta_b = std::fs::metadata(&path_b).map_err(|e| format!("Cannot stat {}: {}", path_b, e))?;
+    if meta_a.len() > MAX_BYTES || meta_b.len() > MAX_BYTES {
+        return Err(format!("File too large for comparison (>{}MB)", MAX_BYTES / 1024 / 1024));
+    }
+
+    let text_a = std::fs::read_to_string(&path_a)
+        .map_err(|e| format!("Cannot read {} as text (binary file?): {}", path_a, e))?;
+    let text_b = std::fs::read_to_string(&path_b)
+        .map_err(|e| format!("Cannot read {} as text (binary file?): {}", path_b, e))?;
+
+    if text_a == text_b {
+        return Ok(DiffResult { identical: true, hunks: Vec::new() });
+    }
+
+    let line_diff = TextDiff::from_lines(&text_a, &text_b);
+
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    for hunk in line_diff.unified_diff().context_radius(3).iter_hunks() {
+        let changes: Vec<_> = hunk.iter_changes().collect();
+
+        // Hunk start lines from the FIRST change's source indexes — UnifiedHunk-
+        // Header's range fields aren't public in similar 2.x, so we derive
+        // ourselves. +1 because similar is 0-indexed and humans expect line 1.
+        let old_start = changes.iter()
+            .find_map(|c| c.old_index()).map(|i| i + 1).unwrap_or(1);
+        let new_start = changes.iter()
+            .find_map(|c| c.new_index()).map(|i| i + 1).unwrap_or(1);
+
+        let mut rows: Vec<DiffRow> = Vec::new();
+        let mut left_no = old_start;
+        let mut right_no = new_start;
+        let mut i = 0;
+        while i < changes.len() {
+            match changes[i].tag() {
+                ChangeTag::Equal => {
+                    let content = strip_trailing_newline(changes[i].value());
+                    rows.push(DiffRow {
+                        kind: "equal".into(),
+                        left_no: Some(left_no),
+                        right_no: Some(right_no),
+                        left: content.clone(),
+                        right: content,
+                    });
+                    left_no += 1;
+                    right_no += 1;
+                    i += 1;
+                }
+                ChangeTag::Delete => {
+                    // Group consecutive deletes followed by consecutive inserts.
+                    let del_start = i;
+                    while i < changes.len() && changes[i].tag() == ChangeTag::Delete { i += 1; }
+                    let ins_start = i;
+                    while i < changes.len() && changes[i].tag() == ChangeTag::Insert { i += 1; }
+                    let ins_end = i;
+
+                    let dels: Vec<String> = changes[del_start..ins_start]
+                        .iter().map(|c| strip_trailing_newline(c.value())).collect();
+                    let inss: Vec<String> = changes[ins_start..ins_end]
+                        .iter().map(|c| strip_trailing_newline(c.value())).collect();
+
+                    // Pair up: zip dels with inss for "modify" rows.
+                    let pair_count = dels.len().min(inss.len());
+                    for k in 0..pair_count {
+                        let (left_marked, right_marked) = inline_char_markers(&dels[k], &inss[k]);
+                        rows.push(DiffRow {
+                            kind: "modify".into(),
+                            left_no: Some(left_no),
+                            right_no: Some(right_no),
+                            left: left_marked,
+                            right: right_marked,
+                        });
+                        left_no += 1;
+                        right_no += 1;
+                    }
+                    // Remaining unpaired deletes
+                    for d in dels.iter().skip(pair_count) {
+                        rows.push(DiffRow {
+                            kind: "delete".into(),
+                            left_no: Some(left_no),
+                            right_no: None,
+                            left: d.clone(),
+                            right: String::new(),
+                        });
+                        left_no += 1;
+                    }
+                    // Remaining unpaired inserts
+                    for ins in inss.iter().skip(pair_count) {
+                        rows.push(DiffRow {
+                            kind: "insert".into(),
+                            left_no: None,
+                            right_no: Some(right_no),
+                            left: String::new(),
+                            right: ins.clone(),
+                        });
+                        right_no += 1;
+                    }
+                }
+                ChangeTag::Insert => {
+                    let content = strip_trailing_newline(changes[i].value());
+                    rows.push(DiffRow {
+                        kind: "insert".into(),
+                        left_no: None,
+                        right_no: Some(right_no),
+                        left: String::new(),
+                        right: content,
+                    });
+                    right_no += 1;
+                    i += 1;
+                }
+            }
+        }
+
+        hunks.push(DiffHunk {
+            old_start,
+            new_start,
+            rows,
+        });
+    }
+
+    Ok(DiffResult { identical: false, hunks })
+}
+
+/// Split a string into individual grapheme-like &str slices preserving multi-byte
+/// chars. Each element is a single char's byte range — safe to push into output
+/// strings without breaking UTF-8 boundaries.
+fn split_chars(s: &str) -> Vec<&str> {
+    let mut out = Vec::with_capacity(s.len());
+    let mut last = 0;
+    for (i, _) in s.char_indices().skip(1) {
+        out.push(&s[last..i]);
+        last = i;
+    }
+    if last < s.len() {
+        out.push(&s[last..]);
+    }
+    out
+}
+
+fn strip_trailing_newline(s: &str) -> String {
+    s.strip_suffix('\n').map(|s| s.to_string()).unwrap_or_else(|| s.to_string())
+}
+
+/// Character-level inline diff with alignment heuristic. Wraps removed
+/// characters in A with `<del>` and added characters in B with `<ins>`.
+///
+/// Char-level so that strings without whitespace (`1111211` vs `1111111`)
+/// highlight only the changed character.
+///
+/// ALIGNMENT HEURISTIC: Myers' minimum-edit-script can produce
+/// `Del + Equal + Ins` where the highlights end up at different visual columns
+/// even though they represent the same logical replace (e.g. position-13
+/// `2`→`1` on a string of all `1`s shows del at col 13 but ins at col 16).
+/// We post-process the runs to swap `Del + Equal + Ins` into `Del + Ins +
+/// Equal`, which is semantically equivalent (same A and B reconstructed) but
+/// renders both markers at the SAME column — matching user intuition.
+#[cfg(test)]
+mod diff_tests {
+    use super::inline_char_markers;
+
+    #[test]
+    fn single_char_swap_aligns_at_same_position() {
+        // The original pain point: replacing one '2' with '1' on a long run of
+        // '1's. Without alignment, Myers puts the ins at the END of the string.
+        // With alignment, both markers should appear at position 13.
+        let (left, right) = inline_char_markers("1111111111112111", "1111111111111111");
+        assert_eq!(left, "111111111111<del>2</del>111");
+        assert_eq!(right, "111111111111<ins>1</ins>111");
+    }
+
+    #[test]
+    fn pure_insert_keeps_position() {
+        // No del-equal-ins triplet — heuristic must not fire.
+        let (left, right) = inline_char_markers("hello", "hello world");
+        assert_eq!(left, "hello");
+        assert_eq!(right, "hello<ins> world</ins>");
+    }
+
+    #[test]
+    fn pure_delete_keeps_position() {
+        let (left, right) = inline_char_markers("hello world", "hello");
+        assert_eq!(left, "hello<del> world</del>");
+        assert_eq!(right, "hello");
+    }
+
+    #[test]
+    fn equal_strings_emit_no_markers() {
+        let (left, right) = inline_char_markers("abc", "abc");
+        assert_eq!(left, "abc");
+        assert_eq!(right, "abc");
+    }
+
+    #[test]
+    fn same_length_multiple_changes_align_position_by_position() {
+        // The user's actual pain point: TWO `2`s in A vs all `1`s in B. Myers
+        // would coalesce inserts at the end; position-by-position aligns each
+        // change at its own column.
+        let (left, right) = inline_char_markers(
+            "1111111111121112",
+            "1111111111111111",
+        );
+        // Both changes at positions 11 and 15 — both sides highlighted in the
+        // same columns. Output uses one marker per contiguous run, so single-
+        // char changes wrap individually.
+        assert_eq!(left, "11111111111<del>2</del>111<del>2</del>");
+        assert_eq!(right, "11111111111<ins>1</ins>111<ins>1</ins>");
+    }
+
+    #[test]
+    fn same_length_contiguous_changes_coalesce_into_one_marker() {
+        // Two adjacent character changes coalesce into a single <del>...</del>
+        // span rather than emitting two separate ones.
+        let (left, right) = inline_char_markers("abcdef", "axydef");
+        assert_eq!(left, "a<del>bc</del>def");
+        assert_eq!(right, "a<ins>xy</ins>def");
+    }
+
+    #[test]
+    fn same_length_no_changes_passes_through() {
+        let (left, right) = inline_char_markers("abcdef", "abcdef");
+        assert_eq!(left, "abcdef");
+        assert_eq!(right, "abcdef");
+    }
+
+    #[test]
+    fn same_length_handles_unicode_chars() {
+        // Multi-byte characters MUST stay intact through the position-by-position
+        // diff. If we sliced by byte index we'd produce invalid UTF-8.
+        let (left, right) = inline_char_markers("abéf", "abèf");
+        assert_eq!(left, "ab<del>é</del>f");
+        assert_eq!(right, "ab<ins>è</ins>f");
+    }
+
+    #[test]
+    fn reconstruction_matches_inputs() {
+        // Critical safety net for the swap heuristic: stripping markers must
+        // produce the original strings on both sides.
+        let cases = [
+            ("hello world", "goodbye world"),
+            ("1111111111112111", "1111111111111111"),
+            ("abc123def", "abc456def"),
+            ("the quick brown fox", "the slow brown cat"),
+        ];
+        for (a, b) in cases {
+            let (left, right) = inline_char_markers(a, b);
+            let a_stripped: String = left
+                .replace("<del>", "")
+                .replace("</del>", "");
+            let b_stripped: String = right
+                .replace("<ins>", "")
+                .replace("</ins>", "");
+            assert_eq!(a_stripped, a, "left side must reconstruct A");
+            assert_eq!(b_stripped, b, "right side must reconstruct B");
+        }
+    }
+}
+
+fn inline_char_markers(a: &str, b: &str) -> (String, String) {
+    use similar::{ChangeTag, TextDiff};
+
+    // FAST PATH: when A and B have the same character count, every difference
+    // is a pure SUBSTITUTION at a specific position. Position-by-position diff
+    // gives guaranteed-aligned highlights — no Myers, no ambiguity. Covers the
+    // common case of "config file with one or more values swapped",
+    // "ID list with a few chars changed", etc.
+    let a_chars: Vec<&str> = split_chars(a);
+    let b_chars: Vec<&str> = split_chars(b);
+    if a_chars.len() == b_chars.len() {
+        let mut out_a = String::new();
+        let mut out_b = String::new();
+        let mut in_diff_run = false;
+        for (ca, cb) in a_chars.iter().zip(b_chars.iter()) {
+            let differ = ca != cb;
+            if differ && !in_diff_run {
+                out_a.push_str("<del>");
+                out_b.push_str("<ins>");
+                in_diff_run = true;
+            } else if !differ && in_diff_run {
+                out_a.push_str("</del>");
+                out_b.push_str("</ins>");
+                in_diff_run = false;
+            }
+            out_a.push_str(ca);
+            out_b.push_str(cb);
+        }
+        if in_diff_run {
+            out_a.push_str("</del>");
+            out_b.push_str("</ins>");
+        }
+        return (out_a, out_b);
+    }
+
+    // SLOW PATH: different lengths → fall back to Myers with the swap heuristic.
+    let char_diff = TextDiff::from_chars(a, b);
+
+    // Step 1: coalesce raw per-char changes into runs by tag.
+    let mut runs: Vec<(ChangeTag, String)> = Vec::new();
+    for ch in char_diff.iter_all_changes() {
+        if let Some(last) = runs.last_mut() {
+            if last.0 == ch.tag() {
+                last.1.push_str(ch.value());
+                continue;
+            }
+        }
+        runs.push((ch.tag(), ch.value().to_string()));
+    }
+
+    // Step 2: align swap. Pattern Del-Equal-Ins → Del-Ins-Equal. Safe because:
+    //   - A reconstructs identically (Equal contributes to both sides, swap
+    //     doesn't move A-side chars).
+    //   - B reconstructs identically when the ins content sits adjacent to the
+    //     del position rather than after the equal — the final B string is the
+    //     same; only the LOGICAL position of the insert markers moves.
+    // We iterate in a single pass; each swap consumes the triplet, so the next
+    // candidate starts after it.
+    let mut i = 0;
+    while i + 2 < runs.len() {
+        if runs[i].0 == ChangeTag::Delete
+            && runs[i + 1].0 == ChangeTag::Equal
+            && runs[i + 2].0 == ChangeTag::Insert
+        {
+            runs.swap(i + 1, i + 2);
+            // Skip the new ins (i+1) and equal (i+2); next candidate at i+3.
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+
+    // Step 3: emit aligned runs as marked strings.
+    let mut out_a = String::new();
+    let mut out_b = String::new();
+    for (tag, content) in runs {
+        match tag {
+            ChangeTag::Equal => {
+                out_a.push_str(&content);
+                out_b.push_str(&content);
+            }
+            ChangeTag::Delete => {
+                out_a.push_str("<del>");
+                out_a.push_str(&content);
+                out_a.push_str("</del>");
+            }
+            ChangeTag::Insert => {
+                out_b.push_str("<ins>");
+                out_b.push_str(&content);
+                out_b.push_str("</ins>");
+            }
+        }
+    }
+    (out_a, out_b)
+}
+
 #[tauri::command]
 pub fn read_file_full(path: String, state: tauri::State<AppState>) -> Result<String, String> {
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;

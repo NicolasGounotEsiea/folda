@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search, Settings, Columns2, BarChart2, Sparkles, StickyNote } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
+import { useViewerFindStore } from "../store/useViewerFindStore";
 import type { ListEntry, SearchHit } from "../types";
 import { clsx } from "clsx";
 import { useTranslation } from "../utils/i18n";
@@ -72,7 +73,16 @@ export function Toolbar({
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "f") {
         e.preventDefault();
-        searchRef.current?.focus();
+        // If a viewer registered a find handler (text editor, spreadsheet,
+        // future PDF/DOCX), defer to it — Ctrl+F should mean "find in this
+        // document" first, not "focus the global search bar". Falls back to
+        // the global bar when no viewer is mounted or it doesn't support find.
+        const viewerFind = useViewerFindStore.getState().handler;
+        if (viewerFind) {
+          viewerFind();
+        } else {
+          searchRef.current?.focus();
+        }
       }
     };
     window.addEventListener("keydown", handler);

@@ -2,6 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
 import { ArrowDown, ArrowUp, ArrowUpDown, Filter, History, ListFilter, Save, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useViewerFindStore } from "../store/useViewerFindStore";
 import * as XLSX from "xlsx";
 import { useStore } from "../store/useStore";
 import { useTranslation } from "../utils/i18n";
@@ -77,11 +78,37 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [filter, setFilter] = useState("");
   const [showFilter, setShowFilter] = useState(false);
+  // Edit-mode Find: scroll-to-match instead of filter (which would drop edited
+  // rows from the DOM and lose their changes). `findHit` is the current row idx;
+  // null means no result yet for the current query. `findEditQuery` is the input.
+  const [showFindEdit, setShowFindEdit] = useState(false);
+  const [findEditQuery, setFindEditQuery] = useState("");
+  const [findHit, setFindHit] = useState<number | null>(null);
   // Per-column filters: keyed by column index, value is the substring to match.
   // Multiple column filters are AND'd; the global filter (above) is also AND'd.
   // Empty / whitespace-only entries are ignored.
   const [columnFilters, setColumnFilters] = useState<Record<number, string>>({});
   const [showColumnFilters, setShowColumnFilters] = useState(false);
+
+  // Ctrl+F → route to the right find UI for the current mode.
+  // View mode: open the global filter (current behavior, hides non-matching rows).
+  // Edit mode: open the find-in-edit overlay which scrolls to matches WITHOUT
+  //   hiding rows — critical because edit mode reads contentEditable values
+  //   from the DOM, and a hidden row's edits would be lost on save.
+  // The ref+inline-check pattern lets the handler read the latest editMode
+  // without re-registering on every mode toggle.
+  const editModeRef = useRef(editMode);
+  editModeRef.current = editMode;
+  useEffect(() => {
+    useViewerFindStore.getState().setHandler(() => {
+      if (editModeRef.current) {
+        setShowFindEdit(true);
+      } else {
+        setShowFilter(true);
+      }
+    });
+    return () => useViewerFindStore.getState().setHandler(null);
+  }, []);
 
   // Reset view controls when switching sheet
   useEffect(() => {
@@ -257,6 +284,41 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
 
   const numRows = bodyRows.length;
 
+  // Find-in-edit: search forward from `from` for a row whose any cell matches
+  // `query` (case-insensitive substring). Returns the index in bodyRows or null.
+  // Wraps to the start if nothing past `from`. Direction=-1 searches backward.
+  const findNextEdit = (query: string, from: number, direction: 1 | -1 = 1): number | null => {
+    const q = query.trim().toLowerCase();
+    if (!q) return null;
+    const n = bodyRows.length;
+    if (n === 0) return null;
+    for (let step = 1; step <= n; step++) {
+      const i = ((from + step * direction) % n + n) % n;
+      const matched = bodyRows[i].row.some((c) => c != null && String(c).toLowerCase().includes(q));
+      if (matched) return i;
+    }
+    return null;
+  };
+
+  // Scroll the row at `idx` (in bodyRows) into view. Edit mode renders all rows
+  // so a simple scrollTop = idx * ROW_HEIGHT works — no virtualization offset to
+  // account for.
+  const scrollToRow = (idx: number) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const target = idx * ROW_HEIGHT;
+    // Centre the row in the viewport when possible.
+    const offset = Math.max(0, target - el.clientHeight / 2 + ROW_HEIGHT / 2);
+    el.scrollTo({ top: offset, behavior: "smooth" });
+  };
+
+  const handleFindEditNext = (direction: 1 | -1 = 1) => {
+    const from = findHit ?? -1;
+    const next = findNextEdit(findEditQuery, from, direction);
+    setFindHit(next);
+    if (next !== null) scrollToRow(next);
+  };
+
   // Virtual window (disabled in edit mode — need all rows in DOM to collect values)
   const startIdx = editMode ? 0 : Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
   const endIdx = editMode ? numRows : Math.min(numRows, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN);
@@ -272,7 +334,7 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
 
   return (
     <div className="flex-1 flex overflow-hidden min-h-0">
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
       {/* Tab bar + controls */}
       <div className="flex items-center gap-1 px-2 py-1 bg-surface-2 border-b border-border-subtle shrink-0 overflow-x-auto">
         {sheets.length > 1 && sheets.map((s, i) => (
@@ -290,7 +352,11 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
 
         <div className="flex-1" />
 
-        {/* View controls — hidden while editing because they don't apply */}
+        {/* View controls — hidden while editing because they don't apply.
+            Filter would hide rows that the user might still want to edit, and
+            the edit-mode save logic reads contentEditable values from the DOM
+            — hidden rows would lose their edits. Edit mode gets its own
+            scroll-to-match Find overlay instead (see FindInEditOverlay below). */}
         {!editMode && !loading && !error && sheet && (
           <>
             <button
@@ -304,7 +370,7 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
               <ListFilter size={11} /> {t.sheetHeader}
             </button>
 
-            {/* Filter — collapsed by default; click to open the input */}
+            {/* Global filter — collapsed by default; click or Ctrl+F to open */}
             {showFilter ? (
               <div className="flex items-center gap-1 h-6 px-1.5 rounded bg-surface-3 border border-border shrink-0">
                 <Filter size={11} className="text-text-muted" />
@@ -413,6 +479,64 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
         </button>
       </div>
 
+      {/* Find-in-edit overlay — floats over the top-right of the editor area.
+          Distinct from the global filter: it scrolls to matching cells without
+          hiding rows, so DOM-based edit collection stays intact on save. */}
+      {showFindEdit && editMode && (
+        <div className="absolute right-4 top-12 z-20 flex items-center gap-1 h-7 px-2 rounded bg-surface-2 border border-border shadow-lg">
+          <input
+            autoFocus
+            type="text"
+            value={findEditQuery}
+            onChange={(e) => {
+              setFindEditQuery(e.target.value);
+              setFindHit(null); // reset hit so next press starts fresh
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleFindEditNext(e.shiftKey ? -1 : 1);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setShowFindEdit(false);
+                setFindEditQuery("");
+                setFindHit(null);
+              }
+            }}
+            placeholder={t.sheetFindEditPlaceholder}
+            className="bg-transparent text-[11px] text-text-primary placeholder-text-muted outline-none w-40"
+          />
+          {findEditQuery && (
+            <span className="text-[10px] text-text-muted shrink-0">
+              {findHit !== null ? `${findHit + 1}/${bodyRows.length}` : "—"}
+            </span>
+          )}
+          <button
+            onClick={() => handleFindEditNext(-1)}
+            disabled={!findEditQuery}
+            title={t.sheetFindPrev}
+            className="text-text-muted hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            ↑
+          </button>
+          <button
+            onClick={() => handleFindEditNext(1)}
+            disabled={!findEditQuery}
+            title={t.sheetFindNext}
+            className="text-text-muted hover:text-text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            ↓
+          </button>
+          <button
+            onClick={() => { setShowFindEdit(false); setFindEditQuery(""); setFindHit(null); }}
+            className="text-text-muted hover:text-text-primary ml-1"
+            title={t.sheetCloseFilter}
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
+
       {/* Loading / error */}
       {loading && (
         <div className="flex-1 flex items-center justify-center text-text-muted text-[12px] animate-pulse">
@@ -519,8 +643,17 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
 
                 {bodyRows.slice(startIdx, endIdx).map((entry) => {
                   const { idx: ri, row } = entry;
+                  // In edit mode, the find overlay highlights the current
+                  // match. Comparison is against the bodyRows position. We
+                  // peek through bodyRows to find which array index this is.
+                  const isFindHit = editMode && findHit !== null
+                    && bodyRows[findHit]?.idx === ri;
                   return (
-                    <tr key={ri} className="hover:bg-accent/5" style={{ height: ROW_HEIGHT }}>
+                    <tr
+                      key={ri}
+                      className={clsx("hover:bg-accent/5", isFindHit && "bg-amber-400/20")}
+                      style={{ height: ROW_HEIGHT }}
+                    >
                       <td className="spreadsheet-row-num">{ri + 1}</td>
                       {Array.from({ length: numCols }, (_, ci) => (
                         <td

@@ -142,6 +142,9 @@ type AppStrings = {
   sheetFilterPlaceholder: string; // "Filter…" / "Filtrer…"
   sheetClearFilter: string;     // tooltip "Clear" / "Effacer"
   sheetCloseFilter: string;     // tooltip "Close" / "Fermer"
+  sheetFindEditPlaceholder: string; // input placeholder for find-in-edit
+  sheetFindPrev: string;        // tooltip "Previous match"
+  sheetFindNext: string;        // tooltip "Next match"
   sheetSortActive: string;      // pill "Sort on" / "Tri actif"
   sheetSortClear: string;       // tooltip "Clear sort" / "Annuler le tri"
   sheetSortClick: string;       // tooltip "Click to sort" / "Cliquer pour trier"
@@ -324,6 +327,11 @@ type AppStrings = {
   commandPaletteContentBadgeTitle: string;  // hover tooltip explaining the badge
 
   previewExtractedText: string;             // "Extracted text" header in PreviewPanel
+
+  // ── Compare files (Notepad++ Compare-style) ───────────────────────────────
+  diffCompareFiles: string;                 // context menu entry
+  diffComparing: string;                    // loading state in the modal
+  diffIdentical: string;                    // "Files are identical"
 };
 
 const translations: Record<string, AppStrings> = {
@@ -456,6 +464,9 @@ const translations: Record<string, AppStrings> = {
     sheetFilterPlaceholder: "Filter…",
     sheetClearFilter: "Clear",
     sheetCloseFilter: "Close",
+    sheetFindEditPlaceholder: "Find in cells…",
+    sheetFindPrev: "Previous match (Shift+Enter)",
+    sheetFindNext: "Next match (Enter)",
     sheetSortActive: "Sort on",
     sheetSortClear: "Clear sort",
     sheetSortClick: "Click to sort",
@@ -631,6 +642,10 @@ const translations: Record<string, AppStrings> = {
     commandPaletteContentBadgeTitle: "This result matched on indexed file content, not its name",
 
     previewExtractedText: "Extracted text",
+
+    diffCompareFiles: "Compare files",
+    diffComparing: "Computing diff…",
+    diffIdentical: "Files are identical",
   },
 
   fr: {
@@ -762,6 +777,9 @@ const translations: Record<string, AppStrings> = {
     sheetFilterPlaceholder: "Filtrer…",
     sheetClearFilter: "Effacer",
     sheetCloseFilter: "Fermer",
+    sheetFindEditPlaceholder: "Rechercher dans les cellules…",
+    sheetFindPrev: "Précédent (Maj+Entrée)",
+    sheetFindNext: "Suivant (Entrée)",
     sheetSortActive: "Tri actif",
     sheetSortClear: "Annuler le tri",
     sheetSortClick: "Cliquer pour trier",
@@ -937,6 +955,10 @@ const translations: Record<string, AppStrings> = {
     commandPaletteContentBadgeTitle: "Ce résultat correspond au contenu indexé du fichier, pas à son nom",
 
     previewExtractedText: "Texte extrait",
+
+    diffCompareFiles: "Comparer les fichiers",
+    diffComparing: "Calcul du diff…",
+    diffIdentical: "Les fichiers sont identiques",
   },
 };
 
