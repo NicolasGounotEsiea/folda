@@ -813,17 +813,20 @@ fn log_activity(db: &rusqlite::Connection, file_path: &str, file_name: &str, act
 /// the WHOLE thing show as changed. Character-level fixes this at the cost of
 /// noisier output on natural language — acceptable trade because a file diff
 /// reader expects precision over readability.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DiffRow {
     /// "equal" | "delete" | "insert" | "modify"
     pub kind: String,
     pub left_no: Option<usize>,
     pub right_no: Option<usize>,
     /// Left-side content (old file). Empty when kind=="insert". For "modify",
-    /// contains `<del>...</del>` markers around the removed character spans.
+    /// contains Private-Use-Area markers around removed character spans (open
+    /// U+E000, close U+E001) — the frontend strips/styles them. We don't use
+    /// HTML-shaped tags because the file content itself might contain them.
     pub left: String,
     /// Right-side content (new file). Empty when kind=="delete". For "modify",
-    /// contains `<ins>...</ins>` markers around the added character spans.
+    /// contains Private-Use-Area markers around added character spans (open
+    /// U+E002, close U+E003).
     pub right: String,
 }
 
@@ -838,11 +841,14 @@ pub struct DiffHunk {
 pub struct DiffResult {
     pub identical: bool,
     pub hunks: Vec<DiffHunk>,
+    /// Total line count of file A (normalized to LF). Used by the frontend
+    /// "Expand context" feature to know when the trailing gap is exhausted
+    /// (i.e. we've revealed every line after the last hunk).
+    pub total_lines: usize,
 }
 
 #[tauri::command]
 pub fn diff_files(path_a: String, path_b: String) -> Result<DiffResult, String> {
-    use similar::{ChangeTag, TextDiff};
     const MAX_BYTES: u64 = 20 * 1024 * 1024;
 
     let meta_a = std::fs::metadata(&path_a).map_err(|e| format!("Cannot stat {}: {}", path_a, e))?;
@@ -856,11 +862,76 @@ pub fn diff_files(path_a: String, path_b: String) -> Result<DiffResult, String> 
     let text_b = std::fs::read_to_string(&path_b)
         .map_err(|e| format!("Cannot read {} as text (binary file?): {}", path_b, e))?;
 
+    // Normalize line endings to LF before diffing. `similar::TextDiff::from_lines`
+    // compares lines as raw strings, so a file with CRLF and a file with LF
+    // produce ZERO equal lines — every line differs by `\r`. The diff then
+    // collapses into one giant Delete-all + Insert-all hunk with no visible
+    // structure, and the frontend sees the whole document as a single change
+    // group. Same as Git's `core.autocrlf` and VSCode's diff editor: treat
+    // EOL differences as not-a-diff for content comparison purposes. We
+    // strip CR after LF (`\r\n` → `\n`) AND lone CR (`\r` → `\n`) so legacy
+    // Mac CR-only files also normalize cleanly.
+    let text_a = text_a.replace("\r\n", "\n").replace('\r', "\n");
+    let text_b = text_b.replace("\r\n", "\n").replace('\r', "\n");
+
+    let lines_a: Vec<&str> = text_a.lines().collect();
+    let lines_b: Vec<&str> = text_b.lines().collect();
+    // total_lines reports A's count — the frontend uses pathA for context
+    // expansion, so this is the bound that matters.
+    let total_lines = lines_a.len();
+
     if text_a == text_b {
-        return Ok(DiffResult { identical: true, hunks: Vec::new() });
+        return Ok(DiffResult { identical: true, hunks: Vec::new(), total_lines });
     }
 
-    let line_diff = TextDiff::from_lines(&text_a, &text_b);
+    // For files with the same line count, line-by-line alignment is usually
+    // what the user wants (config edited in place, single-char fixes, etc.).
+    // But "same length" alone is fragile: a refactor that adds 5 lines AND
+    // removes 5 lines also produces equal totals, and a naive line-by-line
+    // diff there would paint dozens of contiguous lines as "modified" even
+    // though the structural edit script is just 5 inserts + 5 deletes.
+    //
+    // Cheapest robust answer: when lengths match, run BOTH algorithms and
+    // pick whichever produced fewer change rows. Line-by-line wins on the
+    // "edit in place" case (its output is just N modify rows, matching the
+    // user's mental model). similar wins on "balanced restructuring" (it
+    // finds the actual structural changes instead of mass-modify noise).
+    // Both passes are O(file size) in practice and the larger file we
+    // accept is capped at 20 MB.
+    if lines_a.len() == lines_b.len() {
+        let line_by_line = diff_equal_length(&lines_a, &lines_b);
+        let via_similar = diff_via_similar(&text_a, &text_b);
+        let pick = if count_change_rows(&line_by_line) <= count_change_rows(&via_similar) {
+            line_by_line
+        } else {
+            via_similar
+        };
+        return Ok(DiffResult { identical: false, hunks: pick, total_lines });
+    }
+
+    Ok(DiffResult {
+        identical: false,
+        hunks: diff_via_similar(&text_a, &text_b),
+        total_lines,
+    })
+}
+
+/// Total number of non-equal rows across a hunk list — the metric we use to
+/// pick the "cleaner" algorithm in the equal-length case. Fewer change rows
+/// = closer to the user's mental model of what changed.
+fn count_change_rows(hunks: &[DiffHunk]) -> usize {
+    hunks.iter()
+        .flat_map(|h| h.rows.iter())
+        .filter(|r| r.kind != "equal")
+        .count()
+}
+
+/// Build hunks via `similar`'s line-level Myers diff. Pulled out of
+/// `diff_files` so the equal-length path can race it against the naive
+/// line-by-line algorithm and pick whichever produced fewer change rows.
+fn diff_via_similar(text_a: &str, text_b: &str) -> Vec<DiffHunk> {
+    use similar::{ChangeTag, TextDiff};
+    let line_diff = TextDiff::from_lines(text_a, text_b);
 
     let mut hunks: Vec<DiffHunk> = Vec::new();
     for hunk in line_diff.unified_diff().context_radius(3).iter_hunks() {
@@ -964,8 +1035,90 @@ pub fn diff_files(path_a: String, path_b: String) -> Result<DiffResult, String> 
             rows,
         });
     }
+    hunks
+}
 
-    Ok(DiffResult { identical: false, hunks })
+/// Direct line-by-line diff for files of equal line count.
+///
+/// Walks both arrays in parallel. Every line index `i` produces exactly one
+/// row, displayed with matching left/right line numbers `i+1`. Equal pairs
+/// become `equal` rows; differing pairs become `modify` rows with inline
+/// char-level markers. The result is then sliced into hunks: contiguous
+/// runs of `equal` rows that exceed `2*CONTEXT_RADIUS+1` are collapsed —
+/// each surviving change gets `CONTEXT_RADIUS` equal lines before and
+/// after, and adjacent changes share their context.
+///
+/// Hunks are emitted with `old_start == new_start` because by construction
+/// the lines are paired 1:1.
+fn diff_equal_length(lines_a: &[&str], lines_b: &[&str]) -> Vec<DiffHunk> {
+    const CONTEXT_RADIUS: usize = 3;
+    assert_eq!(lines_a.len(), lines_b.len(), "caller must enforce equal length");
+
+    // Find every index where the lines differ. If none, the files would
+    // have been caught by the `text_a == text_b` shortcut above, so we
+    // assume there's at least one.
+    let changed: Vec<usize> = (0..lines_a.len())
+        .filter(|&i| lines_a[i] != lines_b[i])
+        .collect();
+    if changed.is_empty() {
+        return Vec::new();
+    }
+
+    // Group changes into hunks. Two changes share a hunk when they're close
+    // enough that their context windows overlap (or touch). The threshold
+    // `2*CONTEXT_RADIUS + 1` means: between two changes at indices p and q
+    // (p < q), if there are `q - p - 1` equal lines between them and that
+    // gap fits within `2*CONTEXT_RADIUS`, the trailing context of p and
+    // the leading context of q touch — merge into one hunk.
+    let merge_gap = 2 * CONTEXT_RADIUS;
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut current: Vec<usize> = vec![changed[0]];
+    for &pos in changed.iter().skip(1) {
+        let prev = *current.last().unwrap();
+        if pos - prev <= merge_gap + 1 {
+            current.push(pos);
+        } else {
+            groups.push(std::mem::take(&mut current));
+            current.push(pos);
+        }
+    }
+    groups.push(current);
+
+    let mut hunks: Vec<DiffHunk> = Vec::with_capacity(groups.len());
+    for group in &groups {
+        let first = *group.first().unwrap();
+        let last = *group.last().unwrap();
+        let start = first.saturating_sub(CONTEXT_RADIUS);
+        let end = (last + CONTEXT_RADIUS + 1).min(lines_a.len());
+
+        let mut rows: Vec<DiffRow> = Vec::with_capacity(end - start);
+        for i in start..end {
+            if lines_a[i] == lines_b[i] {
+                rows.push(DiffRow {
+                    kind: "equal".into(),
+                    left_no: Some(i + 1),
+                    right_no: Some(i + 1),
+                    left: lines_a[i].to_string(),
+                    right: lines_b[i].to_string(),
+                });
+            } else {
+                let (left_marked, right_marked) = inline_char_markers(lines_a[i], lines_b[i]);
+                rows.push(DiffRow {
+                    kind: "modify".into(),
+                    left_no: Some(i + 1),
+                    right_no: Some(i + 1),
+                    left: left_marked,
+                    right: right_marked,
+                });
+            }
+        }
+        hunks.push(DiffHunk {
+            old_start: start + 1,
+            new_start: start + 1,
+            rows,
+        });
+    }
+    hunks
 }
 
 /// Split a string into individual grapheme-like &str slices preserving multi-byte
@@ -1003,30 +1156,31 @@ fn strip_trailing_newline(s: &str) -> String {
 /// renders both markers at the SAME column — matching user intuition.
 #[cfg(test)]
 mod diff_tests {
-    use super::inline_char_markers;
+    use super::{inline_char_markers, MARK_DEL_CLOSE, MARK_DEL_OPEN, MARK_INS_CLOSE, MARK_INS_OPEN};
+
+    // Helper: wrap a literal into the del/ins markers without bloating
+    // every assertion with `\u{E000}`-style escapes.
+    fn d(s: &str) -> String { format!("{}{}{}", MARK_DEL_OPEN, s, MARK_DEL_CLOSE) }
+    fn i(s: &str) -> String { format!("{}{}{}", MARK_INS_OPEN, s, MARK_INS_CLOSE) }
 
     #[test]
     fn single_char_swap_aligns_at_same_position() {
-        // The original pain point: replacing one '2' with '1' on a long run of
-        // '1's. Without alignment, Myers puts the ins at the END of the string.
-        // With alignment, both markers should appear at position 13.
         let (left, right) = inline_char_markers("1111111111112111", "1111111111111111");
-        assert_eq!(left, "111111111111<del>2</del>111");
-        assert_eq!(right, "111111111111<ins>1</ins>111");
+        assert_eq!(left, format!("111111111111{}111", d("2")));
+        assert_eq!(right, format!("111111111111{}111", i("1")));
     }
 
     #[test]
     fn pure_insert_keeps_position() {
-        // No del-equal-ins triplet — heuristic must not fire.
         let (left, right) = inline_char_markers("hello", "hello world");
         assert_eq!(left, "hello");
-        assert_eq!(right, "hello<ins> world</ins>");
+        assert_eq!(right, format!("hello{}", i(" world")));
     }
 
     #[test]
     fn pure_delete_keeps_position() {
         let (left, right) = inline_char_markers("hello world", "hello");
-        assert_eq!(left, "hello<del> world</del>");
+        assert_eq!(left, format!("hello{}", d(" world")));
         assert_eq!(right, "hello");
     }
 
@@ -1039,27 +1193,16 @@ mod diff_tests {
 
     #[test]
     fn same_length_multiple_changes_align_position_by_position() {
-        // The user's actual pain point: TWO `2`s in A vs all `1`s in B. Myers
-        // would coalesce inserts at the end; position-by-position aligns each
-        // change at its own column.
-        let (left, right) = inline_char_markers(
-            "1111111111121112",
-            "1111111111111111",
-        );
-        // Both changes at positions 11 and 15 — both sides highlighted in the
-        // same columns. Output uses one marker per contiguous run, so single-
-        // char changes wrap individually.
-        assert_eq!(left, "11111111111<del>2</del>111<del>2</del>");
-        assert_eq!(right, "11111111111<ins>1</ins>111<ins>1</ins>");
+        let (left, right) = inline_char_markers("1111111111121112", "1111111111111111");
+        assert_eq!(left, format!("11111111111{}111{}", d("2"), d("2")));
+        assert_eq!(right, format!("11111111111{}111{}", i("1"), i("1")));
     }
 
     #[test]
     fn same_length_contiguous_changes_coalesce_into_one_marker() {
-        // Two adjacent character changes coalesce into a single <del>...</del>
-        // span rather than emitting two separate ones.
         let (left, right) = inline_char_markers("abcdef", "axydef");
-        assert_eq!(left, "a<del>bc</del>def");
-        assert_eq!(right, "a<ins>xy</ins>def");
+        assert_eq!(left, format!("a{}def", d("bc")));
+        assert_eq!(right, format!("a{}def", i("xy")));
     }
 
     #[test]
@@ -1071,36 +1214,57 @@ mod diff_tests {
 
     #[test]
     fn same_length_handles_unicode_chars() {
-        // Multi-byte characters MUST stay intact through the position-by-position
-        // diff. If we sliced by byte index we'd produce invalid UTF-8.
         let (left, right) = inline_char_markers("abéf", "abèf");
-        assert_eq!(left, "ab<del>é</del>f");
-        assert_eq!(right, "ab<ins>è</ins>f");
+        assert_eq!(left, format!("ab{}f", d("é")));
+        assert_eq!(right, format!("ab{}f", i("è")));
+    }
+
+    #[test]
+    fn html_like_content_does_not_collide_with_markers() {
+        // The exact failure case we switched to PUA chars to prevent: comparing
+        // two strings containing `<del>` as literal content should produce
+        // markers that the frontend can still distinguish from the source.
+        let (left, right) = inline_char_markers("a<del>x</del>b", "a<del>y</del>b");
+        // The single-char change is the x→y substitution. Markers wrap just
+        // that change; the literal `<del>` content stays bare and is NOT
+        // mistaken for an open tag.
+        assert_eq!(left, format!("a<del>{}</del>b", d("x")));
+        assert_eq!(right, format!("a<del>{}</del>b", i("y")));
     }
 
     #[test]
     fn reconstruction_matches_inputs() {
-        // Critical safety net for the swap heuristic: stripping markers must
-        // produce the original strings on both sides.
         let cases = [
             ("hello world", "goodbye world"),
             ("1111111111112111", "1111111111111111"),
             ("abc123def", "abc456def"),
             ("the quick brown fox", "the slow brown cat"),
+            ("a<del>x</del>b", "a<del>y</del>b"),
         ];
         for (a, b) in cases {
             let (left, right) = inline_char_markers(a, b);
             let a_stripped: String = left
-                .replace("<del>", "")
-                .replace("</del>", "");
+                .replace(MARK_DEL_OPEN, "")
+                .replace(MARK_DEL_CLOSE, "");
             let b_stripped: String = right
-                .replace("<ins>", "")
-                .replace("</ins>", "");
+                .replace(MARK_INS_OPEN, "")
+                .replace(MARK_INS_CLOSE, "");
             assert_eq!(a_stripped, a, "left side must reconstruct A");
             assert_eq!(b_stripped, b, "right side must reconstruct B");
         }
     }
 }
+
+// Intra-line marker delimiters. We use Private Use Area codepoints rather
+// than HTML-looking tags like `<del>` / `<ins>` so the markers can never
+// collide with literal content of a compared file — comparing two HTML or
+// XML files with `<del>` in their source would otherwise confuse the
+// frontend's regex. The frontend ships the same four constants; keep them
+// in sync (see DiffCompareModal.tsx `MARK_*`).
+const MARK_DEL_OPEN: &str = "\u{E000}";
+const MARK_DEL_CLOSE: &str = "\u{E001}";
+const MARK_INS_OPEN: &str = "\u{E002}";
+const MARK_INS_CLOSE: &str = "\u{E003}";
 
 fn inline_char_markers(a: &str, b: &str) -> (String, String) {
     use similar::{ChangeTag, TextDiff};
@@ -1119,20 +1283,20 @@ fn inline_char_markers(a: &str, b: &str) -> (String, String) {
         for (ca, cb) in a_chars.iter().zip(b_chars.iter()) {
             let differ = ca != cb;
             if differ && !in_diff_run {
-                out_a.push_str("<del>");
-                out_b.push_str("<ins>");
+                out_a.push_str(MARK_DEL_OPEN);
+                out_b.push_str(MARK_INS_OPEN);
                 in_diff_run = true;
             } else if !differ && in_diff_run {
-                out_a.push_str("</del>");
-                out_b.push_str("</ins>");
+                out_a.push_str(MARK_DEL_CLOSE);
+                out_b.push_str(MARK_INS_CLOSE);
                 in_diff_run = false;
             }
             out_a.push_str(ca);
             out_b.push_str(cb);
         }
         if in_diff_run {
-            out_a.push_str("</del>");
-            out_b.push_str("</ins>");
+            out_a.push_str(MARK_DEL_CLOSE);
+            out_b.push_str(MARK_INS_CLOSE);
         }
         return (out_a, out_b);
     }
@@ -1184,18 +1348,47 @@ fn inline_char_markers(a: &str, b: &str) -> (String, String) {
                 out_b.push_str(&content);
             }
             ChangeTag::Delete => {
-                out_a.push_str("<del>");
+                out_a.push_str(MARK_DEL_OPEN);
                 out_a.push_str(&content);
-                out_a.push_str("</del>");
+                out_a.push_str(MARK_DEL_CLOSE);
             }
             ChangeTag::Insert => {
-                out_b.push_str("<ins>");
+                out_b.push_str(MARK_INS_OPEN);
                 out_b.push_str(&content);
-                out_b.push_str("</ins>");
+                out_b.push_str(MARK_INS_CLOSE);
             }
         }
     }
     (out_a, out_b)
+}
+
+/// Read a line range from a text file, normalizing line endings to LF first
+/// so the indexing matches what `diff_files` exposed to the frontend. Used
+/// by the diff modal's "expand context" button to fetch additional equal
+/// rows around hunks without recomputing the whole diff.
+///
+/// `start_line` is 1-based. Empty Vec is returned for out-of-range starts
+/// or when `count == 0`. Capped at 200 lines per call to keep payloads
+/// bounded — the frontend can call repeatedly if more is needed.
+#[tauri::command]
+pub fn get_text_lines(path: String, start_line: usize, count: usize) -> Result<Vec<String>, String> {
+    const MAX_BYTES: u64 = 20 * 1024 * 1024;
+    const MAX_LINES_PER_CALL: usize = 200;
+    let meta = std::fs::metadata(&path).map_err(|e| format!("Cannot stat {}: {}", path, e))?;
+    if meta.len() > MAX_BYTES {
+        return Err(format!("File too large for line read (>{}MB)", MAX_BYTES / 1024 / 1024));
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read {} as text: {}", path, e))?;
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.lines().collect();
+    let start_idx = start_line.saturating_sub(1);
+    if start_idx >= lines.len() || count == 0 {
+        return Ok(Vec::new());
+    }
+    let take = count.min(MAX_LINES_PER_CALL);
+    let end_idx = (start_idx + take).min(lines.len());
+    Ok(lines[start_idx..end_idx].iter().map(|s| s.to_string()).collect())
 }
 
 #[tauri::command]

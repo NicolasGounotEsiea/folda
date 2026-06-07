@@ -145,6 +145,13 @@ type AppStrings = {
   sheetFindEditPlaceholder: string; // input placeholder for find-in-edit
   sheetFindPrev: string;        // tooltip "Previous match"
   sheetFindNext: string;        // tooltip "Next match"
+
+  // ── PDF in-document find ─────────────────────────────────────────────────
+  pdfFindPlaceholder: string;
+  pdfFindOpen: string;
+  pdfFindClose: string;
+  pdfFindPrev: string;
+  pdfFindNext: string;
   sheetSortActive: string;      // pill "Sort on" / "Tri actif"
   sheetSortClear: string;       // tooltip "Clear sort" / "Annuler le tri"
   sheetSortClick: string;       // tooltip "Click to sort" / "Cliquer pour trier"
@@ -332,6 +339,10 @@ type AppStrings = {
   diffCompareFiles: string;                 // context menu entry
   diffComparing: string;                    // loading state in the modal
   diffIdentical: string;                    // "Files are identical"
+  diffPrevHunk: string;                     // tooltip for previous-hunk button
+  diffNextHunk: string;                     // tooltip for next-hunk button
+  diffFirstHunk: string;                    // tooltip for first-hunk button
+  diffLastHunk: string;                     // tooltip for last-hunk button
 };
 
 const translations: Record<string, AppStrings> = {
@@ -467,6 +478,12 @@ const translations: Record<string, AppStrings> = {
     sheetFindEditPlaceholder: "Find in cells…",
     sheetFindPrev: "Previous match (Shift+Enter)",
     sheetFindNext: "Next match (Enter)",
+
+    pdfFindPlaceholder: "Find in document…",
+    pdfFindOpen: "Find (Ctrl+F)",
+    pdfFindClose: "Close find",
+    pdfFindPrev: "Previous match (Shift+Enter)",
+    pdfFindNext: "Next match (Enter)",
     sheetSortActive: "Sort on",
     sheetSortClear: "Clear sort",
     sheetSortClick: "Click to sort",
@@ -646,6 +663,10 @@ const translations: Record<string, AppStrings> = {
     diffCompareFiles: "Compare files",
     diffComparing: "Computing diff…",
     diffIdentical: "Files are identical",
+    diffPrevHunk: "Previous change (Shift+F3)",
+    diffNextHunk: "Next change (F3)",
+    diffFirstHunk: "First change (Home)",
+    diffLastHunk: "Last change (End)",
   },
 
   fr: {
@@ -780,6 +801,12 @@ const translations: Record<string, AppStrings> = {
     sheetFindEditPlaceholder: "Rechercher dans les cellules…",
     sheetFindPrev: "Précédent (Maj+Entrée)",
     sheetFindNext: "Suivant (Entrée)",
+
+    pdfFindPlaceholder: "Rechercher dans le document…",
+    pdfFindOpen: "Rechercher (Ctrl+F)",
+    pdfFindClose: "Fermer la recherche",
+    pdfFindPrev: "Précédent (Maj+Entrée)",
+    pdfFindNext: "Suivant (Entrée)",
     sheetSortActive: "Tri actif",
     sheetSortClear: "Annuler le tri",
     sheetSortClick: "Cliquer pour trier",
@@ -959,6 +986,10 @@ const translations: Record<string, AppStrings> = {
     diffCompareFiles: "Comparer les fichiers",
     diffComparing: "Calcul du diff…",
     diffIdentical: "Les fichiers sont identiques",
+    diffPrevHunk: "Changement précédent (Maj+F3)",
+    diffNextHunk: "Changement suivant (F3)",
+    diffFirstHunk: "Premier changement (Début)",
+    diffLastHunk: "Dernier changement (Fin)",
   },
 };
 
