@@ -395,20 +395,20 @@ export function DiffCompareModal({
     };
   };
 
-  const trailingGapInfo = (): { remaining: number; nextStartA: number; nextStartB: number } | null => {
-    if (!result || result.hunks.length === 0) return null;
-    const last = result.hunks[result.hunks.length - 1];
-    const lastRow = last.rows[last.rows.length - 1];
-    const baseStartA = (lastRow.left_no ?? lastRow.right_no ?? 0) + 1;
-    const baseStartB = (lastRow.right_no ?? lastRow.left_no ?? 0) + 1;
-    const consumed = expandedTrailing.length;
-    const remaining = Math.max(0, result.total_lines - (baseStartA + consumed) + 1);
-    return {
-      remaining,
-      nextStartA: baseStartA + consumed,
-      nextStartB: baseStartB + consumed,
-    };
-  };
+  // const trailingGapInfo = (): { remaining: number; nextStartA: number; nextStartB: number } | null => {
+  //   if (!result || result.hunks.length === 0) return null;
+  //   const last = result.hunks[result.hunks.length - 1];
+  //   const lastRow = last.rows[last.rows.length - 1];
+  //   const baseStartA = (lastRow.left_no ?? lastRow.right_no ?? 0) + 1;
+  //   const baseStartB = (lastRow.right_no ?? lastRow.left_no ?? 0) + 1;
+  //   const consumed = expandedTrailing.length;
+  //   const remaining = Math.max(0, result.total_lines - (baseStartA + consumed) + 1);
+  //   return {
+  //     remaining,
+  //     nextStartA: baseStartA + consumed,
+  //     nextStartB: baseStartB + consumed,
+  //   };
+  // };
 
   // Shared fetch loop with batching against the backend's 200-line cap. The
   // caller supplies a place-anchor `apply` that knows how to merge the new
