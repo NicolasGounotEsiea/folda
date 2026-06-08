@@ -466,14 +466,14 @@ export function DiffCompareModal({
     });
   };
 
-  const expandTrailing = async (requestedCount: number) => {
-    const info = trailingGapInfo();
-    if (!info || info.remaining === 0) return;
-    const wanted = Math.min(requestedCount, info.remaining);
-    await fetchLines(info.nextStartA, info.nextStartB, wanted, (additions) => {
-      setExpandedTrailing((prev) => [...prev, ...additions]);
-    });
-  };
+  // const expandTrailing = async (requestedCount: number) => {
+  //   const info = trailingGapInfo();
+  //   if (!info || info.remaining === 0) return;
+  //   const wanted = Math.min(requestedCount, info.remaining);
+  //   await fetchLines(info.nextStartA, info.nextStartB, wanted, (additions) => {
+  //     setExpandedTrailing((prev) => [...prev, ...additions]);
+  //   });
+  // };
 
   const collapseLeading = () => setExpandedLeading([]);
   const collapseBetween = (hi: number) => setExpandedBetween((prev) => {
@@ -481,7 +481,7 @@ export function DiffCompareModal({
     delete next[hi];
     return next;
   });
-  const collapseTrailing = () => setExpandedTrailing([]);
+  // const collapseTrailing = () => setExpandedTrailing([]);
 
   // Walk every (hi, ri) once and build:
   // - `rowDiffIdx`: which diff GROUP this row belongs to. Equal rows absent.
