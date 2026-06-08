@@ -333,7 +333,7 @@ export function DiffCompareModal({
   type ExpandedRowData = { leftLineNo: number; rightLineNo: number; content: string };
   const [expandedLeading, setExpandedLeading] = useState<ExpandedRowData[]>([]);
   const [expandedBetween, setExpandedBetween] = useState<Record<number, ExpandedRowData[]>>({});
-  const [expandedTrailing, setExpandedTrailing] = useState<ExpandedRowData[]>([]);
+  // const [expandedTrailing, setExpandedTrailing] = useState<ExpandedRowData[]>([]);
   const ref = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -344,7 +344,7 @@ export function DiffCompareModal({
     setActiveDiffIdx(0);
     setExpandedLeading([]);
     setExpandedBetween({});
-    setExpandedTrailing([]);
+    // setExpandedTrailing([]);
     invoke<DiffResult>("diff_files", { pathA, pathB })
       .then(setResult)
       .catch((e) => setError(String(e)))
@@ -395,20 +395,20 @@ export function DiffCompareModal({
     };
   };
 
-  const trailingGapInfo = (): { remaining: number; nextStartA: number; nextStartB: number } | null => {
-    if (!result || result.hunks.length === 0) return null;
-    const last = result.hunks[result.hunks.length - 1];
-    const lastRow = last.rows[last.rows.length - 1];
-    const baseStartA = (lastRow.left_no ?? lastRow.right_no ?? 0) + 1;
-    const baseStartB = (lastRow.right_no ?? lastRow.left_no ?? 0) + 1;
-    const consumed = expandedTrailing.length;
-    const remaining = Math.max(0, result.total_lines - (baseStartA + consumed) + 1);
-    return {
-      remaining,
-      nextStartA: baseStartA + consumed,
-      nextStartB: baseStartB + consumed,
-    };
-  };
+  // const trailingGapInfo = (): { remaining: number; nextStartA: number; nextStartB: number } | null => {
+  //   if (!result || result.hunks.length === 0) return null;
+  //   const last = result.hunks[result.hunks.length - 1];
+  //   const lastRow = last.rows[last.rows.length - 1];
+  //   const baseStartA = (lastRow.left_no ?? lastRow.right_no ?? 0) + 1;
+  //   const baseStartB = (lastRow.right_no ?? lastRow.left_no ?? 0) + 1;
+  //   const consumed = expandedTrailing.length;
+  //   const remaining = Math.max(0, result.total_lines - (baseStartA + consumed) + 1);
+  //   return {
+  //     remaining,
+  //     nextStartA: baseStartA + consumed,
+  //     nextStartB: baseStartB + consumed,
+  //   };
+  // };
 
   // Shared fetch loop with batching against the backend's 200-line cap. The
   // caller supplies a place-anchor `apply` that knows how to merge the new
@@ -466,14 +466,14 @@ export function DiffCompareModal({
     });
   };
 
-  const expandTrailing = async (requestedCount: number) => {
-    const info = trailingGapInfo();
-    if (!info || info.remaining === 0) return;
-    const wanted = Math.min(requestedCount, info.remaining);
-    await fetchLines(info.nextStartA, info.nextStartB, wanted, (additions) => {
-      setExpandedTrailing((prev) => [...prev, ...additions]);
-    });
-  };
+  // const expandTrailing = async (requestedCount: number) => {
+  //   const info = trailingGapInfo();
+  //   if (!info || info.remaining === 0) return;
+  //   const wanted = Math.min(requestedCount, info.remaining);
+  //   await fetchLines(info.nextStartA, info.nextStartB, wanted, (additions) => {
+  //     setExpandedTrailing((prev) => [...prev, ...additions]);
+  //   });
+  // };
 
   const collapseLeading = () => setExpandedLeading([]);
   const collapseBetween = (hi: number) => setExpandedBetween((prev) => {
@@ -481,7 +481,7 @@ export function DiffCompareModal({
     delete next[hi];
     return next;
   });
-  const collapseTrailing = () => setExpandedTrailing([]);
+  // const collapseTrailing = () => setExpandedTrailing([]);
 
   // Walk every (hi, ri) once and build:
   // - `rowDiffIdx`: which diff GROUP this row belongs to. Equal rows absent.

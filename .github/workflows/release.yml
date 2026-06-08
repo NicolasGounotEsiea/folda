@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name (e.g., v0.1.10)'
+        required: true
+        type: string
 
 jobs:
   release:
@@ -14,6 +20,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
 
       - uses: actions/setup-node@v4
         with:
@@ -45,11 +53,11 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Contextual Workspace ${{ github.ref_name }}
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          name: Contextual Workspace ${{ inputs.tag_name || github.ref_name }}
           body_path: CHANGELOG.md
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(inputs.tag_name || github.ref_name, '-') }}
           files: |
             ${{ steps.artifacts.outputs.MSI }}
             ${{ steps.artifacts.outputs.NSIS }}
