@@ -344,7 +344,7 @@ export function DiffCompareModal({
     setActiveDiffIdx(0);
     setExpandedLeading([]);
     setExpandedBetween({});
-    setExpandedTrailing([]);
+    // setExpandedTrailing([]);
     invoke<DiffResult>("diff_files", { pathA, pathB })
       .then(setResult)
       .catch((e) => setError(String(e)))
