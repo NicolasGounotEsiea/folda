@@ -769,6 +769,31 @@ export function DiffCompareModal({
                   </tbody>
                 );
               })}
+              {/* Trailing edge: lines after the very last hunk. Mirror of
+                  leading — separator at the top of the trailing block,
+                  expanded rows follow it filling top-down toward EOF. */}
+              {(() => {
+                const tail = trailingGapInfo();
+                if (!tail || (tail.remaining === 0 && expandedTrailing.length === 0)) return null;
+                return (
+                  <tbody>
+                    <EdgeSeparator
+                      remainingLines={tail.remaining}
+                      expandedCount={expandedTrailing.length}
+                      onExpand={expandTrailing}
+                      onCollapse={collapseTrailing}
+                    />
+                    {expandedTrailing.map((er, idx) => (
+                      <ExpandedRow
+                        key={`tail-${idx}`}
+                        leftLineNo={er.leftLineNo}
+                        rightLineNo={er.rightLineNo}
+                        content={er.content}
+                      />
+                    ))}
+                  </tbody>
+                );
+              })()}
             </table>
           )}
         </div>

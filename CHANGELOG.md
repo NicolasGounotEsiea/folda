@@ -2,6 +2,53 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.10] - 2026-06-08
+
+### Added
+
+- **Side-by-side file comparison** (`diff_files` Tauri command + `DiffCompareModal`). Right-click two selected files → *Compare files*. The modal renders a 4-column layout (left line number, left content, right line number, right content) with hunks separated by unified-diff style `@@ -X / +Y @@` headers. Four row kinds with distinct backgrounds: `equal` (neutral), `delete` (red on left + muted on right), `insert` (muted on left + green on right), `modify` (red+green with intra-line char highlights). 20 MB per-file cap.
+- **PDF Ctrl+F (find in document)** in `PdfViewer`. Routed through the new `useViewerFindStore` so the global Ctrl+F handler dispatches to the active viewer instead of always focusing the global search bar. Find bar lives in the PDF controls strip: input + result counter (`N/M`), prev/next chevrons, Escape to dismiss. Markers wrap matched characters inline using pdfjs's text-layer DOM (`<mark>` injected in the matching textDivs) so positioning inherits pdfjs's scale/transform — no coordinate math, no drift relative to the canvas underneath. Active match gets a stronger orange tint, inactive matches are subtle amber. Highlights persist across page renders triggered by zoom or scroll. Side benefit: PDF text is now natively selectable (drag-select + Ctrl+C work because the text layer is now properly styled with pdfjs's canonical CSS).
+- **Inline char-level diff markers within `modify` rows** — when two lines differ by a few characters, only those characters get highlighted (red `<del>`-style on the left, green `<ins>`-style on the right) instead of painting the whole line red/green. Implemented via the new `inline_char_markers(a, b)` helper. Two algorithms inside it:
+  - **Fast path** for same-length strings: position-by-position scan with run coalescing. Guaranteed-aligned highlights at the exact same column on both sides — solves the "Myers puts the insert 3 columns to the right of the delete" misalignment.
+  - **Slow path** for different-length strings: `similar::TextDiff::from_chars` with a *Del-Equal-Ins → Del-Ins-Equal* alignment swap so the deletion and insertion render at the same visual column instead of having an "equal" sandwich between them. Reconstruction-tested: stripping markers must always recover the originals.
+- **Multi-region diff navigation** — header shows the current diff position (`1/4`), per-kind line counters (`+X / −Y / ~Z`), and four navigation buttons:
+  - `ChevronsUp` / `ChevronsDown` jump to the first / last change (also bound to `Home` / `End`).
+  - `ChevronUp` / `ChevronDown` jump to the previous / next change (also bound to `Shift+F3` / `F3`, matching browser convention).
+  - The active diff group is washed with `bg-accent/20` so a multi-line modification block reads as a single highlighted unit.
+- **Hunk navigation operates on diff GROUPS, not raw rows** — a group is a maximal run of consecutive non-equal rows. Matches the convention used by VSCode / Notepad++ Compare / IntelliJ: a contiguous block of N edited lines counts as one navigable change. The data-diff attribute is placed on the FIRST row of each group; `goToDiff(N)` queries the DOM by attribute and scrolls only the modal body (manual offset math vs. `scrollIntoView` to prevent any chance of bubbling up to the window scroll).
+- **Expand / collapse context around hunks** — every hunk separator now carries a `+10` button that fetches 10 more lines of equal context via the new `get_text_lines(path, start_line, count)` Tauri command (capped at 200 lines per call, with the frontend chunking larger requests). When the gap has more than 10 hidden lines, a secondary `all (N)` button reveals everything at once. **Shift-click** the `+10` button has the same effect as `all`. Once any context is revealed, a `−N` button appears on the same separator to fold the expansion back. Leading edge (before the first hunk) and trailing edge (after the last hunk) get their own separators so the user can reach the file's true start and end — `total_lines` is now part of `DiffResult` so the frontend knows where the trailing gap ends.
+- **Text selection in the diff modal** — content cells now opt in to `select-text` + `cursor: text`. Previously the global `user-select: none` (set on `html/body/#root` for native-app feel) prevented any selection inside the modal. Line-number cells stay `select-none` so `Ctrl+A` / `Ctrl+C` ignore them — same convention as VSCode and GitHub.
+- **Whitespace markers within char-level diffs** — when a marker span contains spaces or tabs (e.g. only trailing whitespace was added / removed), the whitespace renders as visible glyphs (`·` for space, `→` for tab) at 50% opacity. Outside markers, whitespace stays invisible so unchanged spaces don't add noise.
+
+### Improved
+
+- **PUA-codepoint markers replace HTML-shaped `<del>` / `<ins>` tags**. The frontend used to parse intra-line markers with a regex over literal `<del>...</del>` / `<ins>...</ins>` strings. Comparing two `.html` or `.xml` files where the actual content contained those tags broke the rendering — the source content collided with the marker syntax. Markers now use Private Use Area codepoints (U+E000..U+E003) which cannot appear in regular text files. The frontend parser uses a manual `indexOf` walk instead of a regex, with a defensive "open without close → render plain text" fallback so the PUA glyphs can never leak to the DOM.
+- **Line-ending normalization in `diff_files`** — CRLF vs LF differences are now treated as not-a-diff for content comparison purposes (matches Git's `core.autocrlf` and VSCode's diff editor). Previously, comparing a Windows file (CRLF) with a Unix file (LF) made `similar::TextDiff::from_lines` see ZERO equal lines, collapsing the whole document into one Delete-all + Insert-all hunk. Now both texts get `\r\n` → `\n` and lone `\r` → `\n` before diffing.
+- **Equal-length fast path with adversarial race against `similar`** — when both files have the same line count, the backend runs a naïve line-by-line walk AND `similar::TextDiff::from_lines`, then picks whichever produced fewer non-equal rows. Wins both cases:
+  - "Edit a few lines in place" → naïve walk produces N modify rows (correct), similar might place displaced inserts and deletes in different hunks. Naïve wins.
+  - "Refactor adding 5 lines and removing 5 lines (balanced length)" → naïve walk would mark dozens of contiguous lines as modified due to alignment drift. Similar finds the real insert/delete pairs. Similar wins.
+- **Hunk separator becomes a unified `GapControls` cluster** — the same expand / collapse cluster is used between hunks AND at the leading / trailing edges. Single source of truth for the UX, plus an `EdgeSeparator` variant that drops the `@@ -X / +Y @@` header (which has no meaning at file edges).
+- **PDF text layer CSS now matches pdfjs's canonical contract** — exposed `--total-scale-factor` inline per-page and copied the `font-size: calc(var(--text-scale-factor) * var(--font-height))` + `transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv))` rules from pdfjs's `pdf_viewer.css`. Without these the invisible text layer rendered at the browser default 16 px with no horizontal scaling, so `Range.getClientRects()` (used for find highlights) returned pixel rectangles offset by tens of pixels relative to the canvas underneath. Side effects: native PDF text selection and Ctrl+C also start working correctly.
+- **Stale-closure fix in `PdfViewer.renderPage`** — `renderPage` is a `useCallback([])` that intentionally never re-creates; previously it read `findHits` / `activeHit` from state, so when a new page scrolled into view during an active search it saw the initial `null` / `0` and skipped applying highlights. Now reads `findHitsRef.current` / `activeHitRef.current` — refs are stable across renders and always reflect the latest committed state, so pages rendered mid-search get their highlights immediately.
+- **Modal scroll fix** — the modal body now has `min-h-0` in addition to `flex-1 overflow-auto`. Without `min-h-0`, the flex item's default `min-height: auto` made the body grow to its content size instead of respecting the parent's `max-h-[92vh]`, so `overflow-auto` never engaged and the modal grew off-screen. Surfaced when expanding context made the diff long enough to exceed the viewport.
+
+### Fixed
+
+- **PDF find highlights landing on the wrong word** — the textDivs inside `<span class="markedContent">` containers weren't getting `position: absolute` because the previous CSS used a child selector (`> span`) that didn't reach nested spans. With `display: contents` on `.markedContent` and a descendant selector on the textDivs, nested and direct textDivs both get the correct positioning. Plus the canonical font-size / transform rules above ensure `Range.getClientRects()` matches the canvas.
+- **Diff comparison undercounted hunks** — when `similar`'s alignment chose to "displace" a single-line change into a bare Insert with no paired Delete (compensated by extra Deletes in a later hunk to balance line counts), the local hunk read as "a whole new line was added next to an unchanged one" instead of a Modify. The equal-length fast path bypasses similar entirely for the common case; the slow path still uses similar but is documented and tested for the edge.
+- **GitPanel's `renderInlineMarkers` left intentionally unchanged** — it parses `<del>` / `<ins>` from git-diff output, but the only call site keeps `inlineMarkers: false` (default). Dead-code parser, so the PUA migration on the diff side doesn't affect it.
+
+### Testing
+
+- **48 → 58 Rust unit tests**. New `diff_tests` module covers `inline_char_markers`:
+  - Single-char swap aligns markers at the same column on both sides
+  - Pure insert / pure delete keep their positions
+  - Multi-char contiguous changes coalesce into one marker span
+  - Position-by-position alignment for same-length strings with multiple changes
+  - Multi-byte (é / è) unicode characters stay intact through the position-aware diff
+  - **HTML-like content (`a<del>x</del>b` vs `a<del>y</del>b`) doesn't collide with the PUA markers** — the canary that justified switching marker delimiters
+  - Reconstruction test: stripping markers always recovers the originals
+
 ## [0.1.9] - 2026-06-01
 
 ### Added

@@ -27,6 +27,8 @@ Two formats are available: **NSIS `.exe`** (recommended) and **MSI `.msi`**.
 - **Editor** — syntax-highlighted editor (CodeMirror) for text, code, Markdown, and DOCX preview
 - **Spreadsheet viewer** — CSV / XLSX / ODS browsing with first-row-as-header mode, sortable columns (numeric or locale-aware string compare), global filter, and a per-column filter row. Multi-sheet tab bar for Excel workbooks. Inline edit mode for CSV with save-as-original-order safeguards.
 - **Snapshots** — lightweight per-file version history stored in SQLite; auto mode (snapshot on every save) or manual mode; configurable max count (2–50); diff view for text files; restore-only for binary files (images, spreadsheets, PDFs)
+- **Side-by-side file comparison** — right-click two selected files → *Compare files*. 4-column layout (line numbers + content for each side), unified-diff style hunk headers, char-level inline highlights for modified lines (red `<del>` markers on the left, green `<ins>` on the right, aligned at the same column on both sides), per-region navigation with `F3` / `Shift+F3` / `Home` / `End` plus header chevron buttons, expand context above / below / between hunks (with collapse back), text selection + Ctrl+C work natively. Treats CRLF vs LF as identical content (same convention as Git and VSCode). 20 MB per-file cap.
+- **PDF find-in-document** — `Ctrl+F` inside the PDF viewer opens an inline find bar with prev / next navigation and a result counter. Matches are highlighted inline in the existing pdfjs text layer so positioning inherits the PDF's scale and transform — pixel-perfect alignment with the canvas glyphs. PDF text is also natively selectable now (drag-select + Ctrl+C).
 - **Activity feed** — per-file history tab in the preview panel showing open, edit, rename, and delete events with timestamps
 - **Quick Look** — press Space on any selected file to open an instant floating preview
 - **Command palette** — Ctrl+P opens a launcher with recent files, recent searches, and fuzzy file search (parallel DB + live filesystem scan)
@@ -183,7 +185,7 @@ The host starts sharing from the sidebar — the app binds a WebSocket server on
 - [x] **Quick Look** — Space bar instant preview panel without opening the full editor
 - [ ] **Image tools** — rotation, crop, EXIF metadata panel, slideshow mode
 - [ ] **Hex viewer** — for binary files instead of "cannot edit" screen
-- [ ] **Diff view** — compare two selected files side-by-side
+- [x] **Diff view** — compare two selected files side-by-side with hunk navigation, expandable context, and intra-line char highlights
 
 ### UX & Polish
 - [x] **Rubber-band selection** — click-drag on empty space to select multiple entries
