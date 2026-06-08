@@ -333,7 +333,7 @@ export function DiffCompareModal({
   type ExpandedRowData = { leftLineNo: number; rightLineNo: number; content: string };
   const [expandedLeading, setExpandedLeading] = useState<ExpandedRowData[]>([]);
   const [expandedBetween, setExpandedBetween] = useState<Record<number, ExpandedRowData[]>>({});
-  const [expandedTrailing, setExpandedTrailing] = useState<ExpandedRowData[]>([]);
+  // const [expandedTrailing, setExpandedTrailing] = useState<ExpandedRowData[]>([]);
   const ref = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
