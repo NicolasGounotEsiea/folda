@@ -17,6 +17,36 @@ export default defineConfig(async () => ({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
+  build: {
+    // pdfjs's worker legitimately ships ~2 MB and the codemirror bundle sits
+    // around 600 KB. For a Tauri desktop app these load from local disk in ms;
+    // the 500 KB default warning is a web-app heuristic that doesn't apply here.
+    chunkSizeWarningLimit: 1500,
+    rollupOptions: {
+      output: {
+        // Split heavy vendor libs into their own chunks so:
+        //   - opening a PDF doesn't drag in docx-preview, codemirror, etc.
+        //   - vendors that rarely change (react, codemirror) stay cached across releases
+        //   - the main `index.js` bundle stays small enough to be in the critical path
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("pdfjs-dist")) return "pdfjs";
+          if (id.includes("docx-preview")) return "docx";
+          if (id.includes("xlsx")) return "xlsx";
+          if (id.includes("@codemirror") || id.includes("@uiw/react-codemirror") || id.includes("@lezer")) {
+            return "codemirror";
+          }
+          if (id.includes("react-markdown") || id.includes("remark-") || id.includes("micromark") || id.includes("highlight.js")) {
+            return "markdown";
+          }
+          if (id.includes("@sentry")) return "sentry";
+          if (id.includes("react-dom") || id.includes("scheduler") || id.includes("/react/")) {
+            return "react-vendor";
+          }
+        },
+      },
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,

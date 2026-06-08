@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronRight, Clock, Eye, EyeOff, LayoutGrid, List, Search, Settings, Columns2, BarChart2, Sparkles, StickyNote } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import { useViewerFindStore } from "../store/useViewerFindStore";
 import type { ListEntry, SearchHit } from "../types";
@@ -89,12 +89,16 @@ export function Toolbar({
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  // Each setListEntries below is wrapped in startTransition so the heavy
+  // FileList + Sidebar re-render triggered by results landing is treated as
+  // low-priority. Without this, a fast typer's next keystroke can stall while
+  // React commits 500+ search hits to the DOM.
   const runSearch = async (q: string, type: SearchType) => {
     if (!q.trim()) {
       if (currentPath) {
         try {
           const entries = await invoke<ListEntry[]>("list_directory", { path: currentPath, contextId: activeContextId ?? 0 });
-          setListEntries(entries);
+          startTransition(() => setListEntries(entries));
         } catch { /* ignore */ }
       }
       return;
@@ -118,24 +122,49 @@ export function Toolbar({
           ? invoke<ListEntry[]>("search_folders", { query: q })
           : Promise.resolve([] as ListEntry[]),
       ]);
-      setListEntries([...folderEntries, ...fileEntries]);
+      startTransition(() => setListEntries([...folderEntries, ...fileEntries]));
     } catch (e) {
       console.error(e);
     }
   };
 
+  // The input is bound to local state so typing never triggers a global
+  // store update. Without this, every keystroke fires setSearchQuery() →
+  // re-renders every component that subscribes to the whole store
+  // (Sidebar, PreviewPanel, this Toolbar itself), and the input's visual
+  // update lags 50–200 ms behind the keystroke on heavy workspaces.
+  // The debounced callback below pushes the value to the global store +
+  // kicks off the actual search 200 ms after the user stops typing.
+  const [searchInput, setSearchInput] = useState(searchQuery);
+
+  // Sync external clears (Escape from another viewer, navigation, etc.)
+  // back into the local input. Skipped when the change came from typing
+  // because by then local and global already agree.
+  useEffect(() => {
+    setSearchInput((prev) => (prev === searchQuery ? prev : searchQuery));
+  }, [searchQuery]);
+
+  // startTransition tells React the global store update + search are LOW
+  // priority. If the user types another character while React is mid-commit
+  // of these heavy updates, the keystroke is treated as urgent and gets
+  // processed first — the visual input update never blocks behind the search.
+  // Without this, a fast typer who pauses 200 ms triggers the debounce, which
+  // re-renders Sidebar/App/PreviewPanel, and the next keystroke waits.
   const debouncedSearch = useDebounce((q: unknown, type: unknown) => {
-    runSearch(q as string, type as SearchType);
-  }, 200);
+    startTransition(() => {
+      setSearchQuery(q as string);
+      runSearch(q as string, type as SearchType);
+    });
+  }, 250);
 
   const handleSearch = (q: string) => {
-    setSearchQuery(q);
+    setSearchInput(q);
     debouncedSearch(q, searchType);
   };
 
   const handleTypeChange = (type: SearchType) => {
     setSearchType(type);
-    if (searchQuery.trim()) runSearch(searchQuery, type);
+    if (searchInput.trim()) runSearch(searchInput, type);
   };
 
   // Build breadcrumb from the active pane's path
@@ -222,7 +251,7 @@ export function Toolbar({
           <input
             ref={searchRef}
             type="text"
-            value={searchQuery}
+            value={searchInput}
             onChange={(e) => handleSearch(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape") { handleSearch(""); searchRef.current?.blur(); }

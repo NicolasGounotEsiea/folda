@@ -71,6 +71,12 @@ interface AppStore {
   isScanning: boolean;
   isWatching: boolean;
 
+  // Live progress for the in-flight scan_directory call. Updated by the
+  // `scan-progress` Tauri event listener in App.tsx and cleared when the scan
+  // resolves. Lives in the store (not local Sidebar state) so the FileList
+  // overlay can read it without prop-drilling through the layout.
+  scanProgress: { path: string; scanned: number; done: boolean } | null;
+
   // Pinned items
   pinnedItems: PinnedItem[];
   setPinnedItems: (items: PinnedItem[]) => void;
@@ -133,6 +139,7 @@ interface AppStore {
   clearTagFilters: () => void;
   setIsScanning: (v: boolean) => void;
   setIsWatching: (v: boolean) => void;
+  setScanProgress: (p: { path: string; scanned: number; done: boolean } | null) => void;
 
   setSelectedPaths: (paths: string[]) => void;
   setClipboard: (cb: { action: "copy" | "cut"; paths: string[]; isRemote: boolean; entries: ClipEntry[] } | null) => void;
@@ -284,6 +291,7 @@ export const useStore = create<AppStore>((set, get) => ({
   selectedTagIds: [],
   isScanning: false,
   isWatching: false,
+  scanProgress: null,
   selectedPaths: [],
   clipboard: null,
   sortBy: "name",
@@ -490,6 +498,7 @@ export const useStore = create<AppStore>((set, get) => ({
   clearTagFilters: () => set({ selectedTagIds: [] }),
   setIsScanning: (isScanning) => set({ isScanning }),
   setIsWatching: (isWatching) => set({ isWatching }),
+  setScanProgress: (scanProgress) => set({ scanProgress }),
 
   // Dual pane state
   dualPaneActive: false,

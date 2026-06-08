@@ -484,7 +484,7 @@ export function Sidebar() {
     tags, setTags, tagStats, setTagStats, savedViews, setSavedViews,
     selectedTagIds, toggleTagFilter, clearTagFilters,
     currentPath, setCurrentPath, setListEntries,
-    setFiles, setTags: _setTags, setIsScanning, selectFile, pushNav,
+    setFiles, setTags: _setTags, setIsScanning, setScanProgress, selectFile, pushNav,
     contexts, setContexts, activeContextId, exitWorkspace,
     addFolderToContext, removeFolderFromContext, switchWorkspace,
     pinnedItems, setPinnedItems, removePinnedItem,
@@ -672,6 +672,9 @@ export function Sidebar() {
     } catch { /* ignore */ }
 
     setIsScanning(true);
+    // Reset any leftover progress from a previous scan so the FileList overlay
+    // starts at "0 files" instead of inheriting the stale done-state.
+    setScanProgress({ path: selected as string, scanned: 0, done: false });
     invoke<FileEntry[]>("scan_directory", { path: selected })
       .then(async (files) => {
         setFiles(files);
@@ -697,7 +700,10 @@ export function Sidebar() {
         }
       })
       .catch(console.error)
-      .finally(() => setIsScanning(false));
+      .finally(() => {
+        setIsScanning(false);
+        setScanProgress(null);
+      });
     invoke("watch_directory", { path: selected }).catch(console.error);
   };
 

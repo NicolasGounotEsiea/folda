@@ -176,3 +176,37 @@ thead .spreadsheet-row-num {
   white-space: pre;
   min-width: 60px;
 }
+
+/* ── Onboarding animations ─────────────────────────────────────────────────── */
+@keyframes onboard-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes onboard-modal-in {
+  from { opacity: 0; transform: scale(0.94) translateY(10px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0); }
+}
+@keyframes onboard-in-forward {
+  from { opacity: 0; transform: translateX(28px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes onboard-in-backward {
+  from { opacity: 0; transform: translateX(-28px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes onboard-icon-pop {
+  0%   { opacity: 0; transform: scale(0.55) rotate(-14deg); }
+  60%  { opacity: 1; transform: scale(1.14) rotate(6deg); }
+  100% { opacity: 1; transform: scale(1)    rotate(0); }
+}
+@keyframes onboard-blob-orbit {
+  0%, 100% { transform: translate(0, 0) scale(1);    opacity: 0.55; }
+  33%      { transform: translate(10px, -12px) scale(1.10); opacity: 0.70; }
+  66%      { transform: translate(-8px, 10px) scale(0.94);  opacity: 0.45; }
+}
+.onboard-backdrop-in { animation: onboard-backdrop-in 250ms ease-out both; }
+.onboard-modal-in    { animation: onboard-modal-in    300ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.onboard-in-forward  { animation: onboard-in-forward  340ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.onboard-in-backward { animation: onboard-in-backward 340ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.onboard-icon-pop    { animation: onboard-icon-pop    480ms cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+.onboard-blob        { animation: onboard-blob-orbit  9s    ease-in-out infinite; }

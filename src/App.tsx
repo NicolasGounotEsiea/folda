@@ -66,7 +66,7 @@ export function App() {
     viewMode, currentPath, openedFile,
     setCurrentPath, setListEntries,
     setFiles, setTags, removeFile, markFileModified,
-    setIsWatching, setIsScanning,
+    setIsWatching, setIsScanning, setScanProgress,
     pushNav, stepBack, stepForward, selectEntry,
     commandPaletteOpen, setCommandPaletteOpen,
     bulkRenameOpen, setBulkRenameOpen,
@@ -370,6 +370,17 @@ export function App() {
       if (watcherDebounceRef.current) clearTimeout(watcherDebounceRef.current);
     };
   }, [currentPath, setListEntries, setTags, removeFile, markFileModified]);
+
+  // Live scan progress — `scan_directory` emits one event per 500 files plus
+  // a final `done: true` payload. Sidebar's addFolder flow clears the slot in
+  // its `.finally`, so we only need to mirror incoming events into the store.
+  useEffect(() => {
+    const unlisten = listen<{ path: string; scanned: number; done: boolean }>(
+      "scan-progress",
+      (event) => setScanProgress(event.payload),
+    );
+    return () => { unlisten.then((fn) => fn()); };
+  }, [setScanProgress]);
 
   // Init telemetry once settings are loaded
   useEffect(() => {

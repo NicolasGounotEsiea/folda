@@ -384,7 +384,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
     listEntries, selectEntry, layoutMode,
     pinnedItems, addPinnedItem, removePinnedItem,
     setBulkRenameOpen,
-    selectedTagIds, isScanning, setCurrentPath, setListEntries, rootPaths,
+    selectedTagIds, isScanning, scanProgress, setCurrentPath, setListEntries, rootPaths,
     openFile, openFolderTab, currentPath, pushNav,
     selectedPaths, setSelectedPaths,
     clipboard, setClipboard,
@@ -1174,7 +1174,18 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
 
   // ─── Early returns ──────────────────────────────────────────────────────────
   if (isScanning && pane === 0) {
-    return <div className="flex-1 flex items-center justify-center text-text-muted"><span className="text-[12px]">{t.scanning}</span></div>;
+    // Show live file count from the scan-progress event stream. The number
+    // updates every 500 files so the user knows the scan is making progress
+    // instead of staring at an opaque "Scanning..." spinner.
+    const count = scanProgress?.scanned ?? 0;
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center text-text-muted gap-1">
+        <span className="text-[12px]">{t.scanning}</span>
+        {count > 0 ? (
+          <span className="text-[11px] opacity-70 tabular-nums">{count.toLocaleString()} {t.files.toLowerCase()}</span>
+        ) : null}
+      </div>
+    );
   }
   if (!panePath && (pane === 0 ? !folderTabs.some((tab) => tab.isRemote) : true)) {
     return (
