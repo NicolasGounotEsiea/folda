@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag name (e.g., v0.1.10)'
+        description: 'Tag name (e.g., v0.1.10) — must already exist in the repo'
         required: true
         type: string
 
@@ -19,9 +19,62 @@ jobs:
       contents: write
 
     steps:
+      # Centralize tag / version / prerelease so the rest of the workflow
+      # doesn't need to keep coalescing inputs.tag_name vs github.ref_name.
+      - name: Resolve tag
+        id: tag
+        shell: pwsh
+        run: |
+          $tag = if ($env:INPUT_TAG) { $env:INPUT_TAG } else { $env:GITHUB_REF_NAME }
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            Write-Error "No tag could be resolved from inputs or github.ref_name"
+            exit 1
+          }
+          $version = $tag -replace '^v', ''
+          $isPrerelease = if ($tag -match '-') { 'true' } else { 'false' }
+          "tag=$tag"                     >> $env:GITHUB_OUTPUT
+          "version=$version"             >> $env:GITHUB_OUTPUT
+          "is_prerelease=$isPrerelease"  >> $env:GITHUB_OUTPUT
+          Write-Host "Tag:           $tag"
+          Write-Host "Version:       $version"
+          Write-Host "Is prerelease: $isPrerelease"
+        env:
+          INPUT_TAG: ${{ inputs.tag_name }}
+
+      # Check out the TAG, not the branch the workflow was launched from.
+      # On push: github.ref_name is the tag, so this is equivalent to before.
+      # On workflow_dispatch: github.ref_name is the source branch (e.g. main),
+      # which would silently build the wrong code. Using the resolved tag fixes that.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ steps.tag.outputs.tag }}
+
+      # Pull just the section of CHANGELOG.md matching this version.
+      # Falls back to the full CHANGELOG if no matching section is found, so
+      # the release always has SOME body rather than silently shipping empty.
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        shell: pwsh
+        run: |
+          $version = '${{ steps.tag.outputs.version }}'
+          if (-not (Test-Path CHANGELOG.md)) {
+            "No CHANGELOG.md found in the repository." | Out-File release-notes.md -Encoding utf8
+            Write-Warning "CHANGELOG.md missing"
+            exit 0
+          }
+          $content = Get-Content CHANGELOG.md -Raw
+          $escaped = [regex]::Escape($version)
+          # Matches "## [VERSION]" header + everything up to the next "## [" header (or EOF).
+          $pattern = "(?ms)^## \[$escaped\][^\r\n]*\r?\n(.*?)(?=\r?\n## \[|\z)"
+          $m = [regex]::Match($content, $pattern)
+          if ($m.Success) {
+            $section = $m.Groups[1].Value.Trim()
+            $section | Out-File release-notes.md -Encoding utf8
+            Write-Host "Extracted CHANGELOG section for version $version ($($section.Length) chars)"
+          } else {
+            Write-Warning "No CHANGELOG section found for version $version — falling back to full CHANGELOG"
+            Copy-Item CHANGELOG.md release-notes.md
+          }
 
       - uses: actions/setup-node@v4
         with:
@@ -45,19 +98,46 @@ jobs:
         run: |
           $msi  = Get-ChildItem src-tauri/target/release/bundle/msi/*.msi  | Select-Object -First 1
           $nsis = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
-          echo "MSI=$($msi.FullName)"   >> $env:GITHUB_OUTPUT
-          echo "NSIS=$($nsis.FullName)" >> $env:GITHUB_OUTPUT
-          echo "MSI_NAME=$($msi.Name)"   >> $env:GITHUB_OUTPUT
-          echo "NSIS_NAME=$($nsis.Name)" >> $env:GITHUB_OUTPUT
+          if (-not $msi)  { Write-Error "No MSI installer found in src-tauri/target/release/bundle/msi/";  exit 1 }
+          if (-not $nsis) { Write-Error "No NSIS installer found in src-tauri/target/release/bundle/nsis/"; exit 1 }
+          "MSI=$($msi.FullName)"        >> $env:GITHUB_OUTPUT
+          "NSIS=$($nsis.FullName)"      >> $env:GITHUB_OUTPUT
+          "MSI_NAME=$($msi.Name)"       >> $env:GITHUB_OUTPUT
+          "NSIS_NAME=$($nsis.Name)"     >> $env:GITHUB_OUTPUT
+          "MSI_SIZE_MB=$([math]::Round($msi.Length / 1MB, 2))"   >> $env:GITHUB_OUTPUT
+          "NSIS_SIZE_MB=$([math]::Round($nsis.Length / 1MB, 2))" >> $env:GITHUB_OUTPUT
+          Write-Host "MSI:  $($msi.Name) ($([math]::Round($msi.Length / 1MB, 2)) MB)"
+          Write-Host "NSIS: $($nsis.Name) ($([math]::Round($nsis.Length / 1MB, 2)) MB)"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag_name || github.ref_name }}
-          name: Contextual Workspace ${{ inputs.tag_name || github.ref_name }}
-          body_path: CHANGELOG.md
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: nxs ${{ steps.tag.outputs.tag }}
+          body_path: release-notes.md
           draft: false
-          prerelease: ${{ contains(inputs.tag_name || github.ref_name, '-') }}
+          prerelease: ${{ steps.tag.outputs.is_prerelease == 'true' }}
           files: |
             ${{ steps.artifacts.outputs.MSI }}
             ${{ steps.artifacts.outputs.NSIS }}
+
+      # Visible in the Actions tab's Summary view — quick at-a-glance verification
+      # without clicking through individual step logs.
+      - name: Job summary
+        if: always()
+        shell: pwsh
+        run: |
+          $prerelease = '${{ steps.tag.outputs.is_prerelease }}'
+          $badge = if ($prerelease -eq 'true') { ':warning: prerelease' } else { ':rocket: stable' }
+          @"
+          ## Release ${{ steps.tag.outputs.tag }} — $badge
+
+          | Artifact | Size |
+          |---|---|
+          | ${{ steps.artifacts.outputs.MSI_NAME }} | ${{ steps.artifacts.outputs.MSI_SIZE_MB }} MB |
+          | ${{ steps.artifacts.outputs.NSIS_NAME }} | ${{ steps.artifacts.outputs.NSIS_SIZE_MB }} MB |
+
+          - Trigger: ``${{ github.event_name }}``
+          - Version: ``${{ steps.tag.outputs.version }}``
+          - Built from: ``${{ steps.tag.outputs.tag }}``
+          "@ | Out-File -Append $env:GITHUB_STEP_SUMMARY -Encoding utf8
