@@ -210,3 +210,88 @@ thead .spreadsheet-row-num {
 .onboard-in-backward { animation: onboard-in-backward 340ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 .onboard-icon-pop    { animation: onboard-icon-pop    480ms cubic-bezier(0.34, 1.56, 0.64, 1) both; }
 .onboard-blob        { animation: onboard-blob-orbit  9s    ease-in-out infinite; }
+
+/* ── Metallic accent — applied to <html> when the Silver preset is active ── */
+/* The static metallic gradient + inset shadows are always on for any
+ * `.bg-accent` surface. The animated shimmer band sits parked off-screen
+ * by default and only sweeps across on hover — keeps the UI quiet during
+ * normal use, rewards interaction with a polished-metal sweep. Translucent
+ * variants (bg-accent/10, /30, etc.) are intentionally left alone — gradients
+ * at 10% opacity are invisible anyway and the overlay would just add noise. */
+html.accent-metallic .bg-accent {
+  background-image:
+    /* Top layer: shimmer highlight band. Parked off-screen by default,
+     * sweeps across only on :hover. Narrow band (49%→51% with soft edges
+     * at 40%/60%) reads as a distinct passing line, not a vague brightness
+     * change. */
+    linear-gradient(
+      115deg,
+      transparent              40%,
+      rgba(255, 255, 255, 0.45) 49%,
+      rgba(255, 255, 255, 0.45) 51%,
+      transparent              60%
+    ),
+    /* Base layer: static metallic sheen */
+    linear-gradient(
+      135deg,
+      var(--color-accent-glow) 0%,
+      var(--color-accent)      48%,
+      var(--color-accent-dim)  100%
+    );
+  background-size: 220% 100%, 100% 100%;
+  background-position: 180% 0, 0 0;  /* shimmer parked off the right edge */
+  background-repeat: no-repeat;
+  box-shadow:
+    inset 0  1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(0,   0,   0,   0.18);
+}
+
+html.accent-metallic .bg-accent:hover {
+  animation: accent-shimmer 1s ease-out 1 forwards;
+}
+html.accent-metallic .border-accent {
+  border-image: linear-gradient(
+    135deg,
+    var(--color-accent-glow),
+    var(--color-accent),
+    var(--color-accent-dim)
+  ) 1;
+}
+
+/* Shimmer keyframes — single sweep from off-screen left to off-screen right.
+ * Triggered once per hover via `animation-iteration-count: 1`; `forwards`
+ * fill-mode pins the end state so the band stays parked off-right until the
+ * user moves away (at which point the :hover rule drops, the animation is
+ * removed, and the base rule's `background-position: 180% 0` keeps it parked
+ * — no jump back to start position). */
+@keyframes accent-shimmer {
+  from { background-position: -50% 0, 0 0; }
+  to   { background-position: 180% 0, 0 0; }
+}
+
+/* Accessibility: users with reduced-motion preference get the static metallic
+ * gradient without the moving shimmer. The base layer keeps the polished
+ * look; the shimmer band is parked off-screen so it never animates. */
+@media (prefers-reduced-motion: reduce) {
+  html.accent-metallic .bg-accent:hover {
+    animation: none;
+  }
+  .workspace-pulse {
+    animation: none;
+  }
+}
+
+/* ── Workspace switch pulse ───────────────────────────────────────────────── */
+/* Plays on the active workspace icon every time activeContextId changes
+ * (driven by a key prop in WorkspaceSwitcher). Brief overshoot then settle
+ * — same easing family as the onboarding icon pop. The `inline-block` is
+ * required because transform: scale() has no effect on plain inline spans. */
+@keyframes workspace-pulse {
+  0%   { transform: scale(1); }
+  35%  { transform: scale(1.22); }
+  100% { transform: scale(1); }
+}
+.workspace-pulse {
+  animation: workspace-pulse 340ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  display: inline-block;
+}

@@ -558,7 +558,11 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                           "w-5 h-5 rounded-full transition-transform hover:scale-110",
                           settings.accentColor === p.color && "ring-2 ring-offset-2 ring-offset-surface-1 ring-white/60 scale-110"
                         )}
-                        style={{ background: p.color }}
+                        // Use the preset's custom swatch (gradient) if defined —
+                        // otherwise fall back to the flat accent color. Lets
+                        // metallic / iridescent presets look polished in the
+                        // picker without changing how the accent applies elsewhere.
+                        style={{ background: p.swatch ?? p.color }}
                       />
                     ))}
                   </div>

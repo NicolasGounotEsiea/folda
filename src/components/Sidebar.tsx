@@ -172,7 +172,15 @@ function WorkspaceSwitcher({
         onClick={() => { setOpen((v) => !v); setCreating(false); setEditingId(null); }}
         className="w-full flex items-center gap-2 px-3 h-9 transition-colors select-none bg-surface-2 hover:bg-surface-3 border-b border-border-subtle"
       >
-        <span className="text-[14px] shrink-0">{active?.icon ?? "🌍"}</span>
+        {/* Key on activeId so each switch remounts the span, re-firing the
+            workspace-pulse keyframe animation. First mount also pulses,
+            which doubles as a small welcome cue. */}
+        <span
+          key={active?.id ?? "global"}
+          className="text-[14px] shrink-0 workspace-pulse"
+        >
+          {active?.icon ?? "🌍"}
+        </span>
         <span className="flex-1 text-[12px] font-medium text-text-primary truncate text-left">
           {active?.name ?? "Global"}
         </span>

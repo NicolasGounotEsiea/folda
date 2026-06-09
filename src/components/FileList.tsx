@@ -406,6 +406,12 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   const setPanePath = pane === 0 ? setCurrentPath : setPane2Path;
   const setPaneEntries = pane === 0 ? setListEntries : setPane2Entries;
   const setPaneSelectedPaths = pane === 0 ? setSelectedPaths : setPane2SelectedPaths;
+  // Cross-pane state — used by "Compare with other pane" to read the OTHER
+  // pane's selection without prop-drilling. Only meaningful when dual-pane is
+  // active; otherwise these resolve to whatever pane 2's state happens to be
+  // (irrelevant because the compare action is gated on dualPaneActive).
+  const otherPaneEntries = pane === 0 ? pane2Entries : listEntries;
+  const otherPaneSelectedPaths = pane === 0 ? pane2SelectedPaths : selectedPaths;
 
   const t = useTranslation();
 
@@ -424,6 +430,15 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   // current selection regardless of when EntryRow last rendered.
   const selectedPathsRef = useRef(paneSelectedPaths);
   useEffect(() => { selectedPathsRef.current = paneSelectedPaths; });
+  // Mirror cross-pane state into refs so the global keydown handler (Ctrl+D)
+  // can read the latest selection without re-binding the listener on every
+  // change to the other pane.
+  const dualPaneActiveRef = useRef(dualPaneActive);
+  useEffect(() => { dualPaneActiveRef.current = dualPaneActive; });
+  const otherPaneSelectedPathsRef = useRef(otherPaneSelectedPaths);
+  useEffect(() => { otherPaneSelectedPathsRef.current = otherPaneSelectedPaths; });
+  const otherPaneEntriesRef = useRef(otherPaneEntries);
+  useEffect(() => { otherPaneEntriesRef.current = otherPaneEntries; });
 
   // Always-current list helper (used in callbacks and effects)
   const listDirRef = useRef((_path: string): Promise<ListEntry[]> => Promise.resolve([]));
@@ -871,6 +886,28 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
       items.push({ separator: true });
     }
 
+    // Cross-pane compare — only in dual-pane mode, only when exactly ONE file
+    // is selected here and exactly ONE non-dir file is selected in the other
+    // pane. Hidden (not greyed) outside those conditions so single-pane users
+    // never see an action they couldn't use. Same DiffCompareModal path as
+    // the same-folder compare above — purely a UX shortcut.
+    if (
+      dualPaneActive
+      && !isMulti
+      && !entry.is_dir
+      && otherPaneSelectedPaths.length === 1
+    ) {
+      const otherPath = otherPaneSelectedPaths[0];
+      const otherEntry = otherPaneEntries.find((e) => e.path === otherPath);
+      if (otherEntry && !otherEntry.is_dir) {
+        items.push({
+          label: `${t.diffCompareWithOtherPane}  ⌃D`,
+          onClick: () => setDiffTargets([entry.path, otherPath]),
+        });
+        items.push({ separator: true });
+      }
+    }
+
     // ── Archive operations ──────────────────────────────────────────────────
     const ARCHIVE_EXTS_SET = new Set(["zip", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz", "7z", "rar"]);
 
@@ -1064,6 +1101,22 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
       if (e.key === "F2" && paneSelectedPaths.length === 1) {
         e.preventDefault();
         setRenamingPath(paneSelectedPaths[0]);
+      }
+      // Ctrl+D — compare this pane's single selection against the OTHER pane's
+      // single selection. Silent no-op when conditions aren't met (no toast,
+      // no error) — Ctrl+D is a power-user shortcut, surfacing failure for a
+      // missed precondition would just be noise.
+      if ((e.ctrlKey || e.metaKey) && e.key === "d" && dualPaneActiveRef.current) {
+        const thisSel = paneSelectedPaths;
+        const otherSel = otherPaneSelectedPathsRef.current;
+        if (thisSel.length === 1 && otherSel.length === 1) {
+          const thisEntry = visibleEntries.find((x) => x.path === thisSel[0]);
+          const otherEntry = otherPaneEntriesRef.current.find((x) => x.path === otherSel[0]);
+          if (thisEntry && !thisEntry.is_dir && otherEntry && !otherEntry.is_dir) {
+            e.preventDefault();
+            setDiffTargets([thisEntry.path, otherEntry.path]);
+          }
+        }
       }
       if (e.key === "Delete" && paneSelectedPaths.length > 0) {
         e.preventDefault();

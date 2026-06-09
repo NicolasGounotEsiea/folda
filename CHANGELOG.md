@@ -2,6 +2,27 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.12] - 2026-06-10
+
+### Added
+
+- **Silver accent preset** — 9th option in Settings → Appearance → Accent. The accent color itself is slate-400 (a clean recognizable silver) but the picker swatch renders a polished-sphere radial gradient so it visually reads as metal in the picker, not just gray. Selecting it toggles a new `accent-metallic` class on `<html>` that propagates a polished-chrome look across every `bg-accent` surface in the app — diagonal linear gradient from accent-glow → accent → accent-dim plus inset shadows for a carved-from-metal feel. Extensible: any future preset with a `swatch` field auto-activates the metallic treatment.
+- **Hover shimmer on metallic accent** — on Silver, when you hover any `bg-accent` button, a translucent white highlight band sweeps across in 1s (ease-out, single pass, fill-mode forwards so the band stays parked off the right edge after). Re-entering re-triggers. At rest: zero animation, zero CPU cost. Touch devices (no `:hover`) see only the static metallic look, no broken animation states.
+- **Workspace switch pulse** — the workspace icon in the sidebar switcher gets a brief scale-up (1 → 1.22 → 1 with bezier overshoot) every time `activeContextId` changes. Driven by a `key` prop that forces a remount on switch — keyframe re-fires automatically. First mount also pulses, doubling as a small welcome cue. Works regardless of which accent color is selected.
+- **Dual-pane file comparison** — in dual-pane mode, you can now compare a file from pane 1 against a file from pane 2 without having to move them into the same folder first. Two entry points:
+  - **Context menu** "Compare with other pane" — shown only when dual-pane is active, the right-clicked file is non-dir, and the other pane has exactly one non-dir file selected. Hidden (not greyed) otherwise so single-pane users never see an action they couldn't use.
+  - **Ctrl+D shortcut** with the same precondition check; silent no-op if conditions aren't met (no toast spam). Routes to the existing `DiffCompareModal` — no new UI was needed.
+
+### Improved
+
+- **File diff alignment on highly repetitive content** — comparing files made of hundreds of identical lines (config files with the same line repeating, generated text, etc.) used to scatter a single inserted line as several phantom delete+insert pairs in unrelated hunks because Myers' minimal-cost path has many valid alignments on such inputs. `diff_files` now runs a **4-way race**: forward Myers, backward Myers (inverted), forward Patience, backward Patience (inverted). Patience anchors on unique lines first, producing more visually coherent alignments; the backward+inverted variants fix a directional asymmetry where A→B and B→A produced different row counts on the same files. `pick_fewest_rows` picks whichever candidate has the fewest non-equal rows after our post-processing pairs adjacent delete+insert into modifies — guarantees the cleanest user-perceptible alignment wins.
+- **New `invert_hunks` helper** swaps `left ↔ right` content + line numbers, `delete ↔ insert` kinds, and intra-line marker types (`MARK_DEL_*` ↔ `MARK_INS_*` via a tombstone-based 6-pass `replace` so the swap never ping-pongs). Lets us reuse a backward-direction diff as if it had been computed forward, restoring the left=red / right=green visual convention. A new test `diff_is_symmetric_on_repetitive_content` guards against future regression of the asymmetry bug.
+
+### Internal
+
+- New `AccentPreset.swatch?: string` field — optional CSS gradient used for the picker swatch only. Lets metallic / iridescent presets render with shine in the picker while the actual accent stays flat throughout the rest of the UI. The metallic CSS overrides are gated on the presence of this field via the `accent-metallic` class toggle, so a future Rose Gold / Aurora preset opts in without touching code.
+- New CSS keyframes in `index.css`: `accent-shimmer` (hover sweep), `workspace-pulse` (icon scale on workspace switch). Both respect `prefers-reduced-motion: reduce`.
+
 ## [0.1.11] - 2026-06-09
 
 ### Added

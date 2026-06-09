@@ -75,6 +75,10 @@ export interface AccentPreset {
   color: string;
   dim: string;
   glow: string;
+  /** Optional CSS gradient used for the picker swatch only. Lets metallic /
+   * iridescent presets render with shine in the picker while the actual
+   * accent stays a flat solid color throughout the rest of the UI. */
+  swatch?: string;
 }
 
 export const ACCENT_PRESETS: AccentPreset[] = [
@@ -86,6 +90,16 @@ export const ACCENT_PRESETS: AccentPreset[] = [
   { label: "Pink",    color: "#ec4899", dim: "#db2777", glow: "#f472b6" },
   { label: "Violet",  color: "#8b5cf6", dim: "#7c3aed", glow: "#a78bfa" },
   { label: "Cyan",    color: "#06b6d4", dim: "#0891b2", glow: "#22d3ee" },
+  // Cool-toned metallic silver. The accent itself is slate-400 (a clean
+  // recognizable silver) but the picker swatch renders a polished-sphere
+  // radial gradient so it visually reads as metal rather than just gray.
+  {
+    label: "Silver",
+    color: "#94a3b8",
+    dim:   "#64748b",
+    glow:  "#cbd5e1",
+    swatch: "radial-gradient(circle at 30% 28%, #f1f5f9 0%, #cbd5e1 35%, #94a3b8 65%, #475569 100%)",
+  },
 ];
 
 function hexToRgbSpace(hex: string): string {
@@ -112,6 +126,11 @@ export function applySettings(s: AppSettings) {
   html.style.setProperty("--color-accent-rgb",  hexToRgbSpace(preset.color));
   html.style.setProperty("--color-accent-dim",  preset.dim);
   html.style.setProperty("--color-accent-glow", preset.glow);
+  // Metallic class is driven by the swatch field — any preset with a custom
+  // gradient swatch (today: Silver) gets the chromed `.bg-accent` treatment
+  // in index.css. New iridescent presets can opt in without touching code
+  // here just by setting `swatch`.
+  html.classList.toggle("accent-metallic", !!preset.swatch);
 }
 
 /** Serialize settings to a flat key→value map for DB storage. */

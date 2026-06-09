@@ -1040,20 +1040,93 @@ pub fn diff_files(path_a: String, path_b: String) -> Result<DiffResult, String> 
     // accept is capped at 20 MB.
     if lines_a.len() == lines_b.len() {
         let line_by_line = diff_equal_length(&lines_a, &lines_b);
-        let via_similar = diff_via_similar(&text_a, &text_b);
-        let pick = if count_change_rows(&line_by_line) <= count_change_rows(&via_similar) {
-            line_by_line
-        } else {
-            via_similar
-        };
+        let pick = pick_fewest_rows([
+            line_by_line,
+            diff_via_similar(&text_a, &text_b, similar::Algorithm::Myers),
+            diff_via_similar(&text_a, &text_b, similar::Algorithm::Patience),
+        ]);
         return Ok(DiffResult { identical: false, hunks: pick, total_lines });
     }
 
-    Ok(DiffResult {
-        identical: false,
-        hunks: diff_via_similar(&text_a, &text_b),
-        total_lines,
-    })
+    // Unequal line counts: race Myers (minimal-edit, default) against Patience
+    // (anchor-based, better for highly repetitive content). With files made of
+    // hundreds of identical lines, Myers has many valid alignments and can
+    // place a single insertion as N scattered delete+insert pairs that look
+    // like phantom modifications in unrelated hunks. Patience anchors on
+    // unique lines first, producing the human-expected single inserted line.
+    // Falls back to Myers internally when no unique anchors exist, so we
+    // never get worse than the original behavior.
+    //
+    // ALSO: race the BACKWARD direction (b → a, then invert the result) for
+    // both algorithms. Myers' minimal-cost path on repetitive content is
+    // direction-asymmetric: A→B may produce 4 clean rows while B→A produces
+    // 6 scattered rows on the very same files. Inverting the backward result
+    // (swap left↔right + delete↔insert + marker types) maps it back to A→B
+    // semantics so we can compare row counts on equal footing.
+    let hunks = pick_fewest_rows([
+        diff_via_similar(&text_a, &text_b, similar::Algorithm::Myers),
+        invert_hunks(diff_via_similar(&text_b, &text_a, similar::Algorithm::Myers)),
+        diff_via_similar(&text_a, &text_b, similar::Algorithm::Patience),
+        invert_hunks(diff_via_similar(&text_b, &text_a, similar::Algorithm::Patience)),
+    ]);
+    Ok(DiffResult { identical: false, hunks, total_lines })
+}
+
+/// Inverts a hunk list computed in the reverse direction (b→a) so it can be
+/// merged into / compared against forward-direction (a→b) results. Each row's
+/// left/right content + line numbers swap; `delete` ↔ `insert`; `equal` and
+/// `modify` keep their kind but swap content+numbers; intra-line marker
+/// types in `modify` rows also swap (MARK_DEL_* ↔ MARK_INS_*) so the
+/// left side stays red and the right side stays green visually.
+fn invert_hunks(hunks: Vec<DiffHunk>) -> Vec<DiffHunk> {
+    hunks.into_iter().map(|h| DiffHunk {
+        old_start: h.new_start,
+        new_start: h.old_start,
+        rows: h.rows.into_iter().map(|r| {
+            let kind = match r.kind.as_str() {
+                "delete" => "insert".to_string(),
+                "insert" => "delete".to_string(),
+                _        => r.kind,            // equal, modify stay the same kind
+            };
+            DiffRow {
+                kind,
+                left_no:  r.right_no,
+                right_no: r.left_no,
+                left:  swap_marker_types(r.right),
+                right: swap_marker_types(r.left),
+            }
+        }).collect(),
+    }).collect()
+}
+
+/// In a marked-up string, swap MARK_DEL_* ↔ MARK_INS_*. Used when inverting
+/// a backward-direction diff: the markers that wrapped "deleted" chars on
+/// the OLD side need to become "inserted" markers on what's now the NEW side,
+/// and vice versa, so the frontend's color convention (left=red, right=green)
+/// stays correct.
+fn swap_marker_types(s: String) -> String {
+    // Two-step replace through a tombstone char that can't appear in real text
+    // OR in any of the PUA markers, so the second pass doesn't undo the first.
+    const TOMB_OPEN:  &str = "\u{E010}";
+    const TOMB_CLOSE: &str = "\u{E011}";
+    s
+        .replace(MARK_DEL_OPEN,  TOMB_OPEN)
+        .replace(MARK_DEL_CLOSE, TOMB_CLOSE)
+        .replace(MARK_INS_OPEN,  MARK_DEL_OPEN)
+        .replace(MARK_INS_CLOSE, MARK_DEL_CLOSE)
+        .replace(TOMB_OPEN,      MARK_INS_OPEN)
+        .replace(TOMB_CLOSE,     MARK_INS_CLOSE)
+}
+
+/// Picks the hunk list with the fewest non-equal rows. Our post-processing
+/// merges consecutive Delete+Insert into a single `modify` row, so a cleaner
+/// alignment (Patience anchoring) collapses what Myers might output as
+/// scattered delete/insert pairs into compact modify rows — the row count
+/// metric correctly favours it.
+fn pick_fewest_rows<const N: usize>(candidates: [Vec<DiffHunk>; N]) -> Vec<DiffHunk> {
+    candidates.into_iter()
+        .min_by_key(|h| count_change_rows(h))
+        .unwrap_or_default()
 }
 
 /// Total number of non-equal rows across a hunk list — the metric we use to
@@ -1066,12 +1139,15 @@ fn count_change_rows(hunks: &[DiffHunk]) -> usize {
         .count()
 }
 
-/// Build hunks via `similar`'s line-level Myers diff. Pulled out of
-/// `diff_files` so the equal-length path can race it against the naive
-/// line-by-line algorithm and pick whichever produced fewer change rows.
-fn diff_via_similar(text_a: &str, text_b: &str) -> Vec<DiffHunk> {
+/// Build hunks via `similar`'s line-level diff using the requested algorithm.
+/// `diff_files` calls this with both Myers and Patience and picks the cleaner
+/// alignment. Myers minimizes total edit distance but can scatter changes
+/// across hunks on repetitive content; Patience anchors on unique lines first
+/// and produces more visually-coherent alignments. On inputs where Patience
+/// can't find unique anchors it falls back to Myers internally.
+fn diff_via_similar(text_a: &str, text_b: &str, algorithm: similar::Algorithm) -> Vec<DiffHunk> {
     use similar::{ChangeTag, TextDiff};
-    let line_diff = TextDiff::from_lines(text_a, text_b);
+    let line_diff = TextDiff::configure().algorithm(algorithm).diff_lines(text_a, text_b);
 
     let mut hunks: Vec<DiffHunk> = Vec::new();
     for hunk in line_diff.unified_diff().context_radius(3).iter_hunks() {
@@ -1296,7 +1372,88 @@ fn strip_trailing_newline(s: &str) -> String {
 /// renders both markers at the SAME column — matching user intuition.
 #[cfg(test)]
 mod diff_tests {
-    use super::{inline_char_markers, MARK_DEL_CLOSE, MARK_DEL_OPEN, MARK_INS_CLOSE, MARK_INS_OPEN};
+    use super::{
+        count_change_rows, diff_via_similar, inline_char_markers, invert_hunks,
+        pick_fewest_rows, MARK_DEL_CLOSE, MARK_DEL_OPEN, MARK_INS_CLOSE, MARK_INS_OPEN,
+    };
+
+    /// Reproduce the repetitive-content bug the user reported: ~500 lines of
+    /// identical "1111111111111111", with a few scattered modifications (a `2`
+    /// appearing in two lines, plus one truncated trailing line), and a single
+    /// inserted line of all 1's. Verify that Patience produces a cleaner (fewer
+    /// change rows) alignment than Myers — that's exactly what `pick_fewest_rows`
+    /// in `diff_files` relies on to upgrade the result.
+    /// The backward direction of Myers/Patience on repetitive content
+    /// produces a scattered alignment in one direction but a clean one in the
+    /// other. The 4-way race in `diff_files` (forward + inverted backward, for
+    /// both algorithms) symmetrizes the result. This guards against regression
+    /// of the asymmetry bug.
+    #[test]
+    fn diff_is_symmetric_on_repetitive_content() {
+        let a_lines: Vec<&str> = (0..500).map(|_| "1111111111111111").collect();
+        let mut b_lines: Vec<&str> = a_lines.clone();
+        b_lines[2]   = "x";              // modify
+        b_lines[233] = "1111112111111111";
+        b_lines[264] = "11111111111112";
+        b_lines.insert(46, "1111111111111111");   // insert
+        let last = b_lines.len() - 1;
+        b_lines[last] = "1";                       // truncate last
+
+        let text_a = a_lines.join("\n");
+        let text_b = b_lines.join("\n");
+
+        let race_4way = |x: &str, y: &str| -> usize {
+            count_change_rows(&pick_fewest_rows([
+                diff_via_similar(x, y, similar::Algorithm::Myers),
+                invert_hunks(diff_via_similar(y, x, similar::Algorithm::Myers)),
+                diff_via_similar(x, y, similar::Algorithm::Patience),
+                invert_hunks(diff_via_similar(y, x, similar::Algorithm::Patience)),
+            ]))
+        };
+
+        let forward  = race_4way(&text_a, &text_b);
+        let backward = race_4way(&text_b, &text_a);
+        assert_eq!(
+            forward, backward,
+            "race result must be symmetric: a→b={forward} b→a={backward}",
+        );
+    }
+
+    #[test]
+    fn repetitive_content_patience_beats_or_ties_myers() {
+        // test1 (a) — pure 500 lines of identical content
+        let mut a_lines: Vec<&str> = (0..500).map(|_| "1111111111111111").collect();
+        // test2 (b) — same as test1 but with the differences from the user's
+        // screenshot baked in:
+        //   - line 236 (0-indexed) has a `2` in the middle  → modify
+        //   - line 267 has a `2` at the end                 → modify
+        //   - line 499 (last) is truncated to "1"           → modify
+        //   - one extra line inserted around line 47        → insert
+        let mut b_lines: Vec<&str> = a_lines.clone();
+        b_lines[236] = "1111112111111111";
+        b_lines[267] = "11111111111112";
+        b_lines[499] = "1";
+        b_lines.insert(47, "1111111111111111");
+        // Disable the "unused" warning on a_lines being mutable.
+        let _ = &mut a_lines;
+
+        let text_a = a_lines.join("\n");
+        let text_b = b_lines.join("\n");
+
+        let myers    = diff_via_similar(&text_a, &text_b, similar::Algorithm::Myers);
+        let patience = diff_via_similar(&text_a, &text_b, similar::Algorithm::Patience);
+        let myers_rows    = count_change_rows(&myers);
+        let patience_rows = count_change_rows(&patience);
+
+        // The minimal human-expected change set is 4: 1 insert (extra line) +
+        // 2 modifies (the `2`s) + 1 modify (truncated last line). Anything more
+        // is the algorithm scattering. Patience should hit or beat Myers here.
+        assert!(
+            patience_rows <= myers_rows,
+            "Patience should produce <= Myers row count on repetitive content: \
+             myers={myers_rows} patience={patience_rows}",
+        );
+    }
 
     // Helper: wrap a literal into the del/ins markers without bloating
     // every assertion with `\u{E000}`-style escapes.

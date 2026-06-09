@@ -337,6 +337,7 @@ type AppStrings = {
 
   // ── Compare files (Notepad++ Compare-style) ───────────────────────────────
   diffCompareFiles: string;                 // context menu entry
+  diffCompareWithOtherPane: string;         // context menu entry, dual-pane only
   diffComparing: string;                    // loading state in the modal
   diffIdentical: string;                    // "Files are identical"
   diffPrevHunk: string;                     // tooltip for previous-hunk button
@@ -661,6 +662,7 @@ const translations: Record<string, AppStrings> = {
     previewExtractedText: "Extracted text",
 
     diffCompareFiles: "Compare files",
+    diffCompareWithOtherPane: "Compare with other pane",
     diffComparing: "Computing diff…",
     diffIdentical: "Files are identical",
     diffPrevHunk: "Previous change (Shift+F3)",
@@ -984,6 +986,7 @@ const translations: Record<string, AppStrings> = {
     previewExtractedText: "Texte extrait",
 
     diffCompareFiles: "Comparer les fichiers",
+    diffCompareWithOtherPane: "Comparer avec l'autre pane",
     diffComparing: "Calcul du diff…",
     diffIdentical: "Les fichiers sont identiques",
     diffPrevHunk: "Changement précédent (Maj+F3)",
