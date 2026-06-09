@@ -2,6 +2,46 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.11] - 2026-06-09
+
+### Added
+
+- **Live scan progress counter** during folder import. The backend's `walk_phase` emits `scan-progress` Tauri events every 500 files (`SCAN_PROGRESS_INTERVAL`) carrying `{ path, scanned, done }`. The FileList's "Scanning…" overlay now shows a live `12,482 files` counter under the spinner via a global `scanProgress` slot in `useStore`, populated by a listener in `App.tsx` and cleared by the Sidebar's addFolder `.finally`. Replaces the opaque spinner that gave zero signal of progress on 50k-file imports.
+- **Onboarding overhaul** — the modal is now genuinely dynamic instead of static text + icon. Animation primitives in `index.css` (`onboard-modal-in`, `onboard-icon-pop`, `onboard-blob-orbit`, `onboard-in-forward`/`backward`) drive: backdrop fade, modal scale+translate entrance, icon pop with bezier overshoot, slow-orbiting accent blob behind the icon, directional slide-in between steps (right when going forward, left when going back). Direction is tracked via state so direct dot-clicks also feel coherent.
+- **3 new onboarding steps** — AI assistant (with mini chat demo), Automations (with trigger → action flow diagram), Git-aware browsing (with branch + status badges demo). Step count went from 6 to 9.
+- **7 mini visual demos** for the meaningful onboarding steps replacing the previous single-icon framing. Each demo is a small inline mockup (~300×140px) of the feature: workspaces pills, file-rows with tag chips, search input with highlighted snippet, AI chat bubble exchange, automation flow with chevrons between cards, git branch + status letters, two laptops connected by pulsing dots with a share code. Welcome and "All set" framing steps keep the plain icon — the icon IS the moment.
+- **Keyboard navigation in onboarding** — `←` previous, `→` next, `Esc` close. Direction inferred from the navigation type so the slide animation always matches.
+- **Per-step accent color theming** in onboarding — the active step's color (indigo/blue/amber/emerald/violet/pink/orange/cyan/fuchsia) is carried through icon glow, floating blob, current progress dot, and the primary CTA button. Gives each screen its own identity. Color classes are stored as string literals in a typed `ACCENTS` constant so Tailwind JIT picks them all up.
+- **Inline highlights in onboarding body text** — `<kbd>` for keyboard shortcuts, `<b>` accent for key terms, `<code>` for example extensions. Breaks up the wall-of-text feel.
+
+### Improved
+
+- **Folder import speed (massive — typically 10-20×)** on large folders. A "Documents" with ~50k files that previously took 2-5 minutes now completes in 5-15 seconds. Three layered changes:
+  - **Inline text extraction removed from `scan_directory`**. The old behavior extracted text for every file ≤ 200 KB during the walk — for a Documents folder full of small DOCX/XLSX, that meant minutes of unzip + XML parse. Now `walk_phase` is pure stat work; all content extraction is deferred to Phase 2 (`index_directory_content`). Small text/code files are searchable by content a few seconds later instead of immediately, but the folder is browsable in seconds instead of minutes.
+  - **Prepared statements + `RETURNING id`** in the new `insert_batch` helper. The old loop did `db.execute(SQL, params)` for each insert (SQL re-parsed every time) plus a separate `SELECT id FROM files WHERE path = ?` after each upsert. Now four prepared statements (`insert_dir`, `insert_file`, `insert_file_tag`, `insert_activity`) are reused across the whole batch, and the upsert uses `ON CONFLICT DO UPDATE … RETURNING id` to skip the lookup entirely. Roughly halves the SQLite work per file.
+  - **DB mutex released before the final SELECT**. The old code held the mutex through Phase 2's `load_files_with_tags`, blocking every other DB-bound command (list_directory, get_tags, badge polling, etc.) for the full duration. Now the lock is dropped right after COMMIT and re-acquired only for the final read. Other commands can sneak in between phases.
+- **`scan_directory` refactored into `walk_phase` + `insert_batch` helpers**. `walk_phase` is a pure collection step ready for rayon parallelization later; `insert_batch` is idempotent (safe to call with chunks) so chunked commits are a trivial follow-up. Both are documented inline with the migration path noted.
+- **Tag-id cache in `insert_batch`** — `ensure_auto_tag` is now called at most once per distinct auto-tag name per batch instead of once per file. Small wins (1-2 ms on a 50k folder) but cleaner code.
+- **Search input responsiveness** — typing in the global search bar no longer triggers a global store update per keystroke. Local React state (`searchInput`) is bound to the input; the global `searchQuery` updates 250 ms after the user stops typing, wrapped in `React.startTransition` so heavy result renders (FileList, Sidebar) are treated as low-priority and never block the next keystroke. The `runSearch` async callback also wraps its terminal `setListEntries` in `startTransition`. Side-effects of external changes (Escape → clear, navigateTo → reset) sync back to local via a `useEffect` watching `searchQuery`.
+- **Bundle code-splitting** — `vite.config.ts` got a `manualChunks` function plus a bumped `chunkSizeWarningLimit` (500 → 1500). Heavy vendor libs each get their own chunk: `pdfjs` (457 KB), `codemirror` (733 KB), `docx` (174 KB), `xlsx` (333 KB), `markdown` (229 KB), `react-vendor` (143 KB). The critical-path main bundle dropped from **821 KB → 446 KB** (−46%, −117 KB gzipped). `DocumentViewer.js` dropped from 1 MB → 33 KB (opening a PDF no longer drags in docx-preview). Vendor chunks stay cached across releases when their deps don't change. No more "chunks larger than 500 kB" warning at build time.
+- **GitHub Actions release workflow** is more robust and trigger-from-anywhere safe:
+  - `workflow_dispatch` correctly checks out the **tagged commit** instead of the branch HEAD. Previously, manually re-triggering for tag `v0.1.10` from `main` would silently build whatever was at main's HEAD, not the tag — confusing and footgun-y.
+  - Release notes are extracted from the matching `CHANGELOG.md` section (regex match on `## [VERSION]` header) instead of dumping the entire changelog into the GitHub release body. Falls back to the full file if no matching section is found.
+  - New `Resolve tag` step centralizes tag/version/prerelease derivation so the rest of the workflow doesn't keep coalescing `inputs.tag_name || github.ref_name` in three different places.
+  - New `Job summary` step writes a clean recap (artifact sizes + prerelease badge + trigger source) to `$GITHUB_STEP_SUMMARY` for quick at-a-glance verification in the Actions tab.
+  - Stricter artifact collection: explicit error if MSI/NSIS installers are missing from the bundle output instead of silently failing later with an obscure `softprops/action-gh-release` error.
+
+### Fixed
+
+- **Onboarding modal — dynamically-composed Tailwind classes** like `"hover:" + accent.text.replace("text-", "bg-")` were missing from the production CSS bundle because Tailwind's JIT scanner only picks up literal class strings at build time. Switched to a typed `ACCENTS` constant where every color variant is hard-coded as a string literal. All 9 step colors (icon text, icon bg, blob glow, dot, button + hover state) are now guaranteed in the final CSS.
+- **Cargo.lock version sync** — workflows that read the version from Cargo.lock would have seen 0.1.10 even with `Cargo.toml` bumped to 0.1.11 if `cargo` wasn't re-run before commit. Bumping all four files (package.json, Cargo.toml, tauri.conf.json, Cargo.lock) is now part of the release checklist documented in CLAUDE.md section 33.
+
+### Internal
+
+- `RawFile` struct dropped its `text_content` field. Text content lives exclusively in `file_content` rows written by Phase 2 (`index_directory_content`) or the watcher (`handle_fs_event`). One source of truth for "has this file been content-attempted".
+- New `SCAN_PROGRESS_INTERVAL` and `MAX_FILES_PER_SCAN` constants in `commands/files.rs` replace the magic `500` and `100_000` locals.
+- The new global keydown listener in `OnboardingModal` for `←`/`→`/`Esc` is added/removed with the modal mount lifecycle, no leak.
+
 ## [0.1.10] - 2026-06-08
 
 ### Added
