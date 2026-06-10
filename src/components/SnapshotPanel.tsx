@@ -97,8 +97,8 @@ function DiffModal({ snap, snapContent, currentContent, onClose, onRestore, rest
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60">
-      <div className="bg-surface-1 border border-border rounded-xl shadow-2xl flex flex-col w-[760px] max-w-[95vw] h-[80vh] max-h-[700px]">
+    <div className="modal-backdrop-in fixed inset-0 z-[300] flex items-center justify-center bg-black/60">
+      <div className="modal-content-in bg-surface-1 border border-border rounded-xl shadow-2xl flex flex-col w-[760px] max-w-[95vw] h-[80vh] max-h-[700px]">
         {/* Header */}
         <div className="flex items-center gap-3 px-4 h-11 border-b border-border-subtle shrink-0">
           <History size={13} className="text-accent shrink-0" />

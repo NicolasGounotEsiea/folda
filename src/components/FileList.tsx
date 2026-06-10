@@ -2,14 +2,18 @@ import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
 import {
   ArrowDown, ArrowUp, ChevronUp,
-  Code, File, FileImage, FileText, Film, Folder, FolderPlus, Music, Package,
+  Binary, Code, Cog, Database, File, FileImage, FileSpreadsheet, FileText, FileType,
+  Film, Folder, FolderOpen, FolderPlus, Music, Package, Presentation,
+  SearchX, FilterX,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { EmptyState } from "./EmptyState";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { QuickLookModal } from "./QuickLookModal";
 import { FolderPickerModal } from "./FolderPickerModal";
 import { useStore } from "../store/useStore";
+import { useIndexingStore } from "../store/useIndexingStore";
 import { useGitStore, statusForAbsolutePath } from "../store/useGitStore";
 import { highlightSnippet } from "../utils/highlightSnippet";
 import { DiffCompareModal } from "./DiffCompareModal";
@@ -130,33 +134,186 @@ function GridThumbnail({ entry }: { entry: ListEntry }) {
   );
 }
 
-function StatusBar({ total, selected, selectedSize }: { total: number; selected: number; selectedSize: number }) {
+/**
+ * Loading skeleton — N rows of grayed pulse blocks shaped like a real EntryRow.
+ * Shown briefly while list_directory is in flight, then immediately replaced
+ * by either the empty-state or the actual rows when data lands.
+ *
+ * Uses the same `ROW_COLS` / `ROW_GRID` template as real rows so heights and
+ * column widths match perfectly — the swap to real content feels like an
+ * in-place reveal rather than a layout shift.
+ *
+ * Per-row animation delay is staggered so the pulse forms a soft wave across
+ * the rows rather than every row pulsing in lockstep (which would feel
+ * mechanical).
+ */
+function SkeletonRows({ count }: { count: number }) {
+  return (
+    <>
+      {Array.from({ length: count }).map((_, i) => (
+        <div
+          key={i}
+          style={ROW_COLS}
+          className={clsx(ROW_GRID, "w-full h-9 px-3 items-center select-none pointer-events-none")}
+        >
+          {/* Icon placeholder */}
+          <div
+            className="w-3.5 h-3.5 rounded bg-surface-3 skeleton-pulse"
+            style={{ animationDelay: `${i * 60}ms` }}
+          />
+          {/* Name placeholder — varied widths so the list doesn't look like a
+              uniform mesh. Pseudo-random based on index. */}
+          <div
+            className="h-3 rounded bg-surface-3 skeleton-pulse"
+            style={{
+              width: `${45 + ((i * 17) % 35)}%`,
+              animationDelay: `${i * 60 + 30}ms`,
+            }}
+          />
+          {/* Size + date placeholder, smaller */}
+          <div
+            className="h-2.5 rounded bg-surface-3 skeleton-pulse w-12"
+            style={{ animationDelay: `${i * 60 + 60}ms` }}
+          />
+          <div
+            className="h-2.5 rounded bg-surface-3 skeleton-pulse w-16"
+            style={{ animationDelay: `${i * 60 + 90}ms` }}
+          />
+        </div>
+      ))}
+    </>
+  );
+}
+
+function StatusBar({
+  total, selected, selectedSize, path, sortBy, sortDir, showHidden, inSearchMode,
+}: {
+  total: number;
+  selected: number;
+  selectedSize: number;
+  path: string;
+  sortBy: "name" | "size" | "modified" | "type";
+  sortDir: "asc" | "desc";
+  showHidden: boolean;
+  inSearchMode: boolean;
+}) {
   const t = useTranslation();
+  // Subscribe to the indexing slot for THIS pane's path. Using a selector keeps
+  // re-renders limited to actual progress changes — typing in search or
+  // changing selection elsewhere doesn't touch us.
+  const indexing = useIndexingStore((s) => (path ? s.progress[path] : undefined));
+  const indexingActive = indexing && indexing.total > 0 && indexing.indexed < indexing.total;
+  const indexingPct = indexingActive ? Math.round((indexing.indexed / indexing.total) * 100) : null;
+
+  // Sort label — column abbreviation + arrow. Hidden during search since the
+  // user-facing list is in backend-relevance order then, not sorted.
+  const sortLabel = inSearchMode ? null : (
+    <span className="flex items-center gap-0.5 text-text-muted">
+      <span className="capitalize">{sortBy}</span>
+      {sortDir === "asc" ? "↑" : "↓"}
+    </span>
+  );
+
   return (
     <div className="shrink-0 flex items-center gap-2 px-3 h-6 bg-surface-1 border-t border-border-subtle text-[10px] text-text-muted select-none">
-      <span>{total.toLocaleString()} {total !== 1 ? t.elements : t.element}</span>
+      {/* ── Left: count + selection ───────────────────────────────────── */}
+      <span className="tabular-nums">{total.toLocaleString()} {total !== 1 ? t.elements : t.element}</span>
       {selected > 0 && (
         <>
           <span className="text-border">·</span>
-          <span className="text-text-secondary">
+          <span className="text-text-secondary tabular-nums">
             {selected} {selected !== 1 ? t.selectedMany : t.selectedOne}
             {selectedSize > 0 && <span className="text-text-muted"> — {formatSize(selectedSize)}</span>}
           </span>
         </>
       )}
+
+      {/* ── Right: indexing progress + sort + flags ───────────────────── */}
+      <div className="ml-auto flex items-center gap-2">
+        {indexingActive && (
+          <>
+            <span className="flex items-center gap-1.5 text-text-secondary tabular-nums" title={indexing.current ?? undefined}>
+              <span className="inline-block w-1 h-1 rounded-full bg-accent animate-pulse" />
+              {t.indexingLabel} {indexingPct}%
+            </span>
+            <span className="text-border">·</span>
+          </>
+        )}
+        {showHidden && (
+          <>
+            <span className="text-text-muted">+{t.hiddenShort}</span>
+            <span className="text-border">·</span>
+          </>
+        )}
+        {sortLabel}
+      </div>
     </div>
   );
 }
 
+/**
+ * Per-extension icon + color mapping. Lookup is O(1) via a single Map; the
+ * function itself stays a pure render with zero allocations beyond the JSX
+ * element. The 11 categories below are deliberate: enough for instant
+ * visual recognition of common types, not so many that the palette becomes
+ * noisy. The shades all use `-400` (or `-500` for higher-impact files like
+ * executables) so the row stays visually balanced across themes.
+ *
+ * Tier-1 perf note: this runs once per visible row on every parent render.
+ * The Map lookup is constant time and the JSX nodes are small. Verified
+ * not to be a hot path even on 1000-row folders.
+ */
+type IconCategory = {
+  Icon: typeof File;
+  color: string;
+};
+
+// Build the map at module load. Each category contributes its extension list
+// expanded into `[ext, {Icon, color}]` tuples. Declared without `as const` on
+// the inner mapping so TypeScript widens the per-category color literals
+// into a common `string` (otherwise the union of `text-pink-400 | text-purple-400 | …`
+// blocks the array spread).
+function mkCategory(exts: string[], Icon: typeof File, color: string): [string, IconCategory][] {
+  return exts.map((ext) => [ext, { Icon, color }]);
+}
+
+const EXT_TO_CATEGORY: Map<string, IconCategory> = new Map<string, IconCategory>([
+  // Images
+  ...mkCategory(["png","jpg","jpeg","gif","webp","svg","ico","bmp","avif","tiff","heic"], FileImage, "text-pink-400"),
+  // Video
+  ...mkCategory(["mp4","mkv","avi","mov","webm","flv","wmv","m4v"], Film, "text-purple-400"),
+  // Audio
+  ...mkCategory(["mp3","wav","flac","ogg","m4a","aac","opus","wma"], Music, "text-cyan-400"),
+  // Code — programming languages and markup
+  ...mkCategory(["ts","tsx","js","jsx","rs","py","go","java","c","cpp","h","hpp","cs","rb","php","swift","kt","sh","bash","zsh","ps1","lua","sql","css","scss","less","html","htm","vue","svelte"], Code, "text-green-400"),
+  // Data / config — structured machine-readable formats
+  ...mkCategory(["json","yaml","yml","toml","xml","ini","env","conf","cfg","properties"], Database, "text-sky-400"),
+  // Documents — text and word-processor formats
+  ...mkCategory(["pdf","doc","docx","odt","rtf","pages","epub","mobi","azw3"], FileText, "text-blue-400"),
+  // Plain text and markdown
+  ...mkCategory(["txt","md","markdown","rst","log","tex"], FileText, "text-slate-400"),
+  // Spreadsheets — distinct from documents because the visual mental model
+  // is different ("rows of data" vs "page of prose")
+  ...mkCategory(["xls","xlsx","ods","csv","tsv","numbers"], FileSpreadsheet, "text-emerald-400"),
+  // Presentations
+  ...mkCategory(["ppt","pptx","odp","key"], Presentation, "text-amber-400"),
+  // Archives
+  ...mkCategory(["zip","tar","gz","tgz","bz2","tbz2","xz","txz","7z","rar","zst"], Package, "text-orange-400"),
+  // Executables — red as a "caution" signal: these RUN code
+  ...mkCategory(["exe","msi","dmg","deb","rpm","appimage","apk","app","bin"], Binary, "text-red-400"),
+  // Fonts
+  ...mkCategory(["ttf","otf","woff","woff2","eot"], FileType, "text-violet-400"),
+  // Settings-like files
+  ...mkCategory(["dotenv","editorconfig","gitignore","gitattributes","prettierrc","eslintrc"], Cog, "text-stone-400"),
+]);
+
 export function FileIcon({ entry }: { entry: ListEntry }) {
   if (entry.is_dir) return <Folder size={15} className="shrink-0 text-yellow-400" />;
-  const e = entry.extension.toLowerCase();
-  if (["png","jpg","jpeg","gif","webp","svg","ico","bmp","avif"].includes(e)) return <FileImage size={15} className="shrink-0 text-pink-400" />;
-  if (["mp4","mkv","avi","mov","webm"].includes(e)) return <Film size={15} className="shrink-0 text-purple-400" />;
-  if (["mp3","wav","flac","ogg","m4a"].includes(e)) return <Music size={15} className="shrink-0 text-cyan-400" />;
-  if (["ts","tsx","js","jsx","rs","py","go","java","c","cpp","h","css","html","json","toml","yaml","sh"].includes(e)) return <Code size={15} className="shrink-0 text-green-400" />;
-  if (["pdf","doc","docx","txt","md","rtf"].includes(e)) return <FileText size={15} className="shrink-0 text-blue-400" />;
-  if (["zip","tar","gz","7z","rar"].includes(e)) return <Package size={15} className="shrink-0 text-orange-400" />;
+  const cat = EXT_TO_CATEGORY.get(entry.extension.toLowerCase());
+  if (cat) {
+    const { Icon, color } = cat;
+    return <Icon size={15} className={clsx("shrink-0", color)} />;
+  }
   return <File size={15} className="shrink-0 text-text-muted" />;
 }
 
@@ -189,6 +346,18 @@ function SortHeader({ col, label, width, sortBy, sortDir, onSort }: {
 const ROW_GRID = "grid items-center gap-x-3 px-4" as const;
 const ROW_COLS = { gridTemplateColumns: "15px 1fr 64px 96px 42px" } as const;
 
+/// Total-row threshold for the entrance-stagger animation. Below this, every
+/// row gets the fade-up cascade on first mount. At or above, the animation is
+/// skipped for ALL rows — an all-or-nothing rule because partial staggering
+/// (first N rows animate, rest pop in) creates a visible seam where the
+/// cascade abruptly meets the static rows.
+///
+/// 50 is a deliberate midpoint: roughly two viewport-heights worth of rows,
+/// which covers "typical" folders (downloads, documents) without paying the
+/// GPU cost of spinning up 500+ simultaneous CSS animations on large folders
+/// like System32 or node_modules. Past 50, instant-render wins.
+const STAGGER_THRESHOLD = 50;
+
 // ─── Entry row ────────────────────────────────────────────────────────────────
 const EntryRow = memo(function EntryRow({
   entry, selected, cut,
@@ -196,6 +365,7 @@ const EntryRow = memo(function EntryRow({
   renaming, onRenameSubmit, onRenameCancel,
   isDragTarget, onPointerDown,
   gitStatus, gitDimmed,
+  staggerIndex,
 }: {
   entry: ListEntry;
   selected: boolean;
@@ -213,6 +383,11 @@ const EntryRow = memo(function EntryRow({
   /// happens in the parent so each row stays a pure memo'd render).
   gitStatus?: import("../store/useGitStore").FileStatus | null;
   gitDimmed?: boolean;
+  /// Row's index in the parent's visible-entries list. Drives a fade-up
+  /// stagger animation on mount only — once the row is in the DOM, the
+  /// animation has played and changes to staggerIndex have no visual effect.
+  /// Pass undefined to skip the animation (e.g. when rendering skeletons).
+  staggerIndex?: number;
 }) {
   const [renameVal, setRenameVal] = useState(entry.name);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -234,7 +409,15 @@ const EntryRow = memo(function EntryRow({
       data-entry-path={entry.path}
       data-drop-path={entry.is_dir ? entry.path : undefined}
       data-is-dir={entry.is_dir ? "true" : undefined}
-      style={ROW_COLS}
+      style={
+        staggerIndex !== undefined
+          // Parent caps staggerIndex via STAGGER_LIMIT (rows past that point
+          // get undefined here). 12 ms × index stays under ~480 ms total
+          // even if a future change widens the cap. Combined with the 170 ms
+          // per-row duration, the whole sequence completes in ~650 ms.
+          ? { ...ROW_COLS, animationDelay: `${staggerIndex * 12}ms` }
+          : ROW_COLS
+      }
       onContextMenu={(e) => onContextMenu(e, entry)}
       onClick={renaming ? undefined : onClick}
       onDoubleClick={renaming ? undefined : () => entry.is_dir ? onNavigate(entry.path) : onDoubleClick()}
@@ -242,6 +425,9 @@ const EntryRow = memo(function EntryRow({
       className={clsx(
         ROW_GRID,
         "w-full h-9 transition-colors group cursor-pointer select-none",
+        // Animation class is permanent on the element — keyframe only fires
+        // on element creation, so re-renders never re-trigger the fade.
+        staggerIndex !== undefined && "row-fade-up",
         isDragTarget
           ? "ring-1 ring-inset ring-accent bg-accent/15 text-text-primary"
           : selected
@@ -354,8 +540,8 @@ function ZipNameModal({ defaultName, onConfirm, onClose }: {
   }, []);
   const confirm = () => { if (name.trim()) onConfirm(name.trim()); };
   return (
-    <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/60">
-      <div className="bg-surface-1 border border-border rounded-xl shadow-2xl w-80 p-5 flex flex-col gap-4">
+    <div className="modal-backdrop-in fixed inset-0 z-[400] flex items-center justify-center bg-black/60">
+      <div className="modal-content-in bg-surface-1 border border-border rounded-xl shadow-2xl w-80 p-5 flex flex-col gap-4">
         <p className="text-[13px] font-semibold text-text-primary">{t.archiveName}</p>
         <div className="flex items-center gap-1">
           <input
@@ -495,6 +681,56 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   // Two-file diff modal — tuple of paths or null. Set by the "Compare files"
   // context menu entry, cleared on close.
   const [diffTargets, setDiffTargets] = useState<[string, string] | null>(null);
+
+  // Skeleton state during folder navigation. Only flips on after a 100 ms
+  // delay so instant cache hits never flash a skeleton, and resets the
+  // moment new entries arrive in the store. Each pane tracks its own state
+  // independently — they have separate panePath refs.
+  //
+  // The timer ref is shared across both effects so the entries-arrived
+  // effect can ALSO cancel a pending pre-fire timer — otherwise a fast
+  // cache hit (entries arriving within 100 ms) would leave the timer armed,
+  // it would fire AFTER the entries already landed, set skeleton true, and
+  // get stuck because nothing else triggers `setSkeletonVisible(false)`.
+  // That was the "skeleton stuck after back nav" bug.
+  const [skeletonVisible, setSkeletonVisible] = useState(false);
+  const skeletonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevPathRef = useRef(panePath);
+  useEffect(() => {
+    if (prevPathRef.current === panePath) return;
+    prevPathRef.current = panePath;
+    if (skeletonTimerRef.current) clearTimeout(skeletonTimerRef.current);
+    skeletonTimerRef.current = setTimeout(() => {
+      setSkeletonVisible(true);
+      skeletonTimerRef.current = null;
+    }, 100);
+    return () => {
+      if (skeletonTimerRef.current) {
+        clearTimeout(skeletonTimerRef.current);
+        skeletonTimerRef.current = null;
+      }
+    };
+  }, [panePath]);
+  // Any change to paneEntries means the new path's data has landed. Cancel a
+  // pending pre-fire timer AND hide any already-visible skeleton in one shot.
+  useEffect(() => {
+    if (skeletonTimerRef.current) {
+      clearTimeout(skeletonTimerRef.current);
+      skeletonTimerRef.current = null;
+    }
+    setSkeletonVisible(false);
+  }, [paneEntries]);
+  // Defensive: if for any reason both useEffects above miss (e.g. entries
+  // arrived via a code path that re-uses the previous array reference), the
+  // skeleton would stay forever. After 4 s we force-clear it so the user is
+  // never stuck. 4 s is well past any realistic list_directory round-trip
+  // for a local folder; remote shares may legitimately take longer, but in
+  // that case the user has already learned this is a slow folder.
+  useEffect(() => {
+    if (!skeletonVisible) return;
+    const t = setTimeout(() => setSkeletonVisible(false), 4000);
+    return () => clearTimeout(t);
+  }, [skeletonVisible]);
 
   // ─── Derived: parent path for ".." row ─────────────────────────────────────
   const parentPath = useMemo(() => {
@@ -1132,11 +1368,23 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
         setPaneSelectedPaths(visibleEntries.map((x) => x.path));
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "c" && paneSelectedPaths.length > 0) {
+        // Don't hijack Ctrl+C when the user has actual text selected — the
+        // PreviewPanel, viewer panes, snippets, etc. all rely on the browser's
+        // native text-copy behavior. Intercepting here breaks that. We only
+        // run the "copy file paths to clipboard" action when no text selection
+        // exists in the window (so Ctrl+C means "copy the selected files").
+        const textSel = window.getSelection()?.toString() ?? "";
+        if (textSel.trim().length > 0) return;
         e.preventDefault();
         const sel = paneSelectedPaths.map((p) => listEntriesRef.current.find((x) => x.path === p)).filter(Boolean) as ListEntry[];
         setClipboard({ action: "copy", paths: [...paneSelectedPaths], isRemote: isRemoteRef.current, entries: sel.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })) });
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "x" && paneSelectedPaths.length > 0) {
+        // Same text-selection guard as Ctrl+C — let the browser cut text from
+        // any contenteditable / select-text region instead of hijacking for
+        // the file-cut action.
+        const textSel = window.getSelection()?.toString() ?? "";
+        if (textSel.trim().length > 0) return;
         e.preventDefault();
         const sel = paneSelectedPaths.map((p) => listEntriesRef.current.find((x) => x.path === p)).filter(Boolean) as ListEntry[];
         setClipboard({ action: "cut", paths: [...paneSelectedPaths], isRemote: isRemoteRef.current, entries: sel.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })) });
@@ -1278,7 +1526,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
               <span className="text-[12px] text-text-muted">..</span>
             </button>
           )}
-          {dirs.length > 0 && (
+          {!skeletonVisible && dirs.length > 0 && (
             <div>
               <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">{t.folders}</p>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-2">
@@ -1296,7 +1544,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
               </div>
             </div>
           )}
-          {files.length > 0 && (
+          {!skeletonVisible && files.length > 0 && (
             <div>
               {dirs.length > 0 && <p className="text-[10px] text-text-muted uppercase tracking-widest mb-2">{t.files}</p>}
               <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-2">
@@ -1315,14 +1563,70 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
               </div>
             </div>
           )}
-          {dirs.length === 0 && files.length === 0 && (
-            <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
-              <File size={28} className="opacity-20" />
-              <span className="text-[12px]">{t.emptyFolder}</span>
+          {skeletonVisible && (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-2">
+              {Array.from({ length: 12 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="flex flex-col items-start gap-1.5 p-2 rounded-lg border border-border bg-surface-2/30 select-none pointer-events-none"
+                >
+                  <div className="aspect-square w-full rounded bg-surface-3 skeleton-pulse" style={{ animationDelay: `${i * 50}ms` }} />
+                  <div className="h-3 rounded bg-surface-3 skeleton-pulse" style={{ width: `${50 + ((i * 13) % 35)}%`, animationDelay: `${i * 50 + 30}ms` }} />
+                  <div className="h-2.5 w-10 rounded bg-surface-3 skeleton-pulse" style={{ animationDelay: `${i * 50 + 60}ms` }} />
+                </div>
+              ))}
+            </div>
+          )}
+          {!skeletonVisible && dirs.length === 0 && files.length === 0 && (
+            <div className="flex-1 flex items-center justify-center">
+              {inSearchMode ? (
+                <EmptyState
+                  icon={SearchX}
+                  title={t.noSearchResults}
+                  hint={t.noSearchResultsHint.replace("{query}", searchQuery)}
+                  action={
+                    <button
+                      onClick={() => useStore.getState().setSearchQuery("")}
+                      className="text-[11px] text-accent hover:underline"
+                    >
+                      {t.clearSearchAction}
+                    </button>
+                  }
+                />
+              ) : selectedTagIds.length > 0 ? (
+                <EmptyState
+                  icon={FilterX}
+                  title={t.noFilterMatches}
+                  hint={t.noFilterMatchesHint}
+                  action={
+                    <button
+                      onClick={() => useStore.getState().clearTagFilters()}
+                      className="text-[11px] text-accent hover:underline"
+                    >
+                      {t.clearFiltersAction}
+                    </button>
+                  }
+                />
+              ) : (
+                <EmptyState
+                  icon={FolderOpen}
+                  title={t.emptyFolder}
+                  hint={t.emptyFolderHint}
+                />
+              )}
             </div>
           )}
         </div>
-        <StatusBar total={visibleEntries.length} selected={paneSelectedPaths.length} selectedSize={selectedSize} />
+        <StatusBar
+          total={visibleEntries.length}
+          selected={paneSelectedPaths.length}
+          selectedSize={selectedSize}
+          path={panePath}
+          sortBy={sortBy}
+          sortDir={sortDir}
+          showHidden={showHidden}
+          inSearchMode={inSearchMode}
+        />
         </div>
         {ctxMenu && (
           <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={buildMenuItems(ctxMenu.entry)} onClose={() => setCtxMenu(null)} />
@@ -1429,17 +1733,60 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
         )}
 
         {/* Entries */}
-        {visibleEntries.length === 0 && (
-          <div className="flex-1 flex flex-col items-center justify-center gap-2 text-text-muted">
-            <File size={28} className="opacity-20" />
-            <span className="text-[12px]">Empty folder</span>
+        {/* Skeleton rows while list_directory is in flight (>100 ms). Replaces
+            both the empty-state and the real-rows render until entries land. */}
+        {skeletonVisible && (
+          <SkeletonRows count={12} />
+        )}
+
+        {!skeletonVisible && visibleEntries.length === 0 && (
+          <div className="flex-1 flex items-center justify-center">
+            {inSearchMode ? (
+              <EmptyState
+                icon={SearchX}
+                title={t.noSearchResults}
+                hint={t.noSearchResultsHint.replace("{query}", searchQuery)}
+                action={
+                  <button
+                    onClick={() => useStore.getState().setSearchQuery("")}
+                    className="text-[11px] text-accent hover:underline"
+                  >
+                    {t.clearSearchAction}
+                  </button>
+                }
+              />
+            ) : selectedTagIds.length > 0 ? (
+              <EmptyState
+                icon={FilterX}
+                title={t.noFilterMatches}
+                hint={t.noFilterMatchesHint}
+                action={
+                  <button
+                    onClick={() => useStore.getState().clearTagFilters()}
+                    className="text-[11px] text-accent hover:underline"
+                  >
+                    {t.clearFiltersAction}
+                  </button>
+                }
+              />
+            ) : (
+              <EmptyState
+                icon={FolderOpen}
+                title={t.emptyFolder}
+                hint={t.emptyFolderHint}
+              />
+            )}
           </div>
         )}
 
-        {visibleEntries.map((e) => {
+        {/* All-or-nothing stagger decision: animate every row OR none, never
+            partial. Partial staggering creates a visible seam where the
+            cascade hits the static rows. See STAGGER_THRESHOLD comment. */}
+        {!skeletonVisible && visibleEntries.map((e, i) => {
           // Resolve git status once per row, only when git is on. Cheap Map.get
           // lookup; falls through to undefined for non-tracked / non-changed files.
           const gs = gitEnabled ? statusForAbsolutePath(e.path, gitStatus, gitByPath) : null;
+          const useStagger = visibleEntries.length < STAGGER_THRESHOLD;
           return (
             <EntryRow
               key={e.path}
@@ -1457,6 +1804,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
               onPointerDown={(ev) => handleEntryPointerDown(ev, e)}
               gitStatus={gs?.status ?? null}
               gitDimmed={gitDimIgnored && gs?.status === "ignored"}
+              staggerIndex={useStagger ? i : undefined}
             />
           );
         })}
@@ -1485,7 +1833,16 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
           </div>
         )}
       </div>
-      <StatusBar total={visibleEntries.length} selected={paneSelectedPaths.length} selectedSize={selectedSize} />
+      <StatusBar
+          total={visibleEntries.length}
+          selected={paneSelectedPaths.length}
+          selectedSize={selectedSize}
+          path={panePath}
+          sortBy={sortBy}
+          sortDir={sortDir}
+          showHidden={showHidden}
+          inSearchMode={inSearchMode}
+        />
       </div>
 
       {ctxMenu && (

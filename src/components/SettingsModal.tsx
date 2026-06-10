@@ -482,8 +482,8 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
   };
 
   return (
-    <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/60">
-      <div className="bg-surface-1 border border-border rounded-xl shadow-2xl w-[640px] max-h-[80vh] flex overflow-hidden">
+    <div className="modal-backdrop-in fixed inset-0 z-[400] flex items-center justify-center bg-black/60">
+      <div className="modal-content-in bg-surface-1 border border-border rounded-xl shadow-2xl w-[640px] max-h-[80vh] flex overflow-hidden">
 
         {/* Sidebar */}
         <div className="w-[160px] bg-surface-2 border-r border-border-subtle flex flex-col shrink-0 py-2">

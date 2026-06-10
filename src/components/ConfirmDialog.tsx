@@ -26,8 +26,8 @@ export function ConfirmDialog({ message, detail, confirmLabel, onConfirm, onCanc
   }, [onCancel, onConfirm]);
 
   return (
-    <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50">
-      <div className="bg-surface-2 border border-border rounded-xl shadow-2xl p-5 w-[340px] flex flex-col gap-4">
+    <div className="modal-backdrop-in fixed inset-0 z-[9998] flex items-center justify-center bg-black/50">
+      <div className="modal-content-in bg-surface-2 border border-border rounded-xl shadow-2xl p-5 w-[340px] flex flex-col gap-4">
         <div className="flex items-start gap-3">
           <div className="w-8 h-8 rounded-full bg-red-500/10 flex items-center justify-center shrink-0">
             <Trash2 size={16} className="text-red-400" />

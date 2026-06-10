@@ -10,8 +10,46 @@ const DURATIONS: Record<Toast["type"], number> = {
   error: 0, // persistent — requires manual dismiss
 };
 
+/// Per-type visual identity. All four properties are literal Tailwind classes
+/// so the JIT scanner picks them up — don't compose dynamically. Each toast
+/// gets a colored 3px left strip (the dominant "this is a {type}" cue), a
+/// matching icon, and a glow shadow keyed off the same hue for a polished
+/// feel without flooding the message area with color.
+const VARIANTS: Record<Toast["type"], {
+  Icon: typeof CheckCircle;
+  iconClass: string;
+  stripBg: string;       // colored bar on the left edge
+  glow: string;          // box-shadow tint
+}> = {
+  success: {
+    Icon: CheckCircle,
+    iconClass: "text-green-400",
+    stripBg: "bg-green-500",
+    glow: "shadow-[0_4px_18px_-4px_rgba(34,197,94,0.35)]",
+  },
+  error: {
+    Icon: AlertCircle,
+    iconClass: "text-red-400",
+    stripBg: "bg-red-500",
+    glow: "shadow-[0_4px_18px_-4px_rgba(239,68,68,0.4)]",
+  },
+  warning: {
+    Icon: AlertTriangle,
+    iconClass: "text-amber-400",
+    stripBg: "bg-amber-500",
+    glow: "shadow-[0_4px_18px_-4px_rgba(245,158,11,0.35)]",
+  },
+  info: {
+    Icon: Info,
+    iconClass: "text-blue-400",
+    stripBg: "bg-blue-500",
+    glow: "shadow-[0_4px_18px_-4px_rgba(59,130,246,0.35)]",
+  },
+};
+
 function ToastItem({ toast }: { toast: Toast }) {
   const dismiss = useToastStore((s) => s.dismissToast);
+  const variant = VARIANTS[toast.type];
 
   useEffect(() => {
     const ms = DURATIONS[toast.type];
@@ -20,28 +58,29 @@ function ToastItem({ toast }: { toast: Toast }) {
     return () => clearTimeout(t);
   }, [toast.id, toast.type, dismiss]);
 
-  const icons = {
-    success: <CheckCircle size={14} className="shrink-0 text-green-400" />,
-    error: <AlertCircle size={14} className="shrink-0 text-red-400" />,
-    warning: <AlertTriangle size={14} className="shrink-0 text-amber-400" />,
-    info: <Info size={14} className="shrink-0 text-blue-400" />,
-  };
-
-  const borders = {
-    success: "border-green-500/30",
-    error: "border-red-500/30",
-    warning: "border-amber-500/30",
-    info: "border-blue-500/30",
-  };
-
   return (
     <div
       className={clsx(
-        "flex items-start gap-2.5 px-3 py-2.5 bg-surface-2 border rounded-lg shadow-xl w-72 text-[12px]",
-        borders[toast.type],
+        // The entrance animation. One-shot, GPU-only (transform + opacity).
+        "toast-in",
+        // The card itself. The left strip is rendered as a sibling so the
+        // border doesn't constrain layout — keeps the content area cleanly
+        // padded regardless of strip width.
+        "relative flex items-start gap-2.5 pl-4 pr-3 py-2.5 bg-surface-2 border border-border-subtle rounded-lg w-72 text-[12px]",
+        variant.glow,
       )}
     >
-      <div className="mt-0.5">{icons[toast.type]}</div>
+      {/* Colored accent strip on the left edge — the dominant identity cue. */}
+      <div
+        className={clsx(
+          "absolute left-0 top-0 bottom-0 w-[3px] rounded-l-lg",
+          variant.stripBg,
+        )}
+      />
+
+      <div className="mt-0.5">
+        <variant.Icon size={14} className={clsx("shrink-0", variant.iconClass)} />
+      </div>
       <div className="flex-1 min-w-0">
         <p className="text-text-primary leading-snug">{toast.message}</p>
         {toast.detail && (
@@ -65,6 +104,7 @@ function ToastItem({ toast }: { toast: Toast }) {
       <button
         onClick={() => dismiss(toast.id)}
         className="shrink-0 mt-0.5 text-text-muted hover:text-text-primary transition-colors"
+        aria-label="Dismiss"
       >
         <X size={12} />
       </button>
@@ -76,8 +116,12 @@ export function ToastContainer() {
   const toasts = useToastStore((s) => s.toasts);
   if (!toasts.length) return null;
 
+  // Bottom-right is the industry standard for transient notifications and
+  // doesn't collide with the sidebar (left) or main file list (center).
+  // pointer-events-none on the wrapper lets clicks pass through to whatever
+  // is behind; toast cards individually opt back into pointer events.
   return (
-    <div className="fixed bottom-4 left-4 z-[400] flex flex-col gap-2 pointer-events-none">
+    <div className="fixed bottom-4 right-4 z-[400] flex flex-col-reverse gap-2 pointer-events-none">
       {toasts.map((t) => (
         <div key={t.id} className="pointer-events-auto">
           <ToastItem toast={t} />

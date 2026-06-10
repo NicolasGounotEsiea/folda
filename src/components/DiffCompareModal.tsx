@@ -589,10 +589,10 @@ export function DiffCompareModal({
   const hasNav = !loading && !error && result && !result.identical && totalDiffs > 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+    <div className="modal-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div
         ref={ref}
-        className="bg-surface-1 border border-border rounded-xl shadow-2xl w-[1400px] max-w-[96vw] max-h-[92vh] flex flex-col"
+        className="modal-content-in bg-surface-1 border border-border rounded-xl shadow-2xl w-[1400px] max-w-[96vw] max-h-[92vh] flex flex-col"
       >
         {/* Header */}
         <div className="flex items-center gap-2 px-5 py-3 border-b border-border-subtle shrink-0">

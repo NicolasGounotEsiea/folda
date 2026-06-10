@@ -298,9 +298,9 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   let globalIdx = 0;
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-start justify-center pt-[12vh] bg-black/50"
+    <div className="modal-backdrop-in fixed inset-0 z-[9999] flex items-start justify-center pt-[12vh] bg-black/50"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="w-[560px] max-h-[60vh] bg-surface-2 border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden">
+      <div className="modal-content-in w-[560px] max-h-[60vh] bg-surface-2 border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden">
 
         {/* Search input */}
         <div className="flex items-center gap-2 px-4 h-12 border-b border-border-subtle shrink-0">

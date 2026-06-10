@@ -98,8 +98,8 @@ export function BulkRename({ entries, onClose, onDone }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/60">
-      <div className="bg-surface-2 border border-border rounded-xl shadow-2xl w-[600px] max-h-[80vh] flex flex-col">
+    <div className="modal-backdrop-in fixed inset-0 z-[9998] flex items-center justify-center bg-black/60">
+      <div className="modal-content-in bg-surface-2 border border-border rounded-xl shadow-2xl w-[600px] max-h-[80vh] flex flex-col">
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-subtle shrink-0">

@@ -244,10 +244,10 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
   const isHosting = sharingMode === "hosting";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+    <div className="modal-backdrop-in fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div
         ref={ref}
-        className="bg-surface-1 border border-border rounded-xl shadow-2xl w-[420px] max-w-[96vw] p-5 flex flex-col gap-4"
+        className="modal-content-in bg-surface-1 border border-border rounded-xl shadow-2xl w-[420px] max-w-[96vw] p-5 flex flex-col gap-4"
       >
         {/* Header */}
         <div className="flex items-center gap-2">

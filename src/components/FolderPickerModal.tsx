@@ -60,8 +60,8 @@ export function FolderPickerModal({ title, initialPath, onSelect, onClose }: Pro
   const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
 
   return (
-    <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/60">
-      <div className="bg-surface-1 border border-border rounded-xl shadow-2xl flex flex-col w-[520px] max-w-[95vw] h-[420px] max-h-[80vh]">
+    <div className="modal-backdrop-in fixed inset-0 z-[400] flex items-center justify-center bg-black/60">
+      <div className="modal-content-in bg-surface-1 border border-border rounded-xl shadow-2xl flex flex-col w-[520px] max-w-[95vw] h-[420px] max-h-[80vh]">
 
         {/* Header */}
         <div className="flex items-center gap-2 px-4 h-11 border-b border-border-subtle shrink-0">

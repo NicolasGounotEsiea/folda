@@ -44,8 +44,8 @@ export function DiskUsageModal({ path, onClose, onNavigate: _onNavigate }: {
   const total = entries.reduce((s, e) => s + e.size, 0);
 
   return (
-    <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/60">
-      <div className="bg-surface-1 border border-border rounded-xl shadow-2xl w-[600px] max-h-[80vh] flex flex-col overflow-hidden">
+    <div className="modal-backdrop-in fixed inset-0 z-[400] flex items-center justify-center bg-black/60">
+      <div className="modal-content-in bg-surface-1 border border-border rounded-xl shadow-2xl w-[600px] max-h-[80vh] flex flex-col overflow-hidden">
         <div className="flex items-center gap-2 px-4 py-3 border-b border-border-subtle shrink-0">
           <span className="text-[13px] font-semibold text-text-primary flex-1 truncate">
             Disk Usage — {currentPath.replace(/\\/g, "/").split("/").pop()}

@@ -42,6 +42,17 @@ type AppStrings = {
   selectedOne: string;   // "selected" / "sélectionné"
   selectedMany: string;  // "selected" / "sélectionnés"
   emptyFolder: string;
+  emptyFolderHint: string;          // sub-hint shown under the title in empty-state
+  noSearchResults: string;           // "No matches"
+  noSearchResultsHint: string;       // takes the user's query — use {query} placeholder
+  noFilterMatches: string;           // "No files match these filters"
+  noFilterMatchesHint: string;       // adjusting tags
+  clearSearchAction: string;         // ghost button label
+  clearFiltersAction: string;        // ghost button label
+  emptyTrashTitle: string;           // "Trash is empty"
+  emptyTrashHint: string;
+  indexingLabel: string;             // status-bar abbreviation, "Indexing" / "Indexation"
+  hiddenShort: string;                // status-bar badge, "hidden" / "cachés"
   scanning: string;
   navigateToStart: string;
   newFile: string;
@@ -382,7 +393,18 @@ const translations: Record<string, AppStrings> = {
     elements: "items",
     selectedOne: "selected",
     selectedMany: "selected",
-    emptyFolder: "Empty folder",
+    emptyFolder: "This folder is empty",
+    emptyFolderHint: "Drop files here, or right-click to create something new.",
+    noSearchResults: "No matches",
+    noSearchResultsHint: "Nothing found for “{query}”. Try a partial word or different keyword.",
+    noFilterMatches: "No files match these filters",
+    noFilterMatchesHint: "Adjust the active tags or clear them to see more results.",
+    clearSearchAction: "Clear search",
+    clearFiltersAction: "Clear filters",
+    emptyTrashTitle: "Trash is empty",
+    emptyTrashHint: "Files you delete from nxs land here. Restore or empty them anytime.",
+    indexingLabel: "Indexing",
+    hiddenShort: "hidden",
     scanning: "Scanning…",
     navigateToStart: "Navigate to a folder to start",
     newFile: "New file",
@@ -706,7 +728,18 @@ const translations: Record<string, AppStrings> = {
     elements: "éléments",
     selectedOne: "sélectionné",
     selectedMany: "sélectionnés",
-    emptyFolder: "Dossier vide",
+    emptyFolder: "Ce dossier est vide",
+    emptyFolderHint: "Glisse des fichiers ici, ou clic-droit pour en créer un nouveau.",
+    noSearchResults: "Aucun résultat",
+    noSearchResultsHint: "Rien trouvé pour « {query} ». Essaie un mot partiel ou un autre mot-clé.",
+    noFilterMatches: "Aucun fichier ne correspond à ces filtres",
+    noFilterMatchesHint: "Ajuste les étiquettes actives ou enlève-les pour voir plus de résultats.",
+    clearSearchAction: "Effacer la recherche",
+    clearFiltersAction: "Effacer les filtres",
+    emptyTrashTitle: "La corbeille est vide",
+    emptyTrashHint: "Les fichiers supprimés dans nxs apparaissent ici. Restaure-les ou vide-les quand tu veux.",
+    indexingLabel: "Indexation",
+    hiddenShort: "cachés",
     scanning: "Analyse en cours…",
     navigateToStart: "Naviguez vers un dossier pour commencer",
     newFile: "Nouveau fichier",

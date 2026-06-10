@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "../utils/i18n";
+import { EmptyState } from "./EmptyState";
 
 interface TrashEntry {
   id: string;
@@ -95,8 +96,8 @@ export function TrashModal({ onClose }: { onClose: () => void }) {
   const totalSize = items.reduce((s, i) => s + i.size, 0);
 
   return (
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60">
-      <div className="bg-surface-1 border border-border rounded-xl shadow-2xl flex flex-col w-[640px] max-w-[95vw] h-[520px] max-h-[85vh]">
+    <div className="modal-backdrop-in fixed inset-0 z-[300] flex items-center justify-center bg-black/60">
+      <div className="modal-content-in bg-surface-1 border border-border rounded-xl shadow-2xl flex flex-col w-[640px] max-w-[95vw] h-[520px] max-h-[85vh]">
 
         {/* Header */}
         <div className="flex items-center gap-2 px-4 h-11 border-b border-border-subtle shrink-0">
@@ -131,9 +132,12 @@ export function TrashModal({ onClose }: { onClose: () => void }) {
               <span className="text-[12px]">{t.loading}</span>
             </div>
           ) : items.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full gap-3 text-text-muted">
-              <Trash2 size={32} className="opacity-15" />
-              <span className="text-[13px]">{t.trashIsEmpty}</span>
+            <div className="flex items-center justify-center h-full">
+              <EmptyState
+                icon={Trash2}
+                title={t.emptyTrashTitle}
+                hint={t.emptyTrashHint}
+              />
             </div>
           ) : (
             <table className="w-full text-[12px]">

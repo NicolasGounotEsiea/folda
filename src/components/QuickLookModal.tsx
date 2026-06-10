@@ -144,10 +144,10 @@ export function QuickLookModal({
 
   return (
     <div
-      className="fixed inset-0 z-[500] flex items-center justify-center bg-black/70"
+      className="modal-backdrop-in fixed inset-0 z-[500] flex items-center justify-center bg-black/70"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="relative bg-surface-1 border border-border rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+      <div className="modal-content-in relative bg-surface-1 border border-border rounded-2xl shadow-2xl flex flex-col overflow-hidden"
         style={{ maxWidth: "min(900px, 90vw)", maxHeight: "85vh", minWidth: 320 }}
       >
         {/* Header */}

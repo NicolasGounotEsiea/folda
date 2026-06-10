@@ -182,8 +182,8 @@ function DirtyCloseDialog({
   }, [onSave, onCancel]);
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50">
-      <div className="bg-surface-1 border border-border rounded-xl shadow-2xl w-80 p-5 flex flex-col gap-4">
+    <div className="modal-backdrop-in fixed inset-0 z-[200] flex items-center justify-center bg-black/50">
+      <div className="modal-content-in bg-surface-1 border border-border rounded-xl shadow-2xl w-80 p-5 flex flex-col gap-4">
         <div>
           <p className="text-[13px] font-semibold text-text-primary">Unsaved changes</p>
           <p className="text-[12px] text-text-secondary mt-1">

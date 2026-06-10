@@ -107,10 +107,10 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-[500] flex items-center justify-center bg-black/60"
+      className="modal-backdrop-in fixed inset-0 z-[500] flex items-center justify-center bg-black/60"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-surface-1 border border-border rounded-xl shadow-2xl w-[520px] max-h-[80vh] flex flex-col overflow-hidden">
+      <div className="modal-content-in bg-surface-1 border border-border rounded-xl shadow-2xl w-[520px] max-h-[80vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border-subtle shrink-0">
           <span className="text-[13px] font-semibold text-text-primary">{t.title}</span>

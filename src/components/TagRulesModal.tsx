@@ -160,8 +160,8 @@ export function TagRulesModal({ onClose }: { onClose: () => void }) {
   const isSizeRule = newRule.ruleType === "size_gt" || newRule.ruleType === "size_lt";
 
   return (
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60">
-      <div className="bg-surface-1 border border-border rounded-xl shadow-2xl w-[540px] max-h-[80vh] flex flex-col">
+    <div className="modal-backdrop-in fixed inset-0 z-[300] flex items-center justify-center bg-black/60">
+      <div className="modal-content-in bg-surface-1 border border-border rounded-xl shadow-2xl w-[540px] max-h-[80vh] flex flex-col">
 
         {/* Header */}
         <div className="flex items-center gap-2 px-5 py-4 border-b border-border-subtle shrink-0">
