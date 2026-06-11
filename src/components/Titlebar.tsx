@@ -2,6 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Minus, Square, X } from "lucide-react";
 import { useStore } from "../store/useStore";
 import { saveAndClose } from "../utils/appClose";
+import { NxsLogo } from "./NxsLogo";
 
 export function Titlebar() {
   const { sharingMode, sharingWorkspaceName, sharingWorkspaceIcon, sharingClients } = useStore();
@@ -12,7 +13,11 @@ export function Titlebar() {
       style={{ borderBottom: "1px solid #1f1f1f" }}
     >
       <div className="flex flex-1 items-center gap-2 px-4 h-full" data-tauri-drag-region>
-        <img src="/nxs-icon.svg" alt="nxs" className="h-[22px] w-[22px] rounded-[4px] shrink-0" />
+        {/* Inline accent-following logo (default variant) — picks up the
+            user's accent CSS variables so it never clashes with the chosen
+            theme. The OS-level taskbar icon stays brand-blue independently
+            via the static public/nxs-icon.svg. */}
+        <NxsLogo size={22} className="shrink-0" />
 
         {/* Sharing indicator */}
         {sharingMode === "hosting" && sharingWorkspaceName && (

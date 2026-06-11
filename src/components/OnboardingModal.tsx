@@ -6,6 +6,7 @@ import {
 import type { ReactNode } from "react";
 import { Fragment, useEffect, useState } from "react";
 import { useStore } from "../store/useStore";
+import { NxsLogo } from "./NxsLogo";
 
 // ─── Mini demos ───────────────────────────────────────────────────────────────
 // Each demo is a small inline mockup that visually demonstrates the step's
@@ -256,6 +257,9 @@ const T = {
             press <kbd className="px-1.5 py-0.5 rounded bg-surface-3 text-text-primary text-[10px] font-mono">→</kbd> to continue.
           </>
         ),
+        // Brand logo replaces the generic Zap icon for the welcome step — the
+        // app icon IS the visual identity here, no need for accent framing.
+        visual: <NxsLogo size={88} className="drop-shadow-[0_8px_24px_rgba(var(--color-accent-rgb),0.35)]" />,
       },
       {
         icon: <FolderOpen size={30} />,
@@ -381,6 +385,7 @@ const T = {
             appuie sur <kbd className="px-1.5 py-0.5 rounded bg-surface-3 text-text-primary text-[10px] font-mono">→</kbd> pour avancer.
           </>
         ),
+        visual: <NxsLogo size={88} className="drop-shadow-[0_8px_24px_rgba(var(--color-accent-rgb),0.35)]" />,
       },
       {
         icon: <FolderOpen size={30} />,
