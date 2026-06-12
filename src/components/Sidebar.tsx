@@ -813,11 +813,11 @@ export function Sidebar() {
   // Resizable sidebar. Width is persisted across sessions (different from the
   // PreviewPanel which is ephemeral) because the user sets sidebar width once
   // and expects it to stick. Double-click on the handle resets to default.
-  const { width: sidebarWidth, onDragStart: sidebarDragStart, reset: sidebarReset } =
-    useResizable({ defaultWidth: 210, min: 200, max: 480, side: "left", storageKey: "nxs.sidebarWidth" });
+  const { width: sidebarWidth, containerRef: sidebarRef, onDragStart: sidebarDragStart, reset: sidebarReset } =
+    useResizable<HTMLElement>({ defaultWidth: 210, min: 200, max: 480, side: "left", storageKey: "nxs.sidebarWidth" });
 
   return (
-    <aside className="flex flex-col bg-surface-1 border-r shrink-0 overflow-hidden relative"
+    <aside ref={sidebarRef} className="flex flex-col bg-surface-1 border-r shrink-0 overflow-hidden relative"
       style={{ width: sidebarWidth, borderColor: "#1f1f1f" }}>
       {/* Resize handle — thin 4px column on the right edge. Double-click resets
           to the default width. position absolute keeps it from disturbing the

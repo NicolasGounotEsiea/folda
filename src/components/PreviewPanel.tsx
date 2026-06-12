@@ -407,11 +407,12 @@ function FolderStatsView({ path }: { path: string }) {
 import { useResizable } from "../utils/useResizable";
 
 // ─── Folder preview ───────────────────────────────────────────────────────────
-function FolderPreview({ folder, onClose, width, onDragStart }: {
+function FolderPreview({ folder, onClose, width, onDragStart, containerRef }: {
   folder: ListEntry;
   onClose: () => void;
   width: number;
   onDragStart: (e: React.MouseEvent) => void;
+  containerRef: React.MutableRefObject<HTMLDivElement | null>;
 }) {
   const { tags, updateFolderTags, activeContextId } = useStore();
   const tFolder = useTranslation();
@@ -455,7 +456,7 @@ function FolderPreview({ folder, onClose, width, onDragStart }: {
   };
 
   return (
-    <div style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden relative select-text">
+    <div ref={containerRef} style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden relative select-text">
       {/* Resize handle */}
       <div
         onMouseDown={onDragStart}
@@ -564,7 +565,7 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
   /// content indexing. Always null for formats we don't index.
   const [indexedContent, setIndexedContent] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"info" | "history" | "git">("info");
-  const { width, onDragStart } = useResizable({ defaultWidth: 280, side: "right" });
+  const { width, containerRef, onDragStart } = useResizable({ defaultWidth: 280, side: "right" });
 
   useEffect(() => {
     setTextPreview(null);
@@ -607,12 +608,12 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
   }, [selectedFile?.id]);
 
   if (selectedEntry?.kind === "folder") return (
-    <FolderPreview folder={selectedEntry.entry} onClose={onClose} width={width} onDragStart={onDragStart} />
+    <FolderPreview folder={selectedEntry.entry} onClose={onClose} width={width} onDragStart={onDragStart} containerRef={containerRef} />
   );
 
   if (!selectedFile) {
     return (
-      <div style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col items-center justify-center gap-2 text-text-muted relative">
+      <div ref={containerRef} style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col items-center justify-center gap-2 text-text-muted relative">
         <div onMouseDown={onDragStart} className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-accent/40 transition-colors" />
         <button onClick={onClose} title="Close panel" className="absolute top-2 right-2 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors">
           <PanelRightClose size={12} />
@@ -651,7 +652,7 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
   const isCode = ext in EXT_LANG;
 
   return (
-    <div style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden relative select-text">
+    <div ref={containerRef} style={{ width }} className="bg-surface-1 border-l border-border-subtle shrink-0 flex flex-col overflow-hidden relative select-text">
       {/* Resize handle */}
       <div onMouseDown={onDragStart} className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-accent/40 transition-colors z-10" />
       {/* Close button */}

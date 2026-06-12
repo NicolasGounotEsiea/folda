@@ -319,6 +319,30 @@ html.accent-metallic .border-accent {
   }
 }
 
+/* ── Resize drag mode — global perf suppression while dragging a panel ──── */
+/* Applied to <body> by `useResizable` while the user is dragging the
+ * sidebar or preview-panel handle. Suppresses every per-frame side effect
+ * that's NOT the actual width change so the browser only has to do layout
+ * + paint for the resized panel, not the hover/transition/animation work
+ * cascaded across the rest of the UI.
+ *
+ * The `!important` flags override Tailwind utility classes that ship their
+ * own `transition` declarations. Restored automatically the moment the
+ * mouseup fires (class removed in useResizable.ts).
+ *
+ * pointer-events: none on body would block the mouseup handler itself, so
+ * we keep events on the body but kill them on its descendants — the drag
+ * is window-level (mousemove on window) so this is safe. */
+body.resize-dragging * {
+  pointer-events: none !important;
+  transition: none !important;
+  animation: none !important;
+}
+body.resize-dragging {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
 /* ── FileList skeleton + row entry animations ────────────────────────────── */
 /* Skeleton rows shown briefly while list_directory is in flight (>100 ms).
  * The pulse uses a soft surface-3→surface-4 tint so it reads as "loading" but
