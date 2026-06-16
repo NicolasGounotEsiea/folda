@@ -2,6 +2,20 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.16] - 2026-06-16
+
+### Internal
+
+- Update in-app release reader
+- enhance release pipeline 
+
+### Added
+-
+- UpdateChecker.tsx now renders release notes via ReactMarkdown + remarkGfm inside a scrollable max-h-48 container, with the version line + Install button moved to their own row above so they never get crushed by long changelogs.
+- New .update-notes-md rules in src/index.css style headings (##/###), lists, bold, code, links and <hr> legibly without pulling in @tailwindcss/typography.
+
+- Section headings like ### Added / ### Fixed from CHANGELOG.md will now render as proper bold headings instead of literal ### text, and bullet lists get real disc bullets.
+
 ## [0.1.15] - 2026-06-16
 
 ### Internal

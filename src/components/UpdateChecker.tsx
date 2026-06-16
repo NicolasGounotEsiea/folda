@@ -3,6 +3,8 @@ import { clsx } from "clsx";
 import { CheckCircle2, Download, Loader2, RefreshCw, RotateCw, XCircle } from "lucide-react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useStore } from "../store/useStore";
 import { useToastStore } from "../store/useToastStore";
 
@@ -169,17 +171,12 @@ export function UpdateChecker() {
   if (state.kind === "available") {
     return (
       <div className="flex flex-col gap-3 p-3 rounded-lg border border-accent/30 bg-accent/5">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <p className="text-[12px] text-text-primary font-medium">
-              {t.available} v{state.update.version}
-            </p>
-            {state.update.body && (
-              <p className="text-[11px] text-text-muted mt-1 line-clamp-4 whitespace-pre-line">
-                {state.update.body}
-              </p>
-            )}
-          </div>
+        {/* Header row: version + install button. Stays compact regardless
+            of how long the release notes are below. */}
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[12px] text-text-primary font-medium">
+            {t.available} v{state.update.version}
+          </p>
           <button
             onClick={() => handleInstall(state.update)}
             className="flex items-center gap-1.5 h-7 px-3 rounded text-[11px] text-white bg-accent hover:bg-accent/80 transition-colors shrink-0"
@@ -187,6 +184,19 @@ export function UpdateChecker() {
             <Download size={11} /> {t.install}
           </button>
         </div>
+
+        {/* Release notes — rendered as markdown via react-markdown + remark-gfm
+            (same stack as the AI panel). Wrapped in a scrollable max-h
+            container so long changelogs don't push the modal off-screen.
+            The prose-invert utilities give us decent typography for headings,
+            lists, code, and bold without writing a per-element style sheet. */}
+        {state.update.body && (
+          <div className="max-h-48 overflow-y-auto pr-1 text-[11px] text-text-secondary leading-relaxed update-notes-md">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {state.update.body}
+            </ReactMarkdown>
+          </div>
+        )}
       </div>
     );
   }

@@ -319,6 +319,59 @@ html.accent-metallic .border-accent {
   }
 }
 
+/* ── Release notes markdown (in-app updater) ─────────────────────────────── */
+/* Scoped to the UpdateChecker's notes block. Keeps the styling small and
+ * focused — no full markdown theme — so changelog sections (## headings,
+ * ### sub-sections, bullet lists, **bold**, `code`) render legibly inside
+ * the compact updater card without bringing in @tailwindcss/typography
+ * weight for what's effectively one screen. */
+.update-notes-md h2 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 8px 0 4px;
+}
+.update-notes-md h3 {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 8px 0 4px;
+  letter-spacing: 0.02em;
+}
+.update-notes-md h2:first-child,
+.update-notes-md h3:first-child {
+  margin-top: 0;
+}
+.update-notes-md p { margin: 4px 0; }
+.update-notes-md ul, .update-notes-md ol {
+  margin: 4px 0 4px 16px;
+  padding: 0;
+}
+.update-notes-md ul { list-style: disc; }
+.update-notes-md ol { list-style: decimal; }
+.update-notes-md li { margin: 2px 0; }
+.update-notes-md li::marker { color: var(--color-text-muted); }
+.update-notes-md strong { color: var(--color-text-primary); font-weight: 600; }
+.update-notes-md code {
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 10px;
+  background: var(--color-surface-3);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--color-text-primary);
+}
+.update-notes-md a {
+  color: rgb(var(--color-accent-rgb));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.update-notes-md a:hover { text-decoration-thickness: 2px; }
+.update-notes-md hr {
+  border: none;
+  border-top: 1px solid var(--color-border-subtle);
+  margin: 8px 0;
+}
+
 /* ── Resize drag mode — global perf suppression while dragging a panel ──── */
 /* Applied to <body> by `useResizable` while the user is dragging the
  * sidebar or preview-panel handle. Suppresses every per-frame side effect

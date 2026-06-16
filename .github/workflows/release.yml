@@ -30,6 +30,16 @@ jobs:
             Write-Error "No tag could be resolved from inputs or github.ref_name"
             exit 1
           }
+          # Normalize: accept both `0.1.15` and `v0.1.15` as workflow_dispatch
+          # input. Without this guard, typing the version without the `v`
+          # makes actions/checkout try to fetch `refs/tags/0.1.15` which
+          # doesn't exist — the trigger pattern is `v*` so the real tag is
+          # always v-prefixed. Pure ergonomic fix, doesn't change behaviour
+          # for tag-push triggers (github.ref_name always carries the `v`).
+          if ($tag -notmatch '^v') {
+            Write-Host "Input '$tag' missing leading 'v' — normalizing to 'v$tag'"
+            $tag = "v$tag"
+          }
           $version = $tag -replace '^v', ''
           $isPrerelease = if ($tag -match '-') { 'true' } else { 'false' }
           "tag=$tag"                     >> $env:GITHUB_OUTPUT
