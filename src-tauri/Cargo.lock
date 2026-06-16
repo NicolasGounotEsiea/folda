@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "nxs"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "anyhow",
  "flate2",
