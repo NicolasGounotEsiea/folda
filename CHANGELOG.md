@@ -7,6 +7,7 @@ All notable changes to nxs are documented here.
 ### Internal
 
 - Embed the updater public key in `tauri.conf.json` (replaces the `REPLACE_WITH_…` placeholder shipped in v0.1.14). This is the first release whose binary can verify and install future signed updates in-app — v0.1.14's auto-update UI was wired but the embedded placeholder pubkey couldn't validate any signature, so the "Install now" flow would have failed at the verification step. No user-facing change vs v0.1.14 beyond this key; pure infrastructure release to make subsequent v0.1.16+ releases installable in-place.
+- Set `bundle.createUpdaterArtifacts: true` in `tauri.conf.json`. Tauri 2 gates the generation of `.sig` files behind this flag — without it, even with `TAURI_SIGNING_PRIVATE_KEY` set in the environment, the bundler silently produces unsigned installers and our `release.yml` then skips manifest generation (no `latest.json` published). Adding the flag is what actually enables the signing pipeline end-to-end.
 
 ## [0.1.14] - 2026-06-16
 
