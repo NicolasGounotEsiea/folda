@@ -359,6 +359,13 @@ const ROW_COLS = { gridTemplateColumns: "15px 1fr 64px 96px 42px" } as const;
 const STAGGER_THRESHOLD = 50;
 
 // ─── Entry row ────────────────────────────────────────────────────────────────
+/// Handler signatures changed to take the entry as a parameter (rather than
+/// being pre-bound per row at the call site). This lets the parent pass
+/// STABLE handler references — created once via `useCallback` — instead of
+/// inline closures that capture `e` and get recreated every render. The
+/// `memo()` then actually does its job: only the row whose props (selected,
+/// cut, renaming, gitStatus…) actually changed re-renders. The cascade of
+/// "every parent render → N row re-renders" is gone.
 const EntryRow = memo(function EntryRow({
   entry, selected, cut,
   onClick, onDoubleClick, onNavigate, onContextMenu,
@@ -370,15 +377,15 @@ const EntryRow = memo(function EntryRow({
   entry: ListEntry;
   selected: boolean;
   cut: boolean;
-  onClick: (e: React.MouseEvent) => void;
-  onDoubleClick: () => void;
+  onClick: (e: React.MouseEvent, entry: ListEntry) => void;
+  onDoubleClick: (entry: ListEntry) => void;
   onNavigate: (path: string) => void;
   onContextMenu: (e: React.MouseEvent, entry: ListEntry) => void;
   renaming: boolean;
-  onRenameSubmit: (name: string) => void;
+  onRenameSubmit: (entry: ListEntry, name: string) => void;
   onRenameCancel: () => void;
   isDragTarget?: boolean;
-  onPointerDown?: (e: React.PointerEvent) => void;
+  onPointerDown?: (e: React.PointerEvent, entry: ListEntry) => void;
   /// Pre-resolved git status for this entry (relative-to-repo-root path lookup
   /// happens in the parent so each row stays a pure memo'd render).
   gitStatus?: import("../store/useGitStore").FileStatus | null;
@@ -418,10 +425,14 @@ const EntryRow = memo(function EntryRow({
           ? { ...ROW_COLS, animationDelay: `${staggerIndex * 12}ms` }
           : ROW_COLS
       }
+      // These per-render closures bind `entry` into the parent-supplied
+      // handlers. The closures are created during EntryRow's own render, so
+      // they don't break the memo: the parent-supplied handlers themselves
+      // are stable, which is what memo's prop comparison cares about.
       onContextMenu={(e) => onContextMenu(e, entry)}
-      onClick={renaming ? undefined : onClick}
-      onDoubleClick={renaming ? undefined : () => entry.is_dir ? onNavigate(entry.path) : onDoubleClick()}
-      onPointerDown={onPointerDown}
+      onClick={renaming ? undefined : (e) => onClick(e, entry)}
+      onDoubleClick={renaming ? undefined : () => entry.is_dir ? onNavigate(entry.path) : onDoubleClick(entry)}
+      onPointerDown={onPointerDown ? (e) => onPointerDown(e, entry) : undefined}
       className={clsx(
         ROW_GRID,
         "w-full h-9 transition-colors group cursor-pointer select-none",
@@ -448,10 +459,10 @@ const EntryRow = memo(function EntryRow({
           onChange={(e) => setRenameVal(e.target.value)}
           onKeyDown={(e) => {
             e.stopPropagation();
-            if (e.key === "Enter") onRenameSubmit(renameVal);
+            if (e.key === "Enter") onRenameSubmit(entry, renameVal);
             if (e.key === "Escape") onRenameCancel();
           }}
-          onBlur={() => onRenameSubmit(renameVal)}
+          onBlur={() => onRenameSubmit(entry, renameVal)}
           onClick={(e) => e.stopPropagation()}
           style={{ gridColumn: "2 / -1" }}
           className="bg-surface-3 border border-accent rounded px-1 text-[12px] text-text-primary outline-none"
@@ -1294,6 +1305,35 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
     }
   };
 
+  // ─── Stable handler wrappers for EntryRow ──────────────────────────────────
+  // The per-row handlers above (handleClick, handleOpen, etc.) close over
+  // current React state and are re-created on every parent render. Passing
+  // them directly to EntryRow makes the memo() useless — even an unrelated
+  // re-render in the parent invalidates the prop references and re-renders
+  // every row, which is the actual cause of "scrolling 5000-row folders
+  // feels stuttery while clicking around".
+  //
+  // The pattern below — a single ref refreshed each render, plus useCallback
+  // wrappers with empty deps — gives the row props that NEVER change
+  // identity. memo() then only re-renders the row whose own props (selected,
+  // cut, renaming, gitStatus, ...) actually changed. This is essentially the
+  // "useEffectEvent" pattern from React's RFC, hand-rolled here.
+  const rowHandlersRef = useRef({
+    handleClick, handleOpen, handleContextMenu, navigate,
+    handleRenameSubmit, handleEntryPointerDown,
+  });
+  rowHandlersRef.current = {
+    handleClick, handleOpen, handleContextMenu, navigate,
+    handleRenameSubmit, handleEntryPointerDown,
+  };
+  const stableOnClick = useCallback((e: React.MouseEvent, entry: ListEntry) => rowHandlersRef.current.handleClick(e, entry), []);
+  const stableOnDoubleClick = useCallback((entry: ListEntry) => rowHandlersRef.current.handleOpen(entry), []);
+  const stableOnContextMenu = useCallback((e: React.MouseEvent, entry: ListEntry) => rowHandlersRef.current.handleContextMenu(e, entry), []);
+  const stableOnNavigate = useCallback((path: string) => rowHandlersRef.current.navigate(path), []);
+  const stableOnRenameSubmit = useCallback((entry: ListEntry, name: string) => rowHandlersRef.current.handleRenameSubmit(entry, name), []);
+  const stableOnRenameCancel = useCallback(() => setRenamingPath(null), []);
+  const stableOnPointerDown = useCallback((e: React.PointerEvent, entry: ListEntry) => rowHandlersRef.current.handleEntryPointerDown(e, entry), []);
+
   // ─── Create folder ──────────────────────────────────────────────────────────
   const handleCreateFolder = async () => {
     const name = newFolderName.trim();
@@ -1794,14 +1834,16 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
               selected={paneSelectedPaths.includes(e.path)}
               cut={clipboard?.action === "cut" && clipboard.paths.includes(e.path)}
               renaming={renamingPath === e.path}
-              onClick={(ev) => handleClick(ev, e)}
-              onDoubleClick={() => handleOpen(e)}
-              onNavigate={navigate}
-              onContextMenu={handleContextMenu}
-              onRenameSubmit={(name) => handleRenameSubmit(e, name)}
-              onRenameCancel={() => setRenamingPath(null)}
+              // Stable refs — pass the wrappers above instead of per-row
+              // inline closures so memo() can actually skip re-renders.
+              onClick={stableOnClick}
+              onDoubleClick={stableOnDoubleClick}
+              onNavigate={stableOnNavigate}
+              onContextMenu={stableOnContextMenu}
+              onRenameSubmit={stableOnRenameSubmit}
+              onRenameCancel={stableOnRenameCancel}
               isDragTarget={dropTarget === e.path}
-              onPointerDown={(ev) => handleEntryPointerDown(ev, e)}
+              onPointerDown={stableOnPointerDown}
               gitStatus={gs?.status ?? null}
               gitDimmed={gitDimIgnored && gs?.status === "ignored"}
               staggerIndex={useStagger ? i : undefined}

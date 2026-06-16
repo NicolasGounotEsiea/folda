@@ -2,6 +2,42 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.14] - 2026-06-16
+
+### Added
+
+- **In-app auto-updater** — first release wired with the `tauri-plugin-updater` Phase A. Settings → About now has an "Updates" section with a "Check for updates" button. When a newer version is published, the UI shows the version + release notes + an "Install now" button; clicking it downloads the signed NSIS installer with a live progress bar, verifies its signature against the embedded public key, runs the installer in passive mode, and relaunches nxs into the new build via the `process` plugin. Five UI states modelled as a discriminated union (`idle` / `checking` / `up-to-date` / `available` / `downloading` / `error`) so the rendering stays exhaustive and switching between states never leaks stale data. `UpdateChecker` carries its own self-contained EN/FR strings — no global i18n changes for a tightly-scoped UI block. Setup of the signing keypair + GitHub secrets is one-time and documented in `docs/auto-update-setup.md`.
+- **`latest.json` manifest generation in `release.yml`** — after each Tauri build, a new step reads the `.sig` file the bundler drops next to the NSIS installer, builds the manifest JSON the updater plugin expects (`version`, `notes`, `pub_date`, `platforms.windows-x86_64.{signature, url}`), and attaches it to the GitHub release. The manifest URL `https://github.com/{repo}/releases/latest/download/latest.json` is the endpoint the in-app updater polls. When signing secrets aren't configured (first release of the feature, key rotation, fork without infra), the step skips manifest generation with a clear warning instead of failing — so the rest of the release pipeline keeps working.
+- **`docs/auto-update-setup.md`** — one-time setup guide for the maintainer covering keypair generation (`npx @tauri-apps/cli signer generate`), placing the public key in `tauri.conf.json`, configuring the two GitHub secrets (`TAURI_SIGNING_PRIVATE_KEY` + password), and a failure-mode troubleshooting table.
+- **Diff display toggle: char vs line** in the `DiffCompareModal` header. Char-level (the existing default) highlights changed characters inside `modify` rows via the PUA marker spans — best for spotting subtle edits like a one-character typo in a long line. Line-level strips the markers and shows the whole modified line with a plain red/green wash — cleaner for review-style reading where you just want "this line changed" without zooming into characters. Choice persists across modal opens via `localStorage.nxs.diffMode`. Backend unchanged; only the frontend renderer branches between `renderInline()` and `stripInlineMarkers()` based on mode.
+- **CSV delimiter selection with auto-detect** in `SpreadsheetViewer`. A new toolbar row (visible only for `.csv` files) shows `Sep: [Auto | , | ; | Tab | | | Space]` as a segmented control. The default `Auto` runs `detectCsvDelimiter()` on the file's first 20 non-empty lines, scoring each candidate by (variance of cells per row) / (average cells per row) — the right delimiter produces consistently high column counts across lines. Manual override switches the active delimiter and re-parses on the fly (re-fetch avoided by reading from the already-loaded `rawContent`). Choice persists globally via `localStorage.nxs.csvDelimiter` so French Excel users with their semicolons don't have to toggle every session. SheetJS's `XLSX.read(text, { type: "string", FS: delimiter })` does the actual parsing — no new dependency.
+
+### Improved
+
+- **`EntryRow` memo finally works** — for years the `memo()` on `EntryRow` was effectively dead code because the parent's `.map()` passed inline closures (`onClick={(ev) => handleClick(ev, e)}`) that get fresh identity every render, busting memo's shallow prop comparison. This release introduces the "useEffectEvent" pattern hand-rolled: a `rowHandlersRef` mirrors the latest handler implementations each render, and seven `useCallback([])` wrappers (`stableOnClick`, `stableOnDoubleClick`, `stableOnContextMenu`, `stableOnNavigate`, `stableOnRenameSubmit`, `stableOnRenameCancel`, `stableOnPointerDown`) call through the ref. The stable wrappers' references never change, so memo's prop check actually skips — only the row whose own props (`selected`, `cut`, `renaming`, `gitStatus`, …) changed re-renders. Interactive operations (sort, tag toggle, watcher event landing a new row) on 5,000-file folders are now O(1) re-renders instead of O(N). `EntryRow`'s handler signatures gained an `entry` parameter (was implicitly captured); inner closures bind `entry` from the row's own prop so the click wiring is identical from the user's perspective.
+- **`SpreadsheetViewer` MAX_ROWS cap raised from 50,000 to 500,000** — the cap exists to bound JS heap pressure, not because the virtual scroll renderer struggles with large counts (it already only DOM-mounts the visible chunk + overscan). 500k × ~10 cols × ~20 bytes ≈ 100 MB worst-case, comfortably under any realistic limit. Files beyond that remain a streaming-architecture problem for V2.
+- **`SpreadsheetViewer` scroll throttled to requestAnimationFrame** — the previous `onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}` triggered React state updates at the browser's native scroll-event rate (60–120 Hz) even when the rendered slice (`startIdx..endIdx`) didn't change. `handleScroll` now coalesces bursts into a single state commit per animation frame via a `requestAnimationFrame` gate + a ref for the latest scrolled offset. Drops the re-render rate during scrolling from ~120/s to ~60/s and removes the visible stutter on large CSVs.
+- **Auto-updater plugin permissions wired in `capabilities/default.json`** (`updater:default`, `process:default`) — required by Tauri 2's permission model. Without these the JS-side `check()` / `downloadAndInstall()` / `relaunch()` would be denied at runtime.
+
+### Fixed
+
+- **Ctrl+C in `PreviewPanel` and other `select-text` regions** now copies selected text to the system clipboard. The window-level keydown handler in `FileList` used to hijack Ctrl+C unconditionally for the "copy selected file paths to clipboard" action, blocking the browser's native text copy. Both `Ctrl+C` and `Ctrl+X` now first check `window.getSelection().toString().trim().length > 0` — if there's a text selection anywhere in the document, the handler passes through to the browser. File-clipboard behavior is unchanged when no text is selected.
+- **Diff `renderInline` stale-marker resilience** — when the inline marker parser hits an open-without-close (truncated diff stream, file ending mid-marker), it falls back to rendering the rest as plain text. No regression here; documented because the new `stripInlineMarkers` helper uses the same PUA codepoint range and the two functions must stay in sync.
+
+### Reverted
+
+- **`content-visibility: auto` on `EntryRow`** — attempted as a scroll-perf improvement but had the opposite effect in practice. The browser's per-frame intersection observation + lazy layout/paint of rows entering the viewport cost more than just having all rows DOM-mounted and relying on the GPU compositor for native scrolling. Reverted; the `ROW_PERF` constant and its docstring were removed. The memo fix above is the actual scroll perf win.
+
+### Internal
+
+- New `tauri-plugin-updater = "2"` + `tauri-plugin-process = "2"` Cargo deps. Both plugins are registered in `lib.rs`'s builder chain right after `tauri_plugin_drag::init()`.
+- New `@tauri-apps/plugin-updater` + `@tauri-apps/plugin-process` npm deps.
+- `tauri.conf.json` gained a `plugins.updater` block with `endpoints` (single GitHub Releases URL), `pubkey` placeholder (must be replaced before signed releases work — see `docs/auto-update-setup.md`), and `windows.installMode = "passive"` so the NSIS installer shows progress without requiring a user click.
+- New `src/components/UpdateChecker.tsx` (~200 lines, self-contained).
+- New `src/components/DiffCompareModal.tsx::stripInlineMarkers()` — single-line PUA range replace.
+- New `src/components/SpreadsheetViewer.tsx::detectCsvDelimiter()` + `CSV_DELIMITERS` array.
+- `release.yml` build step now reads `TAURI_SIGNING_PRIVATE_KEY` + `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from secrets. Missing secrets degrade gracefully (no `.sig` produced, manifest step skips with warning, rest of the release still publishes).
+
 ## [0.1.13] - 2026-06-11
 
 ### Added

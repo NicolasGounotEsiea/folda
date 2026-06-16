@@ -1,16 +1,58 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { clsx } from "clsx";
 import { ArrowDown, ArrowUp, ArrowUpDown, Filter, History, ListFilter, Save, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useViewerFindStore } from "../store/useViewerFindStore";
 import * as XLSX from "xlsx";
 import { useStore } from "../store/useStore";
 import { useTranslation } from "../utils/i18n";
 import { SnapshotPanel } from "./SnapshotPanel";
 
-const MAX_ROWS = 50_000;
+/// Cap on parsed rows. Raised from 50,000 to 500,000 in 0.1.14 — the virtual
+/// scroll renderer below handles any number of rows in DOM (only the visible
+/// chunk is rendered), so the cap exists purely to bound JS heap pressure
+/// from the parsed `rows` array. 500k × ~10 cols × ~20 bytes ≈ 100 MB heap
+/// worst-case, comfortably under any realistic limit; files beyond that are
+/// vanishingly rare for human-readable CSV/XLSX and would deserve a streaming
+/// architecture if anyone asks (not this release).
+const MAX_ROWS = 500_000;
 const ROW_HEIGHT = 22; // px — must match CSS
 const OVERSCAN = 20;
+
+/// CSV delimiter dropdown options. `value` is the actual character passed to
+/// the parser; `label` is what the user sees. Order matters (auto first).
+const CSV_DELIMITERS = [
+  { value: ",",  label: "," },
+  { value: ";",  label: ";" },
+  { value: "\t", label: "Tab" },
+  { value: "|",  label: "|" },
+  { value: " ",  label: "Space" },
+];
+
+/// Sniffs the most likely delimiter from the first ~20 lines of a CSV.
+/// Strategy: for each candidate, count how many cells each line WOULD split
+/// into. The right delimiter produces a consistent column count > 1 across
+/// lines (low variance). Falls back to comma if nothing sticks out — same
+/// as the SheetJS default, so the worst case is "no improvement".
+function detectCsvDelimiter(text: string): string {
+  const candidates = [",", ";", "\t", "|"];
+  const lines = text.split(/\r?\n/).slice(0, 20).filter((l) => l.length > 0);
+  if (lines.length === 0) return ",";
+
+  let best = { delim: ",", score: Infinity };
+  for (const delim of candidates) {
+    const counts = lines.map((l) => l.split(delim).length);
+    const avg = counts.reduce((a, b) => a + b, 0) / counts.length;
+    // Skip delimiters that don't actually split (everything in one column).
+    if (avg <= 1.05) continue;
+    // Lower variance + higher avg both signal a real delimiter.
+    const variance = counts.reduce((a, b) => a + (b - avg) ** 2, 0) / counts.length;
+    // Composite score: variance penalized, avg rewarded. Lower is better.
+    const score = variance / avg;
+    if (score < best.score) best = { delim, score };
+  }
+  return best.delim;
+}
 
 const COL_LETTER = (n: number) => {
   let s = "";
@@ -63,11 +105,49 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
   const [snapshotKey, setSnapshotKey] = useState(0);
   const [rawContent, setRawContent] = useState<string>("");
 
+  // CSV delimiter — `null` means auto-detect from the file's first lines.
+  // Explicit string overrides auto-detect (user picked from the dropdown).
+  // Persisted globally so the next CSV opens with the same preference — if
+  // the user usually deals with semicolon-separated files (French Excel),
+  // they shouldn't have to toggle every time.
+  const [csvDelimiter, setCsvDelimiter] = useState<string | null>(() => {
+    try {
+      const saved = localStorage.getItem("nxs.csvDelimiter");
+      // Accept only known single-char values; anything else falls back to auto.
+      return saved && CSV_DELIMITERS.some((d) => d.value === saved) ? saved : null;
+    } catch { return null; }
+  });
+  useEffect(() => {
+    try {
+      if (csvDelimiter) localStorage.setItem("nxs.csvDelimiter", csvDelimiter);
+      else localStorage.removeItem("nxs.csvDelimiter");
+    } catch { /* quota */ }
+  }, [csvDelimiter]);
+
   // Virtual scroll state
   const scrollRef = useRef<HTMLDivElement>(null);
   const tbodyRef = useRef<HTMLTableSectionElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(500);
+
+  // rAF-throttled scroll handler. Browsers fire `scroll` 60–120 times per
+  // second on most hardware; pushing each one into React state caused
+  // 60+ Hz re-renders of the entire viewer during scroll, even when the
+  // rendered slice (startIdx..endIdx) didn't change. The throttle coalesces
+  // bursts of scroll events into a single state update per frame, dropping
+  // the per-second render count from ~120 to ~60 (one per paint cycle) and
+  // removing the noticeable stutter on big spreadsheets.
+  const scrollRafPendingRef = useRef(false);
+  const pendingScrollTopRef = useRef(0);
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    pendingScrollTopRef.current = e.currentTarget.scrollTop;
+    if (scrollRafPendingRef.current) return;
+    scrollRafPendingRef.current = true;
+    requestAnimationFrame(() => {
+      setScrollTop(pendingScrollTopRef.current);
+      scrollRafPendingRef.current = false;
+    });
+  }, []);
 
   // ── View controls (header-row, sort, filter) ──────────────────────────────
   // Auto-on by default. Most CSVs and small spreadsheets have a header row.
@@ -131,42 +211,70 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
     setActiveIdx(0);
     setScrollTop(0);
 
-    if (isCSV) {
-      invoke<string>("read_file_full", { path })
-        .then((text) => setRawContent(text))
-        .catch(() => setRawContent(""));
-    }
-
-    const url = convertFileSrc(path);
     let cancelled = false;
 
-    fetch(url)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.arrayBuffer();
-      })
-      .then((buf) => {
-        if (cancelled) return;
-        const wb = XLSX.read(buf, { type: "array", cellDates: true });
-        const parsed: SheetData[] = wb.SheetNames.map((name) => {
-          const ws = wb.Sheets[name];
-          const raw: CellValue[][] = XLSX.utils.sheet_to_json(ws, {
-            header: 1,
-            defval: null,
-            raw: false,
-          }) as CellValue[][];
-          const truncated = raw.length > MAX_ROWS;
-          return { name, rows: raw.slice(0, MAX_ROWS), truncated };
+    if (isCSV) {
+      // For CSV we parse from the raw text instead of the binary fetch —
+      // SheetJS's `type: "string"` mode accepts an explicit `FS` (field
+      // separator), which is what makes the delimiter override work. The
+      // text is also kept in `rawContent` for the save path (edit mode).
+      invoke<string>("read_file_full", { path })
+        .then((text) => {
+          if (cancelled) return;
+          setRawContent(text);
+          const effectiveDelim = csvDelimiter ?? detectCsvDelimiter(text);
+          const wb = XLSX.read(text, { type: "string", FS: effectiveDelim, cellDates: true });
+          const parsed: SheetData[] = wb.SheetNames.map((name) => {
+            const ws = wb.Sheets[name];
+            const raw: CellValue[][] = XLSX.utils.sheet_to_json(ws, {
+              header: 1,
+              defval: null,
+              raw: false,
+            }) as CellValue[][];
+            const truncated = raw.length > MAX_ROWS;
+            return { name, rows: raw.slice(0, MAX_ROWS), truncated };
+          });
+          setSheets(parsed);
+          setLoading(false);
+        })
+        .catch((e) => {
+          if (!cancelled) { setError(String(e)); setLoading(false); }
         });
-        setSheets(parsed);
-        setLoading(false);
-      })
-      .catch((e) => {
-        if (!cancelled) { setError(String(e)); setLoading(false); }
-      });
+    } else {
+      // Non-CSV (XLSX, ODS, etc.) — keep the binary fetch path. The
+      // delimiter setting doesn't apply here; XLSX has its own structure.
+      const url = convertFileSrc(path);
+      fetch(url)
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.arrayBuffer();
+        })
+        .then((buf) => {
+          if (cancelled) return;
+          const wb = XLSX.read(buf, { type: "array", cellDates: true });
+          const parsed: SheetData[] = wb.SheetNames.map((name) => {
+            const ws = wb.Sheets[name];
+            const raw: CellValue[][] = XLSX.utils.sheet_to_json(ws, {
+              header: 1,
+              defval: null,
+              raw: false,
+            }) as CellValue[][];
+            const truncated = raw.length > MAX_ROWS;
+            return { name, rows: raw.slice(0, MAX_ROWS), truncated };
+          });
+          setSheets(parsed);
+          setLoading(false);
+        })
+        .catch((e) => {
+          if (!cancelled) { setError(String(e)); setLoading(false); }
+        });
+    }
 
     return () => { cancelled = true; };
-  }, [path]);
+  // Re-parse on path change OR when the user switches the CSV delimiter.
+  // For non-CSV files `csvDelimiter` is just a no-op dep (the parse path
+  // doesn't read it), so the extra re-renders are harmless.
+  }, [path, isCSV, csvDelimiter]);
 
   // Track viewport height via ResizeObserver
   useLayoutEffect(() => {
@@ -409,6 +517,38 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
               </button>
             )}
 
+            {/* CSV delimiter selector — visible only for .csv files. Auto-detect
+                is the default ("Auto" pill); the user can override to any of
+                the standard delimiters if detection misses (typically with
+                semicolon or pipe). The choice persists via localStorage so the
+                next CSV opens with the same preference. */}
+            {isCSV && (
+              <div className="flex items-center rounded overflow-hidden border border-border h-6 shrink-0 text-[10px]" title={t.sheetDelimiterTooltip}>
+                <span className="px-1.5 text-text-muted bg-surface-3">{t.sheetDelimiterLabel}</span>
+                <button
+                  onClick={() => setCsvDelimiter(null)}
+                  className={clsx(
+                    "px-1.5 h-full transition-colors",
+                    csvDelimiter === null ? "bg-accent text-white" : "bg-surface-3 text-text-muted hover:text-text-secondary",
+                  )}
+                >
+                  {t.sheetDelimiterAuto}
+                </button>
+                {CSV_DELIMITERS.map((d) => (
+                  <button
+                    key={d.value}
+                    onClick={() => setCsvDelimiter(d.value)}
+                    className={clsx(
+                      "px-1.5 h-full transition-colors",
+                      csvDelimiter === d.value ? "bg-accent text-white" : "bg-surface-3 text-text-muted hover:text-text-secondary",
+                    )}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Per-column filter row toggle */}
             <button
               onClick={() => setShowColumnFilters((v) => !v)}
@@ -555,7 +695,7 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
           <div
             ref={scrollRef}
             className="flex-1 overflow-auto"
-            onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+            onScroll={handleScroll}
           >
             {sheet.truncated && (
               <div className="px-3 py-1.5 text-[10px] text-amber-400 bg-amber-400/10 border-b border-amber-400/20">

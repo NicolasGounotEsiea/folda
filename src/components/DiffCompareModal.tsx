@@ -38,6 +38,15 @@ const MARK_DEL_CLOSE = "";
 const MARK_INS_OPEN = "";
 const MARK_INS_CLOSE = "";
 
+/** Strips the PUA marker codepoints from a line so it can be rendered as
+ * plain text (line-level diff mode). Cheap regex over a small range of code
+ * points that can never appear in regular file content. Used only when the
+ * user toggles the diff display to "line" mode; "char" mode keeps the
+ * markers so they render as inline highlights. */
+function stripInlineMarkers(line: string): string {
+  return line.replace(/[\u{E000}-\u{E003}]/gu, "");
+}
+
 // Render whitespace characters as visible glyphs. Only called for the inner
 // content of a marker span (the part that actually changed), so unchanged
 // whitespace stays invisible — only the diff highlights show whitespace
@@ -107,7 +116,7 @@ function renderInline(line: string, side: "del" | "ins"): React.ReactNode {
 //   insert  — only right has content, green background spanning the row
 //   modify  — both have content, with intra-line <del>/<ins> highlights
 
-function Row({ row, isActiveDiff, diffAnchor }: {
+function Row({ row, isActiveDiff, diffAnchor, diffMode }: {
   row: DiffRow;
   // Whether this row is part of the currently-active diff GROUP (a maximal
   // run of consecutive non-equal rows). True for every row in that group.
@@ -116,6 +125,12 @@ function Row({ row, isActiveDiff, diffAnchor }: {
   // the scroll-to anchor goToDiff queries. Other rows in the same group
   // don't carry it.
   diffAnchor?: number;
+  // `"char"` (default) renders intra-line PUA markers as colored highlights
+  // — most useful for spotting a single-char typo in a long line.
+  // `"line"` strips the markers and shows the whole modified line with a
+  // plain red/green background — cleaner for review-style reading where
+  // you just want "this line changed" without zooming into characters.
+  diffMode: "char" | "line";
 }) {
   const leftBg = row.kind === "delete" || row.kind === "modify"
     ? "bg-red-500/10"
@@ -147,7 +162,7 @@ function Row({ row, isActiveDiff, diffAnchor }: {
         leftBg,
       )}>
         {row.kind === "modify"
-          ? renderInline(row.left, "del")
+          ? (diffMode === "char" ? renderInline(row.left, "del") : (stripInlineMarkers(row.left) || " "))
           : row.left || " "}
       </td>
       {/* Right line number */}
@@ -163,7 +178,7 @@ function Row({ row, isActiveDiff, diffAnchor }: {
         rightBg,
       )}>
         {row.kind === "modify"
-          ? renderInline(row.right, "ins")
+          ? (diffMode === "char" ? renderInline(row.right, "ins") : (stripInlineMarkers(row.right) || " "))
           : row.right || " "}
       </td>
     </tr>
@@ -336,6 +351,20 @@ export function DiffCompareModal({
   const [expandedTrailing, setExpandedTrailing] = useState<ExpandedRowData[]>([]);
   const ref = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+
+  // Diff display mode — `char` (default) shows intra-line PUA markers as
+  // colored highlights; `line` strips them and shows the whole modified
+  // line with a plain red/green wash. User preference persists via
+  // localStorage so the next compare opens with the same mode.
+  const [diffMode, setDiffMode] = useState<"char" | "line">(() => {
+    try {
+      const saved = localStorage.getItem("nxs.diffMode");
+      return saved === "line" ? "line" : "char";
+    } catch { return "char"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("nxs.diffMode", diffMode); } catch { /* quota */ }
+  }, [diffMode]);
 
   useEffect(() => {
     setLoading(true);
@@ -601,6 +630,31 @@ export function DiffCompareModal({
             <span className="text-red-400 truncate text-[12px]" title={pathA}>− {nameA}</span>
             <span className="text-emerald-400 truncate text-[12px]" title={pathB}>+ {nameB}</span>
           </div>
+          {/* Diff display mode toggle. Char-level highlights changed characters
+              inside modify rows (best for spotting subtle edits); line-level
+              shows the whole modified line with a plain wash (cleaner for
+              review-style reading). Two short labels keep the toggle compact
+              in the already-busy header. */}
+          <div className="flex items-center rounded overflow-hidden border border-border h-6 shrink-0" title={t.diffModeTooltip}>
+            <button
+              onClick={() => setDiffMode("char")}
+              className={clsx(
+                "px-2 h-full text-[10px] transition-colors",
+                diffMode === "char" ? "bg-accent text-white" : "bg-surface-3 text-text-muted hover:text-text-secondary",
+              )}
+            >
+              {t.diffModeChar}
+            </button>
+            <button
+              onClick={() => setDiffMode("line")}
+              className={clsx(
+                "px-2 h-full text-[10px] transition-colors",
+                diffMode === "line" ? "bg-accent text-white" : "bg-surface-3 text-text-muted hover:text-text-secondary",
+              )}
+            >
+              {t.diffModeLine}
+            </button>
+          </div>
           {hasNav && (
             <div className="flex items-center gap-1.5 shrink-0">
               {/* Per-kind line counters: green +, red −, amber ~ for modified.
@@ -763,6 +817,7 @@ export function DiffCompareModal({
                           row={row}
                           isActiveDiff={diffIdx === activeDiffIdx}
                           diffAnchor={diffAnchor}
+                          diffMode={diffMode}
                         />
                       );
                     })}

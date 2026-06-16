@@ -90,7 +90,17 @@ jobs:
       - run: npm ci
 
       - name: Build Tauri app
+        # When the two signing secrets are configured in the repo, Tauri
+        # auto-signs each bundle artifact and writes a `.sig` file next to
+        # the installer — those signatures are what the in-app updater
+        # verifies before replacing the running .exe. When the secrets are
+        # missing (typical for the very first release after this change),
+        # the build still succeeds, but no .sig files are produced and the
+        # manifest step below logs a warning and skips manifest upload.
         run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Collect artifacts
         id: artifacts
@@ -109,6 +119,53 @@ jobs:
           Write-Host "MSI:  $($msi.Name) ($([math]::Round($msi.Length / 1MB, 2)) MB)"
           Write-Host "NSIS: $($nsis.Name) ($([math]::Round($nsis.Length / 1MB, 2)) MB)"
 
+      # Build a `latest.json` manifest that the in-app updater polls.
+      # Tauri's bundler drops `<installer>.sig` next to each artifact when
+      # the signing env vars are set. We read the NSIS one (the in-app
+      # updater installs via NSIS in passive mode — see tauri.conf.json's
+      # `plugins.updater.windows.installMode`), then build the JSON the
+      # updater plugin expects: version, notes, pub_date, plus a single
+      # `platforms.windows-x86_64` entry with the signature + download URL.
+      # The download URL is the public release asset URL — same domain as
+      # the manifest endpoint, no CORS or auth gymnastics needed.
+      - name: Generate latest.json manifest
+        id: manifest
+        shell: pwsh
+        run: |
+          $nsisSig = "${{ steps.artifacts.outputs.NSIS }}.sig"
+          if (-not (Test-Path $nsisSig)) {
+            Write-Warning "No .sig file found at $nsisSig — signing secrets not configured. Skipping manifest generation."
+            Write-Warning "In-app updater will NOT work for this release. Configure TAURI_SIGNING_PRIVATE_KEY{,_PASSWORD} in repo secrets to enable it."
+            "skipped=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $signature = Get-Content $nsisSig -Raw
+          $notes = if (Test-Path release-notes.md) { Get-Content release-notes.md -Raw } else { "" }
+          $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $repo = "${{ github.repository }}"
+          $tag = "${{ steps.tag.outputs.tag }}"
+          $nsisName = "${{ steps.artifacts.outputs.NSIS_NAME }}"
+          $downloadUrl = "https://github.com/$repo/releases/download/$tag/$nsisName"
+          $manifest = @{
+            version   = "${{ steps.tag.outputs.version }}"
+            notes     = $notes.Trim()
+            pub_date  = $pubDate
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $signature.Trim()
+                url       = $downloadUrl
+              }
+            }
+          }
+          # PowerShell's ConvertTo-Json depth defaults to 2 which truncates
+          # our nested platforms object — bump to 10 to be safe. UTF-8 no-BOM
+          # so the updater plugin's JSON parser doesn't choke on the BOM.
+          $json = $manifest | ConvertTo-Json -Depth 10
+          [System.IO.File]::WriteAllText("$PWD\latest.json", $json, [System.Text.UTF8Encoding]::new($false))
+          Write-Host "Generated latest.json:"
+          Get-Content latest.json
+          "skipped=false" >> $env:GITHUB_OUTPUT
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -117,9 +174,14 @@ jobs:
           body_path: release-notes.md
           draft: false
           prerelease: ${{ steps.tag.outputs.is_prerelease == 'true' }}
+          # `latest.json` is attached only when signing was actually performed
+          # — if signing was skipped (no secrets), it never exists, and the
+          # softprops/action-gh-release upload globs the listed paths
+          # tolerantly when one of them is missing.
           files: |
             ${{ steps.artifacts.outputs.MSI }}
             ${{ steps.artifacts.outputs.NSIS }}
+            ${{ steps.manifest.outputs.skipped == 'false' && 'latest.json' || '' }}
 
       # Visible in the Actions tab's Summary view — quick at-a-glance verification
       # without clicking through individual step logs.

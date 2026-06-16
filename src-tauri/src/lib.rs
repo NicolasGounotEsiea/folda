@@ -61,6 +61,12 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_drag::init())
+        // Auto-updater. Endpoint + public key are declared in
+        // `tauri.conf.json`. Frontend drives the check / download / install
+        // via @tauri-apps/plugin-updater. `process` plugin gives the JS side
+        // a `relaunch()` after the installer completes.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;

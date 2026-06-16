@@ -12,6 +12,8 @@
     "core:window:allow-start-dragging",
     "dialog:default",
     "shell:default",
-    "drag:allow-start-drag"
+    "drag:allow-start-drag",
+    "updater:default",
+    "process:default"
   ]
 }

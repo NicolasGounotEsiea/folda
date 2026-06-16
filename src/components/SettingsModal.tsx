@@ -7,6 +7,7 @@ import { clearLog, getLogPath } from "../utils/errorLog";
 import { useStore } from "../store/useStore";
 import { ACCENT_PRESETS, serializeSettings, type AppSettings } from "../utils/settings";
 import { useTranslation } from "../utils/i18n";
+import { UpdateChecker } from "./UpdateChecker";
 
 // ── i18n strings ─────────────────────────────────────────────────────────────
 const T = {
@@ -72,6 +73,10 @@ const T = {
       openLog: "Open log file",
       clearLog: "Clear",
       logCleared: "Log cleared",
+      // ── In-app updater (section heading + sub-text only; the inner UI
+      // ── owns its own strings inside `<UpdateChecker />`) ────────────────
+      updateSection: "Updates",
+      updateSectionDesc: "Check whether a new build is available and install it from inside the app — no manual download.",
     },
   },
   fr: {
@@ -136,6 +141,10 @@ const T = {
       openLog: "Ouvrir le fichier journal",
       clearLog: "Effacer",
       logCleared: "Journal effacé",
+      // ── Mise à jour in-app (titre de section + sous-texte uniquement ;
+      // ── l'UI interne porte ses propres chaînes dans `<UpdateChecker />`) ─
+      updateSection: "Mises à jour",
+      updateSectionDesc: "Vérifie si une nouvelle version est disponible et installe-la depuis l'app — pas de téléchargement manuel.",
     },
   },
 } as const;
@@ -969,6 +978,13 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                       {t.about.version} {__APP_VERSION__}
                     </span>
                   </div>
+                </div>
+
+                {/* ── Updater ────────────────────────────────────────────── */}
+                <div className="flex flex-col gap-2">
+                  <p className="text-[11px] uppercase tracking-wider text-text-muted">{t.about.updateSection}</p>
+                  <p className="text-[11px] text-text-muted">{t.about.updateSectionDesc}</p>
+                  <UpdateChecker />
                 </div>
 
                 <Row label={t.about.telemetry}>

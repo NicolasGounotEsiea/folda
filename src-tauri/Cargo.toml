@@ -1,6 +1,6 @@
 [package]
 name = "nxs"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2021"
 
 [lib]
@@ -27,6 +27,12 @@ tokio-tungstenite = "0.23"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 tauri-plugin-drag = "2"
 tauri-plugin-single-instance = "2"
+# In-app updater. Signs releases with a private key (one-time setup, see
+# docs/auto-update-setup.md), verifies signatures at download time, then
+# replaces the running .exe and relaunches. Endpoint + public key live in
+# tauri.conf.json's `plugins.updater` section.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 pdf-extract = "0.7"
 regex-lite = "0.1"
 # git2 bundled with vendored libgit2 + openssl so we don't depend on system git

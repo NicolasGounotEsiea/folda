@@ -177,6 +177,9 @@ type AppStrings = {
   sheetSheets: string;          // "sheets" / "feuilles"
   sheetSortedBy: string;        // "sorted by" / "trié par"
   sheetColumnFilters: string;       // toolbar button "Column filters" / "Filtres colonne"
+  sheetDelimiterLabel: string;      // mini-label prefix in the dropdown, "Sep:" / "Sép:"
+  sheetDelimiterAuto: string;       // "Auto" pill in the dropdown
+  sheetDelimiterTooltip: string;    // tooltip on the whole dropdown
   sheetColumnFiltersShow: string;   // tooltip when hidden
   sheetColumnFiltersHide: string;   // tooltip when shown
   sheetColumnFilterPlaceholder: string;  // input placeholder e.g. "Filter…"
@@ -349,6 +352,9 @@ type AppStrings = {
   // ── Compare files (Notepad++ Compare-style) ───────────────────────────────
   diffCompareFiles: string;                 // context menu entry
   diffCompareWithOtherPane: string;         // context menu entry, dual-pane only
+  diffModeTooltip: string;                  // tooltip on the line/char toggle
+  diffModeChar: string;                     // toggle label, e.g. "Char"
+  diffModeLine: string;                     // toggle label, e.g. "Line"
   diffComparing: string;                    // loading state in the modal
   diffIdentical: string;                    // "Files are identical"
   diffPrevHunk: string;                     // tooltip for previous-hunk button
@@ -521,6 +527,9 @@ const translations: Record<string, AppStrings> = {
     sheetSheets: "sheets",
     sheetSortedBy: "sorted by",
     sheetColumnFilters: "Column filters",
+    sheetDelimiterLabel: "Sep:",
+    sheetDelimiterAuto: "Auto",
+    sheetDelimiterTooltip: "CSV field separator. Auto-detects from the first lines; pick one explicitly if detection misses (typically semicolon or pipe).",
     sheetColumnFiltersShow: "Show column filters",
     sheetColumnFiltersHide: "Hide column filters",
     sheetColumnFilterPlaceholder: "Filter…",
@@ -685,6 +694,9 @@ const translations: Record<string, AppStrings> = {
 
     diffCompareFiles: "Compare files",
     diffCompareWithOtherPane: "Compare with other pane",
+    diffModeTooltip: "Switch between character-level (intra-line highlights) and line-level (whole-line wash) display",
+    diffModeChar: "Char",
+    diffModeLine: "Line",
     diffComparing: "Computing diff…",
     diffIdentical: "Files are identical",
     diffPrevHunk: "Previous change (Shift+F3)",
@@ -856,6 +868,9 @@ const translations: Record<string, AppStrings> = {
     sheetSheets: "feuilles",
     sheetSortedBy: "trié par",
     sheetColumnFilters: "Filtres colonne",
+    sheetDelimiterLabel: "Sép:",
+    sheetDelimiterAuto: "Auto",
+    sheetDelimiterTooltip: "Séparateur de champs CSV. Auto-détecté à partir des premières lignes ; choisis explicitement si la détection rate (typiquement point-virgule ou pipe).",
     sheetColumnFiltersShow: "Afficher les filtres par colonne",
     sheetColumnFiltersHide: "Masquer les filtres par colonne",
     sheetColumnFilterPlaceholder: "Filtrer…",
@@ -1020,6 +1035,9 @@ const translations: Record<string, AppStrings> = {
 
     diffCompareFiles: "Comparer les fichiers",
     diffCompareWithOtherPane: "Comparer avec l'autre pane",
+    diffModeTooltip: "Basculer entre l'affichage par caractère (highlights intra-ligne) et par ligne (fond plein)",
+    diffModeChar: "Char",
+    diffModeLine: "Ligne",
     diffComparing: "Calcul du diff…",
     diffIdentical: "Les fichiers sont identiques",
     diffPrevHunk: "Changement précédent (Maj+F3)",
