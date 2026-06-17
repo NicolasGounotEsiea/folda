@@ -7,14 +7,18 @@
   reference HTML mockup, viewBox 0 0 512 512.
 -->
 <!--
-  viewBox tightened from 0 0 512 512 to 48 96 416 416 — the original artwork
-  + ambient shadow only spans ~60% of the original canvas, so at small sizes
-  (32 px taskbar) the icon looked visually smaller than neighbors like VS Code.
-  This crop keeps the same artwork coordinates (no recompute needed) but
-  scales 25% bigger on each axis when rasterized. Shadow tail is preserved
-  inside the bottom margin; left/right/top padding stays balanced at ~11%.
+  viewBox iterations:
+    0 0 512 512       — original canvas, artwork occupied ~60%
+    48 96 416 416     — first crop, ~11% padding all around. Still read visually
+                        smaller than VS Code / Files App in the Win11 taskbar.
+    60 112 376 376    — current. Symmetric ~5.3% horizontal padding (artwork
+                        x-extent 80..416, so 20 px each side), ~9-10% vertical
+                        padding which the ambient shadow tail consumes from
+                        below. Net: artwork now fills ~89% of the canvas
+                        width vs 81% before, matching neighbour-icon weight
+                        at 32 px taskbar size without clipping the shadow.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="48 96 416 416" width="512" height="512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="60 112 376 376" width="512" height="512">
   <defs>
     <!-- Folder back: deep brand blue, Fluent vibrancy -->
     <linearGradient id="folder-back" x1="20%" y1="0%" x2="80%" y2="100%">

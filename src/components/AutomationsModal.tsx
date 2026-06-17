@@ -17,9 +17,14 @@ type Condition =
   | { kind: "name_starts_with"; value: string }
   | { kind: "name_regex"; value: string }
   | { kind: "path_contains"; value: string }
-  | { kind: "size_gt"; bytes: number }
-  | { kind: "size_lt"; bytes: number }
-  | { kind: "age_gt_days"; days: number }
+  // Numeric variants serialize as `{ kind, value }` to match the Rust
+  // `Condition` enum exactly (see src-tauri/src/commands/automation.rs).
+  // Earlier revisions used `bytes` / `days` here; serde then rejected the
+  // payload with "missing field `value`" — the regression manifested as a
+  // failed save on any rule using these conditions.
+  | { kind: "size_gt"; value: number }
+  | { kind: "size_lt"; value: number }
+  | { kind: "age_gt_days"; value: number }
   | { kind: "tag_has"; value: string };
 
 type Action =
@@ -77,8 +82,8 @@ const ACTION_KINDS: Action["kind"][] = [
 
 function newCondition(kind: Condition["kind"]): Condition {
   switch (kind) {
-    case "size_gt": case "size_lt": return { kind, bytes: 0 };
-    case "age_gt_days": return { kind, days: 0 };
+    case "size_gt": case "size_lt": return { kind, value: 0 };
+    case "age_gt_days": return { kind, value: 0 };
     default: return { kind, value: "" } as Condition;
   }
 }
@@ -161,7 +166,7 @@ const PRESETS: Preset[] = [
       condition_logic: "and",
       conditions: [
         { kind: "name_starts_with", value: "Screenshot" },
-        { kind: "age_gt_days", days: 30 },
+        { kind: "age_gt_days", value: 30 },
       ],
       actions: [{ kind: "trash" }],
     }),
@@ -195,7 +200,7 @@ const PRESETS: Preset[] = [
       condition_logic: "and",
       conditions: [
         { kind: "ext", value: "tmp" },
-        { kind: "age_gt_days", days: 7 },
+        { kind: "age_gt_days", value: 7 },
       ],
       actions: [{ kind: "trash" }],
     }),
@@ -747,18 +752,16 @@ function ConditionRow({
   const t = useTranslation();
   const numericKinds = new Set<Condition["kind"]>(["size_gt", "size_lt", "age_gt_days"]);
 
-  const value: string = "value" in cond ? cond.value
-    : "bytes" in cond ? String(cond.bytes)
-    : "days" in cond ? String(cond.days)
-    : "";
+  // Every Condition variant carries a `value` field — string for the textual
+  // kinds (ext, name_*, regex, path_contains, tag_has) and number for the
+  // numeric kinds (size_gt, size_lt, age_gt_days). The numeric inputs go
+  // through `Number(raw)` on commit so the payload Rust sees is i64-shaped.
+  const value: string = typeof cond.value === "number" ? String(cond.value) : cond.value;
 
   const setValue = (raw: string) => {
-    if (cond.kind === "size_gt" || cond.kind === "size_lt") {
+    if (numericKinds.has(cond.kind)) {
       const n = Number(raw);
-      onChange({ kind: cond.kind, bytes: Number.isFinite(n) ? n : 0 });
-    } else if (cond.kind === "age_gt_days") {
-      const n = Number(raw);
-      onChange({ kind: "age_gt_days", days: Number.isFinite(n) ? n : 0 });
+      onChange({ kind: cond.kind, value: Number.isFinite(n) ? n : 0 } as Condition);
     } else {
       onChange({ ...cond, value: raw } as Condition);
     }

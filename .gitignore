@@ -14,6 +14,12 @@ src-tauri/gen/
 .env.*
 *.local
 
+# Tauri signing keys (private and public). The private key MUST never be
+# committed; the public key is embedded in tauri.conf.json + GitHub secrets
+# so the on-disk file is just a working copy.
+nxs-updater.key
+nxs-updater.key.pub
+
 # Claude Code
 .claude/
 CLAUDE.md

@@ -9,6 +9,7 @@ import { useStore } from "../store/useStore";
 import type { FileEntry, ListEntry, SearchHit } from "../types";
 import { useTranslation } from "../utils/i18n";
 import { highlightSnippet } from "../utils/highlightSnippet";
+import { isNoisyPath } from "../utils/noisePaths";
 
 interface Command {
   id: string;
@@ -80,6 +81,13 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       const cmds: Command[] = [];
       for (const e of entries) {
         if (seen.has(e.file_path) || !e.file_name) continue;
+        // Skip activity entries for paths buried inside well-known noise
+        // folders (`.git/objects/…`, `node_modules/…`, etc.). The activity
+        // log records every `navigated` event regardless of where the user
+        // ended up — usually because an IDE / build tool reached into the
+        // tree — and those entries crowd out the useful recents. See
+        // `utils/noisePaths.ts` for the matched segments.
+        if (isNoisyPath(e.file_path)) continue;
         seen.add(e.file_path);
         const isDir = e.action === "navigated";
         const target = isDir

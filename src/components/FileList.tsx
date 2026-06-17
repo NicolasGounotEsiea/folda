@@ -3,8 +3,8 @@ import { clsx } from "clsx";
 import {
   ArrowDown, ArrowUp, ChevronUp,
   Binary, Code, Cog, Database, File, FileImage, FileSpreadsheet, FileText, FileType,
-  Film, Folder, FolderOpen, FolderPlus, Music, Package, Presentation,
-  SearchX, FilterX,
+  Film, Filter, Folder, FolderOpen, FolderPlus, Music, Package, Presentation,
+  SearchX, FilterX, X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -575,6 +575,69 @@ function ZipNameModal({ defaultName, onConfirm, onClose }: {
   );
 }
 
+// ─── Quick filter bar ────────────────────────────────────────────────────────
+//
+// Rendered above the scroll container in both list and grid modes when the
+// quick filter is active. Carries the input, a live match counter, and a
+// close button.
+//
+// `data-is-header` mirrors what we use on the sort header row — it's the
+// exclusion attribute the rubber-band system in `onPointerDown` looks for to
+// know "this is interactive chrome, don't start a marquee here". Adding any
+// new clickable to this bar means it inherits the same protection for free.
+//
+// The input handles Esc / Enter / Arrow keys itself so the user can keep
+// typing while moving the selection — the global keydown handler in FileList
+// bails on `tagName === "INPUT"`, so reactive arrow-nav has to live here.
+function QuickFilterBar({
+  query, total, matched, inputRef, onChange, onClose, onEnter, onArrow, t,
+}: {
+  query: string;
+  total: number;
+  matched: number;
+  inputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onChange: (q: string) => void;
+  onClose: () => void;
+  onEnter: () => void;
+  onArrow: (dir: -1 | 1) => void;
+  t: ReturnType<typeof useTranslation>;
+}) {
+  const hasQuery = query.trim().length > 0;
+  return (
+    <div
+      data-is-header
+      className="flex items-center gap-2 px-3 h-8 bg-surface-2 border-b border-border-subtle shrink-0"
+    >
+      <Filter size={12} className="text-accent shrink-0" />
+      <input
+        ref={inputRef}
+        value={query}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { e.preventDefault(); onClose(); }
+          else if (e.key === "Enter") { e.preventDefault(); onEnter(); }
+          else if (e.key === "ArrowDown") { e.preventDefault(); onArrow(1); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); onArrow(-1); }
+        }}
+        placeholder={t.quickFilterPlaceholder}
+        spellCheck={false}
+        autoComplete="off"
+        className="flex-1 bg-transparent text-[12px] text-text-primary outline-none placeholder-text-muted"
+      />
+      <span className="text-[10px] text-text-muted tabular-nums shrink-0" title={t.quickFilterCountTitle}>
+        {hasQuery ? `${matched} / ${total}` : `${total}`}
+      </span>
+      <button
+        onClick={onClose}
+        className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-secondary hover:bg-surface-3 transition-colors"
+        title={t.close}
+      >
+        <X size={11} />
+      </button>
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   const {
@@ -650,6 +713,22 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   // ─── Quick Look ───────────────────────────────────────────────────────────────
   const [quickLookEntry, setQuickLookEntry] = useState<ListEntry | null>(null);
 
+
+  // ─── Quick filter ─────────────────────────────────────────────────────────────
+  // Press `/` to filter the current folder by substring. Pure viewport-level
+  // filter — no FTS, no backend call. State shape: `null` = inactive (no chip,
+  // no input), `""` = open with empty query (input focused, full list shown),
+  // `"foo"` = open with query (input may be blurred, list filtered).
+  //
+  // State is local to each FileList mount, so dual-pane gives each pane its
+  // own independent filter. Cleared automatically when the user navigates to
+  // a new folder (stale-filter foot-gun) or switches workspace.
+  const [quickFilter, setQuickFilter] = useState<string | null>(null);
+  const quickFilterInputRef = useRef<HTMLInputElement | null>(null);
+  // Clear on navigation. Reset to `null` (closed) — preserving an active
+  // filter across folders would leak from one context to another and the
+  // user almost never wants that.
+  useEffect(() => { setQuickFilter(null); }, [panePath]);
 
   // ─── Rubber-band selection ────────────────────────────────────────────────────
   const [rubberBand, setRubberBand] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
@@ -770,11 +849,32 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   const inSearchMode = searchQuery.trim() !== "";
 
   // ─── Filtered + sorted entries ─────────────────────────────────────────────
-  const visibleEntries = useMemo(() => {
+  // Quick-filter substring (lowercased once per memo cycle, not per entry).
+  // An empty string is treated as no-op so an open-but-empty filter shows
+  // the full list. `null` means the filter UI is closed entirely.
+  const quickFilterNeedle = quickFilter !== null ? quickFilter.trim().toLowerCase() : "";
+
+  // Entries with hidden + tag filters applied but BEFORE the quick filter.
+  // The quick-filter bar uses `.length` from this as the denominator of the
+  // "X / Y" counter so the displayed total reflects what's reachable in this
+  // folder + workspace, not the unfiltered paneEntries (which can include
+  // dotfiles or tag-excluded files the user has actively hidden).
+  const prefilteredEntries = useMemo(() => {
     let entries = paneEntries;
     if (!showHidden) entries = entries.filter((e) => !e.name.startsWith("."));
     if (selectedTagIds.length > 0)
       entries = entries.filter((e) => e.is_dir || selectedTagIds.every((tid) => e.tags.some((t) => t.id === tid)));
+    return entries;
+  }, [paneEntries, showHidden, selectedTagIds]);
+
+  const visibleEntries = useMemo(() => {
+    // Quick filter — applied AFTER tag/hidden filtering and BEFORE sort so the
+    // sort operates on the narrowed set (cheap when typing on big folders).
+    // Matches against the file name only (path / extension would surprise users
+    // typing "exe" expecting *.exe but getting hits inside C:\Program Files\…).
+    let entries = quickFilterNeedle
+      ? prefilteredEntries.filter((e) => e.name.toLowerCase().includes(quickFilterNeedle))
+      : prefilteredEntries;
 
     // In search mode, preserve backend order (Toolbar already concatenates
     // folders-first then file relevance). Column header clicks are visually
@@ -794,7 +894,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
       else if (sortBy === "type") cmp = a.extension.localeCompare(b.extension);
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [paneEntries, showHidden, selectedTagIds, sortBy, sortDir, inSearchMode]);
+  }, [prefilteredEntries, sortBy, sortDir, inSearchMode, quickFilterNeedle]);
 
   const selectedSize = useMemo(() =>
     visibleEntries
@@ -1012,6 +1112,63 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   const handleOpen = (e: ListEntry) => {
     invoke("record_activity", { path: e.path, name: e.name, action: "opened" }).catch(() => {});
     openFile(toFileEntry(e));
+  };
+
+  // ─── Quick filter handlers ─────────────────────────────────────────────────
+  // Defined after `navigate` and `handleOpen` (above) so the closures can
+  // dispatch on the chosen entry. Not wrapped in useCallback — they're fresh
+  // closures each render, which matters because they read `visibleEntries`
+  // and `paneSelectedPaths` whose latest values would otherwise be captured
+  // through the stale-closure pattern. Cost is negligible: QuickFilterBar is
+  // only mounted when the filter is open, and the bar itself does no memo
+  // comparison on these props.
+  const closeQuickFilter = () => {
+    setQuickFilter(null);
+    // Re-focus the scroll container so subsequent keyboard nav (Arrow / Enter
+    // / Letters / Esc) lands on the global handler instead of a now-detached
+    // input. Use a microtask so the input has time to unmount.
+    setTimeout(() => listContainerRef.current?.focus(), 0);
+  };
+  const enterQuickFilter = () => {
+    // Prefer an arrow-navigated selection (the user explicitly chose an entry
+    // in the filtered list) over the first match. Falls back to visibleEntries[0]
+    // when no single selection sits inside the filtered set.
+    const selectedPath = paneSelectedPaths.length === 1 ? paneSelectedPaths[0] : null;
+    const target = (selectedPath && visibleEntries.find((x) => x.path === selectedPath))
+      || visibleEntries[0];
+    if (!target) return;
+    if (target.is_dir) {
+      navigate(target.path);
+      // navigate() clears the filter implicitly via the panePath useEffect — no
+      // need to setQuickFilter(null) here.
+    } else {
+      handleOpen(target);
+      // Files open in the viewer (which replaces the FileList); leaving the
+      // filter open is harmless because re-mounting FileList resets state.
+      // We still close it so the back-out experience is clean if the viewer
+      // is dismissed without navigation.
+      setQuickFilter(null);
+    }
+  };
+  const moveQuickFilterSelection = (dir: -1 | 1) => {
+    if (visibleEntries.length === 0) return;
+    const lastPath = paneSelectedPaths[paneSelectedPaths.length - 1];
+    const curIdx = lastPath ? visibleEntries.findIndex((x) => x.path === lastPath) : -1;
+    let newIdx: number;
+    if (curIdx < 0) {
+      newIdx = dir > 0 ? 0 : visibleEntries.length - 1;
+    } else {
+      newIdx = dir > 0
+        ? Math.min(curIdx + 1, visibleEntries.length - 1)
+        : Math.max(curIdx - 1, 0);
+    }
+    const entry = visibleEntries[newIdx];
+    if (!entry) return;
+    setPaneSelectedPaths([entry.path]);
+    selectEntry(entry.is_dir ? { kind: "folder", entry } : { kind: "file", entry: toFileEntry(entry) });
+    // Same scroll-into-view affordance as the global ArrowDown/Up handler.
+    document.querySelector(`[data-entry-path="${CSS.escape(entry.path)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
   };
 
   const handleOpenFolderInNewTab = async (path: string) => {
@@ -1374,6 +1531,27 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
       const active = document.activeElement;
       if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
 
+      // Quick filter — `/` opens the filter (and focuses its input). Placed
+      // BEFORE the type-ahead branch below; otherwise `/` would slip through
+      // the `e.key.length === 1` letter-key handler and trigger a name-jump
+      // for files starting with "/". The input itself handles further keys
+      // (Esc / Enter / Arrows) on its own — once it has focus the global
+      // handler bails at the `tagName === "INPUT"` guard at the top.
+      if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        // Open if closed, or just refocus + select-all if already open so a
+        // second `/` press isn't a no-op when the input is blurred.
+        setQuickFilter((q) => q ?? "");
+        // Defer focus to after the input has rendered. setTimeout > rAF here
+        // because the input may not exist yet when `quickFilter` flips from
+        // null → "" (React renders on the next tick).
+        setTimeout(() => {
+          const el = quickFilterInputRef.current;
+          if (el) { el.focus(); el.select(); }
+        }, 0);
+        return;
+      }
+
       if (e.key === "F2" && paneSelectedPaths.length === 1) {
         e.preventDefault();
         setRenamingPath(paneSelectedPaths[0]);
@@ -1435,6 +1613,11 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
       }
       if (e.key === "Escape") {
         if (quickLookEntry) { setQuickLookEntry(null); return; }
+        // Close an open (but currently blurred) quick filter before clearing
+        // selection — when the input has focus, this handler doesn't fire at
+        // all because of the INPUT-tag guard, so this only kicks in for the
+        // "filter active, user clicked back into the grid" case.
+        if (quickFilter !== null) { closeQuickFilter(); return; }
         setPaneSelectedPaths([]);
         selectEntry(null);
       }
@@ -1511,7 +1694,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paneSelectedPaths, visibleEntries, clipboard, activePaneIndex, pane, panePath]);
+  }, [paneSelectedPaths, visibleEntries, clipboard, activePaneIndex, pane, panePath, quickFilter]);
 
   // ─── Early returns ──────────────────────────────────────────────────────────
   if (isScanning && pane === 0) {
@@ -1558,6 +1741,19 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
           className={clsx("flex-1 flex flex-col min-h-0", dualPaneActive && activePaneIndex === pane && "border-t-2 border-accent")}
           onPointerDown={() => setActivePaneIndex(pane)}
         >
+        {quickFilter !== null && (
+          <QuickFilterBar
+            query={quickFilter}
+            total={prefilteredEntries.length}
+            matched={visibleEntries.length}
+            inputRef={quickFilterInputRef}
+            onChange={setQuickFilter}
+            onClose={closeQuickFilter}
+            onEnter={enterQuickFilter}
+            onArrow={moveQuickFilterSelection}
+            t={t}
+          />
+        )}
         <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
           {parentPath && (
             <button data-is-entry onClick={() => navigate(parentPath)} onDoubleClick={() => navigate(parentPath)}
@@ -1619,7 +1815,21 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
           )}
           {!skeletonVisible && dirs.length === 0 && files.length === 0 && (
             <div className="flex-1 flex items-center justify-center">
-              {inSearchMode ? (
+              {quickFilterNeedle ? (
+                <EmptyState
+                  icon={FilterX}
+                  title={t.quickFilterNoMatches}
+                  hint={t.quickFilterNoMatchesHint.replace("{query}", quickFilter ?? "")}
+                  action={
+                    <button
+                      onClick={closeQuickFilter}
+                      className="text-[11px] text-accent hover:underline"
+                    >
+                      {t.quickFilterClear}
+                    </button>
+                  }
+                />
+              ) : inSearchMode ? (
                 <EmptyState
                   icon={SearchX}
                   title={t.noSearchResults}
@@ -1691,6 +1901,19 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
         className={clsx("flex-1 flex flex-col min-h-0", dualPaneActive && activePaneIndex === pane && "border-t-2 border-accent")}
         onPointerDown={() => setActivePaneIndex(pane)}
       >
+      {quickFilter !== null && (
+        <QuickFilterBar
+          query={quickFilter}
+          total={prefilteredEntries.length}
+          matched={visibleEntries.length}
+          inputRef={quickFilterInputRef}
+          onChange={setQuickFilter}
+          onClose={closeQuickFilter}
+          onEnter={enterQuickFilter}
+          onArrow={moveQuickFilterSelection}
+          t={t}
+        />
+      )}
       <div
         ref={listContainerRef}
         className="flex-1 overflow-y-auto flex flex-col relative"
@@ -1781,7 +2004,25 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
 
         {!skeletonVisible && visibleEntries.length === 0 && (
           <div className="flex-1 flex items-center justify-center">
-            {inSearchMode ? (
+            {quickFilterNeedle ? (
+              // Quick filter wins over search-mode and tag-filter empty states
+              // — it's the most recently-typed reason for "nothing here", so
+              // surfacing it first matches user intent. Clearing reveals
+              // whatever the next layer of filtering was already hiding.
+              <EmptyState
+                icon={FilterX}
+                title={t.quickFilterNoMatches}
+                hint={t.quickFilterNoMatchesHint.replace("{query}", quickFilter ?? "")}
+                action={
+                  <button
+                    onClick={closeQuickFilter}
+                    className="text-[11px] text-accent hover:underline"
+                  >
+                    {t.quickFilterClear}
+                  </button>
+                }
+              />
+            ) : inSearchMode ? (
               <EmptyState
                 icon={SearchX}
                 title={t.noSearchResults}

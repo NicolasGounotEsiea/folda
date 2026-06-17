@@ -18,10 +18,20 @@
  * a network/file fetch. IDs are namespaced with a stable `nxs-` prefix to
  * avoid collisions when multiple instances render on the same page.
  *
- * Source: keeps artwork verbatim from `public/nxs-icon.svg`. ViewBox tightened
- * to `48 96 416 416` so the logo doesn't read as visually smaller than
- * neighbor icons (VS Code etc.) at taskbar sizes — the original artwork only
- * occupied ~60% of a 512 canvas.
+ * Source: keeps artwork verbatim from `public/nxs-icon.svg`. The two viewBoxes
+ * are now INDEPENDENT, intentionally:
+ *
+ *   - `public/nxs-icon.svg` uses `60 112 376 376` so the rasterized .ico fills
+ *     ~89% of the Win11 taskbar canvas, matching neighbor apps (VS Code,
+ *     Files App, Opera) which carry no Fluent ambient padding.
+ *   - This component uses `48 96 416 416` so the in-app titlebar / onboarding
+ *     logo keeps a balanced ~11% margin. The titlebar is a contained UI
+ *     surface where heavy artwork-bleed makes the brand mark feel cramped
+ *     against the workspace switcher and window chrome.
+ *
+ * Don't re-sync them without checking both surfaces — the same viewBox does
+ * NOT give the same visual weight at 32 px (taskbar, no surrounding chrome)
+ * vs 16-22 px (titlebar, sitting next to other elements with their own padding).
  */
 export function NxsLogo({
   size = 64,

@@ -49,6 +49,18 @@ type AppStrings = {
   noFilterMatchesHint: string;       // adjusting tags
   clearSearchAction: string;         // ghost button label
   clearFiltersAction: string;        // ghost button label
+  quickFilterPlaceholder: string;        // input placeholder for the "/" filter bar
+  quickFilterCountTitle: string;         // tooltip on the "X / Y" counter
+  quickFilterNoMatches: string;          // empty state title when filter narrows to zero
+  quickFilterNoMatchesHint: string;      // hint — supports {query} placeholder
+  quickFilterClear: string;              // ghost button label inside the no-match empty state
+  quickStartTitle: string;               // tooltip + ARIA label for the logo button popover
+  quickStartWorkspace: string;           // section label "Workspace"
+  quickStartNoWorkspace: string;         // fallback when no workspace active
+  quickStartRecent: string;              // section label "Recent"
+  quickStartNoRecent: string;            // empty-state hint when no activity yet
+  quickStartWorkspaces: string;          // section label "Workspaces"
+  quickStartActive: string;              // tiny badge on the current workspace row
   emptyTrashTitle: string;           // "Trash is empty"
   emptyTrashHint: string;
   indexingLabel: string;             // status-bar abbreviation, "Indexing" / "Indexation"
@@ -406,6 +418,18 @@ const translations: Record<string, AppStrings> = {
     noFilterMatches: "No files match these filters",
     noFilterMatchesHint: "Adjust the active tags or clear them to see more results.",
     clearSearchAction: "Clear search",
+    quickFilterPlaceholder: "Filter this folder…",
+    quickFilterCountTitle: "Matching items in the current folder",
+    quickFilterNoMatches: "Nothing matches in this folder",
+    quickFilterNoMatchesHint: "No entries in this folder contain “{query}”. Press Esc to clear.",
+    quickFilterClear: "Clear filter",
+    quickStartTitle: "Quick start",
+    quickStartWorkspace: "Workspace",
+    quickStartNoWorkspace: "No workspace active",
+    quickStartRecent: "Recent",
+    quickStartNoRecent: "Nothing recent yet — open a few folders to see them here.",
+    quickStartWorkspaces: "Workspaces",
+    quickStartActive: "Active",
     clearFiltersAction: "Clear filters",
     emptyTrashTitle: "Trash is empty",
     emptyTrashHint: "Files you delete from nxs land here. Restore or empty them anytime.",
@@ -747,6 +771,18 @@ const translations: Record<string, AppStrings> = {
     noFilterMatches: "Aucun fichier ne correspond à ces filtres",
     noFilterMatchesHint: "Ajuste les étiquettes actives ou enlève-les pour voir plus de résultats.",
     clearSearchAction: "Effacer la recherche",
+    quickFilterPlaceholder: "Filtrer ce dossier…",
+    quickFilterCountTitle: "Éléments correspondants dans le dossier",
+    quickFilterNoMatches: "Aucun élément dans ce dossier",
+    quickFilterNoMatchesHint: "Rien ne contient « {query} » ici. Appuie sur Esc pour effacer.",
+    quickFilterClear: "Effacer le filtre",
+    quickStartTitle: "Accès rapide",
+    quickStartWorkspace: "Workspace",
+    quickStartNoWorkspace: "Aucun workspace actif",
+    quickStartRecent: "Récents",
+    quickStartNoRecent: "Rien de récent — ouvre quelques dossiers pour les voir ici.",
+    quickStartWorkspaces: "Workspaces",
+    quickStartActive: "Actif",
     clearFiltersAction: "Effacer les filtres",
     emptyTrashTitle: "La corbeille est vide",
     emptyTrashHint: "Les fichiers supprimés dans nxs apparaissent ici. Restaure-les ou vide-les quand tu veux.",
