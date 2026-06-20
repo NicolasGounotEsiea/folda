@@ -1,4 +1,6 @@
 pub mod client;
+pub mod crypto;
+pub mod frame;
 pub mod network;
 pub mod protocol;
 pub mod server;

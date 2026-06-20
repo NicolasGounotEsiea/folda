@@ -2,6 +2,25 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.18] - 2026-06-18
+
+### Security
+
+- **Workspace sharing is now end-to-end encrypted** via the Noise Protocol Framework (pattern `Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s`, crate `snow`). The previous implementation used plain `ws://` and sent the share password as the first JSON message — anyone on the same LAN (Wi-Fi café, coworking space, ARP-spoofing attacker) could trivially read both the password AND every file transferred over the share. After this change: the share password is derived into a 32-byte PSK (SHA-256 with domain-separation prefix `nxs-share-psk-v1:`), the handshake performs ephemeral X25519 ECDH on both sides, every application frame is AEAD-encrypted with ChaCha20-Poly1305. Result: **confidentiality** (no plaintext on the wire), **integrity** (every frame authenticated), **Perfect Forward Secrecy** (each session has its own ephemeral keys — leaking the password later doesn't decrypt past sessions), **MITM resistance** (an attacker who doesn't know the password cannot produce any valid Noise message and the handshake fails). The new modules `src-tauri/src/sharing/crypto.rs` and `src-tauri/src/sharing/frame.rs` carry the implementation. **Breaking** — a v0.1.18+ host cannot accept a v0.1.17- guest and vice-versa, but no prod users are affected (testers only).
+- **Brute-force protection** — `server.rs::FailureMap` tracks failed handshakes per remote IP. After 3 failures (`MAX_FAILURES`), the IP is locked out for 10 minutes (`LOCKOUT_DURATION`); a successful handshake clears the counter. The accept loop refuses connections from locked-out IPs before allocating any Noise state. A failed handshake also never sends an explicit "wrong password" response — the peer just sees the connection close, denying an attacker the password-failure signal they'd need to distinguish "wrong password" from "host overloaded".
+- **Share-session password generation is now cryptographically secure.** Previously: 8 chars sampled from a 32-char alphabet via xorshift64 PRNG seeded from `SystemTime::now()` nanoseconds — knowing roughly when the session started, an attacker could exhaust the seed space in seconds (~30 effective bits of entropy). Now: 20 chars from the same Crockford-style alphabet sampled via OS-level entropy (`getrandom` crate, backed by `BCryptGenRandom` on Windows), giving ~100 bits of entropy. The alphabet still drops 0/O/1/I/L for readability across screen → keyboard transcription. Combined with the 3-attempts-per-IP lockout above, online brute force is computationally infeasible.
+- **Application messages now chunked through Noise transport.** Noise has a 64 KB ciphertext cap per frame, but our `ListDir` responses on large folders and `ReadFile` (up to 10 MB) can exceed that. Each JSON message is split into 60 KB plaintext chunks, each encrypted independently and sent as its own WS `Message::Binary` frame with a 1-byte continuation flag. The receiver's `ChunkReader` accumulates until the last chunk arrives, then hands the full plaintext to the caller. Hard cap = 32 MB after reassembly to bound memory under a malicious peer.
+
+### Internal
+
+- **New Cargo deps for the sharing crypto layer**: `snow = "0.9"` (Noise Protocol implementation, mature & audited, also used by Lightning Network and others), `sha2 = "0.10"` (SHA-256 for PSK derivation), `getrandom = "0.2"` (OS-level entropy for password generation, replaces the previous time-seeded xorshift). All three are tiny pure-Rust crates with no transitive bloat. Total binary size increase: ~250 KB stripped.
+- **New module `src-tauri/src/sharing/crypto.rs`** — Noise pattern parser + PSK derivation. ~40 LOC. The crate's `psk()` builder expects exactly 32 bytes; SHA-256 with the domain prefix `nxs-share-psk-v1:` produces that. The `v1` suffix lets us rotate the derivation later without forcing a network protocol break.
+- **New module `src-tauri/src/sharing/frame.rs`** — chunked encrypt/decrypt helpers. ~120 LOC. `encrypt_chunks(transport, plaintext)` returns a Vec of WS `Message::Binary` ready to send; `ChunkReader::push(transport, ciphertext)` is fed each incoming WS frame and returns `Some(plaintext)` only when the last chunk arrives.
+- **`server.rs`** rewritten to do the Noise responder handshake, transition to transport mode, and route all subsequent JSON messages through `send_encrypted` / `ChunkReader`. Adds per-IP `FailureMap` (`Arc<Mutex<HashMap<IpAddr, FailureRecord>>>`) for brute-force protection.
+- **`client.rs`** rewritten symmetrically for the initiator side.
+- **`protocol.rs`** — `GuestMsg::Auth` no longer carries `password` (authentication is now proven by completing the Noise handshake). `HostMsg::AuthErr` removed (handshake failures are no longer represented at the JSON layer — the WS connection simply drops).
+- **CLAUDE.md §6** rewritten to document the crypto layer, the threat model, the chunking format, and the sharp edges (Noise's `TransportState` is `!Sync`; the protocol is breaking vs ≤ v0.1.17; WS Ping/Pong stays unencrypted; etc.).
+
 ## [0.1.17] - 2026-06-17
 
 ### Added

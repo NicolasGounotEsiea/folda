@@ -1,6 +1,6 @@
 [package]
 name = "nxs"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2021"
 
 [lib]
@@ -25,6 +25,19 @@ winreg = "0.52"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
 tokio-tungstenite = "0.23"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# Noise Protocol Framework — used for the workspace-sharing handshake. We use
+# pattern `Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s`: no static keys (no PKI),
+# password pre-shared as PSK at slot 0, X25519 ephemeral key exchange both
+# sides (forward secrecy), ChaCha20-Poly1305 AEAD on the transport.
+# See src/sharing/crypto.rs + src/sharing/frame.rs.
+snow = "0.9"
+# SHA-256 used to derive a 32-byte PSK from the share password so Noise gets
+# the fixed-length key it expects. Tiny pure-Rust crate.
+sha2 = "0.10"
+# Cryptographically secure RNG for the share-session password. Replaces the
+# previous xorshift64 + nanos-timestamp seed which was trivially brute-forceable
+# given the session start time. OS-level entropy, no_std-compatible.
+getrandom = "0.2"
 tauri-plugin-drag = "2"
 tauri-plugin-single-instance = "2"
 # In-app updater. Signs releases with a private key (one-time setup, see

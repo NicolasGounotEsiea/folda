@@ -272,21 +272,57 @@ pub async fn create_remote_dir(
     Ok(())
 }
 
+/// Generate a cryptographically secure session password.
+///
+/// **Previously**: 8 chars sampled from a 32-char Crockford-ish alphabet
+/// using an xorshift64 PRNG seeded from `SystemTime::now()` nanoseconds.
+/// That's two bugs in one function:
+///   1. xorshift64 is NOT a cryptographic PRNG — knowing one output reveals
+///      the seed and all subsequent outputs.
+///   2. Time-since-epoch in nanos is the LEAST entropy you can use — an
+///      attacker who knows roughly when the session started can brute-force
+///      the seed space in seconds.
+///
+/// The combined entropy was effectively ~30 bits, not the nominal 40 (32^8).
+/// On a LAN with no network encryption, that was trivially attackable.
+///
+/// **Now**: 20 chars from the same alphabet, sampled via OS-level entropy
+/// (`getrandom`). That's `log2(32^20) ≈ 100 bits` of entropy — exhausting
+/// the search space is computationally infeasible for any realistic
+/// attacker, even with unlimited online handshake attempts (which we also
+/// rate-limit at 3 failures per IP per 10 minutes; see server.rs).
+///
+/// The alphabet (`ABCDEFGHJKLMNPQRSTUVWXYZ23456789`) intentionally drops
+/// the ambiguous glyphs 0/O, 1/I/L so the user can read it back from a
+/// screen and type it without confusion — even at 20 chars.
+///
+/// ## Sampling strategy
+///
+/// We use rejection sampling on a byte to keep the distribution uniform
+/// across the 32-char alphabet. A naive `byte % 32` would still be uniform
+/// since 256 is divisible by 32, but the rejection loop is symmetric with
+/// any-length alphabet we might switch to later and adds no measurable
+/// runtime cost for a one-shot 20-char password.
 fn generate_password() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0xdeadbeef);
-    // xorshift64
-    let mut s = seed ^ 0x9e3779b97f4a7c15u64;
     const CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    (0..8)
-        .map(|_| {
-            s ^= s << 13;
-            s ^= s >> 7;
-            s ^= s << 17;
-            CHARS[(s % CHARS.len() as u64) as usize] as char
-        })
-        .collect()
+    const PASSWORD_LEN: usize = 20;
+    // 256 is divisible by 32 so any byte yields a uniform sample, but we
+    // run rejection sampling anyway for forward-compat with alphabet changes.
+    let max_unbiased = (u8::MAX as usize / CHARS.len()) * CHARS.len();
+
+    let mut out = String::with_capacity(PASSWORD_LEN);
+    let mut scratch = [0u8; 64];
+    while out.len() < PASSWORD_LEN {
+        // OS-level entropy. The .expect is OK here: getrandom on Windows
+        // uses BCryptGenRandom which only fails on catastrophic OS state —
+        // if it fails, every other security primitive is already broken.
+        getrandom::getrandom(&mut scratch).expect("OS entropy source failed");
+        for &b in scratch.iter() {
+            if (b as usize) < max_unbiased {
+                out.push(CHARS[(b as usize) % CHARS.len()] as char);
+                if out.len() == PASSWORD_LEN { break; }
+            }
+        }
+    }
+    out
 }
