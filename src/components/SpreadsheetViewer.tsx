@@ -316,7 +316,18 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
 
   const sheet = sheets[activeIdx];
   const totalRows = sheet?.rows.length ?? 0;
-  const numCols = sheet ? Math.max(0, ...sheet.rows.map((r) => r.length)) : 0;
+  // Widest row = column count. Computed with an explicit reduce, NOT
+  // `Math.max(0, ...rows.map(r => r.length))`: the spread pushes one argument
+  // per row onto the call stack, and a sheet past ~65k rows (our cap is
+  // MAX_ROWS = 500k) blows the argument limit → "RangeError: Maximum call
+  // stack size exceeded". The crash surfaced on sheet switch when landing on
+  // a large sheet. A reduce is O(n) with zero stack growth.
+  const numCols = useMemo(() => {
+    if (!sheet) return 0;
+    let max = 0;
+    for (const r of sheet.rows) if (r.length > max) max = r.length;
+    return max;
+  }, [sheet]);
 
   // ── Header detection ─────────────────────────────────────────────────────
   // When useHeader is on AND the sheet has at least one row, use row[0] as labels.

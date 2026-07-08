@@ -8,8 +8,8 @@ import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
 import { search, openSearchPanel } from "@codemirror/search";
 import { oneDark } from "@codemirror/theme-one-dark";
-import type { Extension } from "@codemirror/state";
-import type { EditorView as CMEditorView } from "@codemirror/view";
+import { EditorState, type Extension } from "@codemirror/state";
+import { EditorView as CMView, type EditorView as CMEditorView } from "@codemirror/view";
 import CodeMirror, { type Statistics } from "@uiw/react-codemirror";
 import { Ban, FileCode, History, Save, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -191,6 +191,12 @@ export function EditorView() {
   // the keymap exists but there's no panel implementation to open.
   const extensions: Extension[] = [oneDark, search()];
   if (langExt) extensions.push(langExt);
+  // Word wrap + tab size are driven by Settings → Editor. These belong in the
+  // `extensions` array (not basicSetup, which takes only booleans) so they can
+  // carry a value. tabSize uses EditorState.tabSize for display width AND the
+  // indentUnit-equivalent via a spaces string is left to CodeMirror defaults.
+  if (settings.editorWordWrap) extensions.push(CMView.lineWrapping);
+  extensions.push(EditorState.tabSize.of(settings.editorTabSize));
   const langName = LANG_NAMES[ext] ?? (ext ? ext.toUpperCase() : "Plain Text");
 
   return (
@@ -284,7 +290,7 @@ export function EditorView() {
             }
             style={{ height: "100%", fontSize: "13px", fontFamily: "monospace" }}
             basicSetup={{
-              lineNumbers: true,
+              lineNumbers: settings.editorLineNumbers,
               highlightActiveLineGutter: true,
               highlightSpecialChars: true,
               foldGutter: true,
@@ -300,7 +306,7 @@ export function EditorView() {
               highlightSelectionMatches: true,
               closeBracketsKeymap: true,
               searchKeymap: true,
-              tabSize: 2,
+              tabSize: settings.editorTabSize,
             }}
           />
         </div>

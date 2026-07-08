@@ -217,7 +217,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
       try {
         // Run DB search and live search in parallel
         const [dbResults, liveResults] = await Promise.all([
-          invoke<SearchHit[]>("search_files", { query: q }).catch(() => [] as SearchHit[]),
+          invoke<SearchHit[]>("search_files", { query: q, contextId: activeContextId ?? 0 }).catch(() => [] as SearchHit[]),
           currentPath
             ? invoke<FileEntry[]>("search_live", { query: q, path: currentPath }).catch(() => [] as FileEntry[])
             : Promise.resolve([] as FileEntry[]),

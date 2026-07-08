@@ -224,6 +224,9 @@ pub fn run() {
             commands::git::git_get_commit_diff,
             commands::git::git_get_file_history,
             commands::git::git_checkout_branch,
+            // OCR (Tesseract) — status probe + one-click language pack download
+            commands::ocr::detect_tesseract,
+            commands::ocr::download_ocr_langs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

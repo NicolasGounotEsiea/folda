@@ -89,8 +89,113 @@ pub fn extract_text_content(path: &str, extension: &str, size: i64) -> String {
         "pptx" => extract_pptx(path),
         "xlsx" | "ods" => extract_zip_xml(path, &["xl/sharedStrings.xml", "content.xml"]),
         "odt" | "odp" => extract_zip_xml(path, &["content.xml"]),
-        _ => String::new(),
+        // Unknown / no extension: sniff the bytes. Covers text files whose
+        // extension isn't in TEXT_EXTS (`.sqlx`, `.env`, `.dockerfile`,
+        // `.gradle`, `.prisma`, `Makefile`, `LICENSE`, project-specific
+        // extensions, …). Binary files are rejected by the sniff and get the
+        // empty sentinel like before, so this never mis-indexes a JPEG as text.
+        _ => extract_text_sniffed(path),
     }
+}
+
+/// Fallback extractor for files with an unrecognized extension: read a bounded
+/// prefix and, if it looks like UTF-8 text, return it. Otherwise empty.
+///
+/// "Looks like text" = decodes as UTF-8 AND contains no NUL byte in the sampled
+/// prefix. A NUL byte is the single most reliable binary signal — text formats
+/// essentially never contain one, and almost every binary format does within
+/// the first few KB. We deliberately DON'T do statistical/heuristic scoring
+/// (control-char ratios, etc.): too many false negatives on legitimate text
+/// (e.g. files heavy in box-drawing or CJK), and the NUL check alone eliminates
+/// the formats that actually matter (images, executables, archives, DBs).
+fn extract_text_sniffed(path: &str) -> String {
+    use std::io::Read;
+    // Read at most enough bytes to fill MAX_EXTRACT chars. UTF-8 is ≤ 4 bytes
+    // per char; 4× the char cap guarantees we can always reach MAX_EXTRACT
+    // chars of text without reading the whole (possibly huge) file.
+    const SNIFF_BYTES: usize = MAX_EXTRACT * 4;
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return String::new(),
+    };
+    let mut buf = vec![0u8; SNIFF_BYTES];
+    let n = match file.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return String::new(),
+    };
+    buf.truncate(n);
+
+    // Binary reject: any NUL byte in the sample.
+    if buf.contains(&0) {
+        return String::new();
+    }
+    // Must be valid UTF-8. `from_utf8` can fail because we truncated mid
+    // multi-byte char at the buffer boundary — tolerate that one case by
+    // trimming to the last valid boundary via the error's `valid_up_to`.
+    let text = match std::str::from_utf8(&buf) {
+        Ok(s) => s.to_string(),
+        Err(e) => {
+            let valid = e.valid_up_to();
+            // A failure in the first byte means it's genuinely not UTF-8.
+            if valid == 0 {
+                return String::new();
+            }
+            // Safe: valid_up_to() is guaranteed on a char boundary.
+            String::from_utf8_lossy(&buf[..valid]).into_owned()
+        }
+    };
+    text.chars().take(MAX_EXTRACT).collect()
+}
+
+/// OCR-aware extraction wrapper — used ONLY by Phase 2 (`index_directory_content`).
+///
+/// Everything else (scan, watcher, preview_file, get_file_snippets) keeps calling
+/// `extract_text_content` directly and never OCRs:
+///   - scan has a ~2 s budget for whole trees; OCR is 2-10 s per image
+///   - the watcher fires on every save; a screenshot burst would queue minutes of OCR
+///   - preview/snippets are interactive — the AI panel blocks on them
+///
+/// Phase 2 is the right home: 30 s per-file timeout, 2 parallel workers at
+/// BELOW_NORMAL priority, progress UI. `ocr = None` (feature off / Tesseract
+/// missing) makes this function byte-for-byte equivalent to `extract_text_content`.
+pub fn extract_text_with_ocr(
+    path: &str,
+    extension: &str,
+    size: i64,
+    ocr: Option<&crate::commands::ocr::OcrConfig>,
+) -> String {
+    use crate::commands::ocr;
+    let Some(cfg) = ocr else {
+        return extract_text_content(path, extension, size);
+    };
+    let ext = extension.to_lowercase();
+
+    if ocr::is_ocr_image_ext(&ext) {
+        // Images above the cap are skipped (no downsampling in V1) — they get
+        // the usual empty sentinel row so the indexer doesn't retry forever.
+        if size <= 0 || size > ocr::MAX_OCR_IMAGE_BYTES {
+            return String::new();
+        }
+        return ocr::ocr_image(cfg, path, MAX_EXTRACT);
+    }
+
+    if ext == "pdf" {
+        let text = extract_pdf(path);
+        // Scanned-PDF fallback: when the normal extraction yields (nearly)
+        // nothing, try OCR on the PDF's embedded JPEGs. Keep whichever result
+        // carries more signal — a digital PDF that legitimately has 50 chars
+        // of text loses nothing (its OCR pass finds no embedded scans and
+        // returns empty, so `text` wins).
+        if ocr::pdf_text_looks_scanned(&text) {
+            let ocr_text = ocr::ocr_pdf_embedded_images(cfg, path, MAX_EXTRACT);
+            if ocr_text.trim().len() > text.trim().len() {
+                return ocr_text;
+            }
+        }
+        return text;
+    }
+
+    extract_text_content(path, extension, size)
 }
 
 /// PDF: use pdf-extract for digital PDFs; fall back to ASCII heuristic for scanned/encrypted ones.
@@ -1904,6 +2009,19 @@ pub async fn index_directory_content(
         return Ok(0);
     }
 
+    // Resolve OCR once per run (settings read + tesseract probe), NOT per file.
+    // Arc because each spawn_blocking closure needs its own handle. None =
+    // feature off or no Tesseract — extraction behaves exactly as before.
+    let ocr_cfg: std::sync::Arc<Option<crate::commands::ocr::OcrConfig>> = {
+        let nxs_tessdata = crate::commands::ocr::app_tessdata_dir(&app);
+        let cfg = state
+            .db
+            .lock()
+            .ok()
+            .and_then(|db| crate::commands::ocr::load_ocr_config(&db, nxs_tessdata.as_deref()));
+        std::sync::Arc::new(cfg)
+    };
+
     // Event payloads use the GLOBAL (folder-wide) numbers so they line up with
     // get_indexing_stats. `indexed` here starts at the existing attempted count
     // and grows as we process files. `total` stays constant = files in folder.
@@ -1940,6 +2058,7 @@ pub async fn index_directory_content(
             let size = *size;
             let was_attempted = *was_attempted;
             let path_for_task = file_path_owned.clone();
+            let ocr_for_task = ocr_cfg.clone();
             let handle = tokio::task::spawn_blocking(move || {
                 // Lower priority on Windows so we don't starve the UI thread.
                 #[cfg(windows)]
@@ -1952,7 +2071,7 @@ pub async fn index_directory_content(
                 if ext.eq_ignore_ascii_case("pdf") && size > pdf_cap {
                     return String::new();
                 }
-                extract_text_content(&path_for_task, &ext, size)
+                extract_text_with_ocr(&path_for_task, &ext, size, ocr_for_task.as_ref().as_ref())
             });
             handles.push((id, file_path_owned, was_attempted, handle));
         }

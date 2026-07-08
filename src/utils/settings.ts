@@ -36,6 +36,18 @@ export interface AppSettings {
   /// Cap on the number of commits the GitPanel log shows. Backend hard-clamps
   /// at 200 regardless.
   gitRecentCommitsCount: number;
+  // ── OCR (opt-in, requires a system-installed Tesseract) ──────────────────
+  /// Master switch. When true AND Tesseract is found, Phase 2 of the indexing
+  /// pipeline OCRs images (png/jpg/webp/tiff/bmp) and scanned PDFs so their
+  /// text lands in file_content / FTS5. Default false: OCR is CPU-heavy
+  /// (2-10 s per image) and needs an external binary.
+  ocrEnabled: boolean;
+  /// Tesseract language spec, e.g. "eng", "fra", "eng+fra". Passed to
+  /// `tesseract -l`. Sanitized backend-side to [a-z_+].
+  ocrLanguages: string;
+  /// Explicit path to tesseract.exe. Empty = auto-detect (PATH, then the
+  /// standard install locations). When set, it is the ONLY candidate probed.
+  ocrTesseractPath: string;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -68,6 +80,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gitEnabled: false,
   gitDimIgnored: true,
   gitRecentCommitsCount: 20,
+  ocrEnabled: false,
+  ocrLanguages: "eng+fra",
+  ocrTesseractPath: "",
 };
 
 export interface AccentPreset {
@@ -175,5 +190,8 @@ export function deserializeSettings(raw: Record<string, string>): AppSettings {
     gitRecentCommitsCount: raw.gitRecentCommitsCount !== undefined
       ? Math.max(5, Math.min(200, Number(raw.gitRecentCommitsCount)))
       : d.gitRecentCommitsCount,
+    ocrEnabled:         raw.ocrEnabled !== undefined ? raw.ocrEnabled === "true" : d.ocrEnabled,
+    ocrLanguages:       raw.ocrLanguages ?? d.ocrLanguages,
+    ocrTesseractPath:   raw.ocrTesseractPath ?? d.ocrTesseractPath,
   };
 }

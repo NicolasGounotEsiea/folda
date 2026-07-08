@@ -64,6 +64,42 @@ fn name_match_tier(file_name: &str, needle_lower: &str) -> u8 {
     }
 }
 
+/// Normalize a path for prefix comparison: backslashes → forward slashes,
+/// lowercased (Windows paths are case-insensitive), trailing slash trimmed.
+fn norm_path(p: &str) -> String {
+    let s = p.replace('\\', "/").to_lowercase();
+    s.strip_suffix('/').map(str::to_string).unwrap_or(s)
+}
+
+/// True when `file_path` is inside one of `roots` (equal to, or a descendant
+/// of, a root). Both sides are normalized. A `roots`-descendant check uses a
+/// trailing-slash guard so `/foo/barbecue` is NOT considered inside `/foo/bar`.
+fn path_in_roots(file_path: &str, roots: &[String]) -> bool {
+    let f = norm_path(file_path);
+    roots.iter().any(|r| {
+        let root = norm_path(r);
+        f == root || f.starts_with(&format!("{}/", root))
+    })
+}
+
+/// The watched-folder roots for a workspace, read from `contexts.watched_paths`
+/// (a JSON string array). Empty vec = no scoping (global search). Returns None
+/// when context_id is 0 (explicit global scope).
+fn workspace_roots(db: &rusqlite::Connection, context_id: i64) -> Option<Vec<String>> {
+    if context_id == 0 {
+        return None;
+    }
+    let json: String = db
+        .query_row(
+            "SELECT watched_paths FROM contexts WHERE id = ?1",
+            rusqlite::params![context_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let roots: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+    if roots.is_empty() { None } else { Some(roots) }
+}
+
 #[tauri::command]
 pub fn search_files(
     query: String,
@@ -72,6 +108,13 @@ pub fn search_files(
 ) -> Result<Vec<SearchHit>, String> {
     let context_id = context_id.unwrap_or(0);
     let db = state.db.lock().map_err(|e| e.to_string())?;
+
+    // When a workspace is active, results are scoped to its watched folders.
+    // The `files` table is a GLOBAL index (every folder ever scanned, across
+    // all workspaces), so without this filter a search in workspace A would
+    // surface files that only belong to workspace B. Global scope (context 0,
+    // or a workspace with no watched paths) searches everything.
+    let roots = workspace_roots(&db, context_id);
 
     let fts_query = format!("{}*", query.trim().replace('"', ""));
 
@@ -190,6 +233,12 @@ pub fn search_files(
         .into_iter()
         .filter_map(|id| {
             let mut file = by_id.remove(&id)?;
+            // Workspace scoping: drop matches outside the watched folders.
+            if let Some(roots) = &roots {
+                if !path_in_roots(&file.path, roots) {
+                    return None;
+                }
+            }
             file.tags = load_file_tags(&db, id, context_id);
             Some(SearchHit {
                 matched_name: name_scores.contains_key(&id),
@@ -241,6 +290,7 @@ pub fn search_files(
 #[tauri::command]
 pub fn search_folders(
     query: String,
+    context_id: Option<i64>,
     state: tauri::State<AppState>,
 ) -> Result<Vec<crate::models::ListEntry>, String> {
     let q = query.trim();
@@ -251,16 +301,25 @@ pub fn search_folders(
     let pattern = format!("%{}%", q);
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
-    let mut stmt = db
-        .prepare(
-            "SELECT path, name, modified_at FROM directories
-             WHERE name LIKE ?1
-             ORDER BY name COLLATE NOCASE
-             LIMIT 200",
-        )
-        .map_err(|e| e.to_string())?;
+    // Same workspace scoping as search_files — the `directories` table is a
+    // global index. We over-fetch (no LIMIT in SQL when scoping) then filter
+    // by root and cap at 200, so a workspace whose folders sort late
+    // alphabetically still gets its full result set.
+    let roots = workspace_roots(&db, context_id.unwrap_or(0));
+    let sql = if roots.is_some() {
+        "SELECT path, name, modified_at FROM directories
+         WHERE name LIKE ?1
+         ORDER BY name COLLATE NOCASE"
+    } else {
+        "SELECT path, name, modified_at FROM directories
+         WHERE name LIKE ?1
+         ORDER BY name COLLATE NOCASE
+         LIMIT 200"
+    };
 
-    let results = stmt
+    let mut stmt = db.prepare(sql).map_err(|e| e.to_string())?;
+
+    let results: Vec<crate::models::ListEntry> = stmt
         .query_map([&pattern], |row| {
             Ok(crate::models::ListEntry {
                 is_dir: true,
@@ -276,6 +335,11 @@ pub fn search_folders(
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
+        .filter(|entry| match &roots {
+            Some(roots) => path_in_roots(&entry.path, roots),
+            None => true,
+        })
+        .take(200)
         .collect();
 
     Ok(results)
@@ -338,4 +402,53 @@ pub async fn search_live(query: String, path: String) -> Vec<FileEntry> {
     })
     .await
     .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_in_roots_matches_descendants() {
+        let roots = vec![r"C:\Users\me\Documents".to_string()];
+        // The root folder itself
+        assert!(path_in_roots(r"C:\Users\me\Documents", &roots));
+        // A file inside it
+        assert!(path_in_roots(r"C:\Users\me\Documents\report.pdf", &roots));
+        // A nested subfolder file
+        assert!(path_in_roots(r"C:\Users\me\Documents\2026\q1\budget.xlsx", &roots));
+    }
+
+    #[test]
+    fn path_in_roots_rejects_outside() {
+        let roots = vec![r"C:\Users\me\Documents".to_string()];
+        assert!(!path_in_roots(r"C:\Users\me\Downloads\movie.mp4", &roots));
+        assert!(!path_in_roots(r"D:\other\file.txt", &roots));
+    }
+
+    #[test]
+    fn path_in_roots_no_sibling_prefix_confusion() {
+        // The trailing-slash guard: /foo/bar must NOT match /foo/barbecue.
+        let roots = vec![r"C:\data\bar".to_string()];
+        assert!(!path_in_roots(r"C:\data\barbecue\x.txt", &roots));
+        assert!(path_in_roots(r"C:\data\bar\x.txt", &roots));
+    }
+
+    #[test]
+    fn path_in_roots_case_and_separator_insensitive() {
+        // Windows paths are case-insensitive, and the file list mixes / and \.
+        let roots = vec![r"C:\Users\Me\Docs".to_string()];
+        assert!(path_in_roots("c:/users/me/docs/sub/file.txt", &roots));
+        assert!(path_in_roots(r"C:\USERS\ME\DOCS\file.txt", &roots));
+    }
+
+    #[test]
+    fn path_in_roots_multiple_roots() {
+        let roots = vec![
+            r"C:\a".to_string(),
+            r"C:\b".to_string(),
+        ];
+        assert!(path_in_roots(r"C:\b\deep\file", &roots));
+        assert!(!path_in_roots(r"C:\c\file", &roots));
+    }
 }

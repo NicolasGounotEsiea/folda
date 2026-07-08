@@ -55,6 +55,21 @@ const T = {
       purge: "Delete all activity now",
       purged: (n: number) => `${n} record${n !== 1 ? "s" : ""} deleted`,
     },
+    ocr: {
+      enable: "OCR for images & scanned PDFs",
+      desc: "Extract text from photos, screenshots and scanned documents using Tesseract, so content search finds them too. Requires Tesseract to be installed (free, open source). OCR runs only during background indexing — it never slows down browsing.",
+      langs: "OCR languages",
+      langEn: "English", langFr: "French", langBoth: "English + French",
+      path: "Tesseract path (optional)",
+      pathPh: "Auto-detect",
+      found: (v: string) => `Found: ${v}`,
+      notFound: "Tesseract not found. Install it (e.g. from the UB Mannheim build) or set the path above.",
+      missingLang: (l: string) => `Language pack "${l}" is not installed — OCR will fall back to the packs that are.`,
+      downloadPacks: (l: string) => `Download ${l} pack (a few MB)`,
+      downloading: "Downloading…",
+      downloadFailed: "Download failed — check your connection and try again.",
+      reindexHint: "Files already indexed before enabling OCR are only re-processed by a manual reindex (folder badge → Reindex).",
+    },
     git: {
       desc: "Show branch, modified files, recent commits and diffs when browsing folders inside a git repository. Read-only — nxs never writes to your repo. Outside git folders this feature is a no-op (zero overhead).",
       enable: "Enable git integration",
@@ -122,6 +137,21 @@ const T = {
       days7: "7 jours", days30: "30 jours", days90: "90 jours", forever: "Jamais",
       purge: "Supprimer toute l'activité",
       purged: (n: number) => `${n} entrée${n !== 1 ? "s" : ""} supprimée${n !== 1 ? "s" : ""}`,
+    },
+    ocr: {
+      enable: "OCR pour images & PDF scannés",
+      desc: "Extrait le texte des photos, captures d'écran et documents scannés via Tesseract, pour que la recherche de contenu les trouve aussi. Nécessite Tesseract (gratuit, open source). L'OCR ne tourne que pendant l'indexation en arrière-plan — jamais pendant la navigation.",
+      langs: "Langues OCR",
+      langEn: "Anglais", langFr: "Français", langBoth: "Anglais + Français",
+      path: "Chemin Tesseract (optionnel)",
+      pathPh: "Détection auto",
+      found: (v: string) => `Trouvé : ${v}`,
+      notFound: "Tesseract introuvable. Installe-le (build UB Mannheim par ex.) ou renseigne le chemin ci-dessus.",
+      missingLang: (l: string) => `Le pack de langue « ${l} » n'est pas installé — l'OCR utilisera les packs disponibles.`,
+      downloadPacks: (l: string) => `Télécharger le pack ${l} (quelques Mo)`,
+      downloading: "Téléchargement…",
+      downloadFailed: "Échec du téléchargement — vérifie ta connexion et réessaie.",
+      reindexHint: "Les fichiers déjà indexés avant l'activation de l'OCR ne sont retraités que par une réindexation manuelle (badge du dossier → Réindexer).",
     },
     git: {
       desc: "Affiche la branche, les fichiers modifiés, les derniers commits et les diffs quand vous parcourez un dossier dans un dépôt git. Lecture seule — nxs n'écrit jamais dans votre dépôt. Hors dossiers git, la fonctionnalité ne consomme rien.",
@@ -453,17 +483,65 @@ function OllamaManager({
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; onShowGuide?: () => void }) {
-  const { settings, updateSettings, setShowHidden } = useStore();
+  const { settings, updateSettings, setShowHidden, setSortExplicit, setLayoutMode } = useStore();
   const [section, setSection] = useState<Section>("appearance");
   const [saveFlash, setSaveFlash] = useState(false);
   const [purgeMsg, setPurgeMsg] = useState<string | null>(null);
   const [logClearedMsg, setLogClearedMsg] = useState(false);
   const [shellRegistered, setShellRegistered] = useState<boolean | null>(null);
   const [shellMsg, setShellMsg] = useState<string | null>(null);
+  // Tesseract probe result for the OCR section. null = not probed yet.
+  // Re-probed when the section becomes visible, when OCR is toggled on, and
+  // after the custom path is edited (debounced via onBlur, not per keystroke —
+  // each probe spawns a `tesseract --version` process).
+  const [tessStatus, setTessStatus] = useState<{ found: boolean; path: string; version: string; langs: string[] } | null>(null);
 
   useEffect(() => {
     invoke<boolean>("is_shell_extension_registered").then(setShellRegistered).catch(() => setShellRegistered(false));
   }, []);
+
+  const probeTesseract = () => {
+    invoke<{ found: boolean; path: string; version: string; langs: string[] }>("detect_tesseract")
+      .then(setTessStatus)
+      .catch(() => setTessStatus({ found: false, path: "", version: "", langs: [] }));
+  };
+
+  // One-click language pack download. Passes the FULL selected set — the
+  // backend downloads whatever's missing from the nxs-managed tessdata dir
+  // (the --tessdata-dir flag replaces Tesseract's search path, so the dir
+  // must be self-sufficient; see commands/ocr.rs::download_ocr_langs).
+  const [downloadingPacks, setDownloadingPacks] = useState(false);
+  const [packError, setPackError] = useState<string | null>(null);
+  const downloadPacks = async () => {
+    setDownloadingPacks(true);
+    setPackError(null);
+    try {
+      await invoke<string[]>("download_ocr_langs", {
+        langs: settings.ocrLanguages.split("+").filter(Boolean),
+      });
+      probeTesseract(); // refresh → warning + button disappear on success
+    } catch (e) {
+      setPackError(String(e));
+    } finally {
+      setDownloadingPacks(false);
+    }
+  };
+
+  // Language packs the current selection needs but the installed Tesseract
+  // lacks. Backend degrades gracefully (drops missing packs, falls back to
+  // eng) but the OCR quality silently differs from what the user asked for —
+  // surface it here so they can install the pack instead of wondering why
+  // their French receipts index poorly.
+  const missingOcrLangs = tessStatus?.found
+    ? settings.ocrLanguages.split("+").filter((l) => l && !tessStatus.langs.includes(l))
+    : [];
+
+  // Probe when the Activity section (hosting the OCR block) opens with OCR on,
+  // or right after the user enables the toggle.
+  useEffect(() => {
+    if (section === "activity" && settings.ocrEnabled) probeTesseract();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, settings.ocrEnabled]);
 
   const lang = settings.language as Lang;
   const t = T[lang] ?? T.en;
@@ -632,7 +710,7 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                       { value: "size",     label: t.explorer.size     },
                       { value: "type",     label: t.explorer.type     },
                     ]}
-                    onChange={(v) => patch({ defaultSort: v })}
+                    onChange={(v) => { patch({ defaultSort: v }); setSortExplicit(v, settings.defaultSortDir); }}
                   />
                 </Row>
 
@@ -643,7 +721,7 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                       { value: "asc",  label: t.explorer.asc  },
                       { value: "desc", label: t.explorer.desc },
                     ]}
-                    onChange={(v) => patch({ defaultSortDir: v })}
+                    onChange={(v) => { patch({ defaultSortDir: v }); setSortExplicit(settings.defaultSort, v); }}
                   />
                 </Row>
 
@@ -654,7 +732,7 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                       { value: "list", label: t.explorer.list },
                       { value: "grid", label: t.explorer.grid },
                     ]}
-                    onChange={(v) => patch({ defaultLayout: v })}
+                    onChange={(v) => { patch({ defaultLayout: v }); setLayoutMode(v); }}
                   />
                 </Row>
 
@@ -786,6 +864,85 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                 <p className="text-[11px] text-text-muted -mt-1 mb-2">
                   When enabled, the content of PDFs, Word docs, and spreadsheets is extracted in the background after adding a folder to a workspace. This makes search work on file contents, not just file names. New and modified files are always indexed regardless of this setting.
                 </p>
+
+                {/* ── OCR ── */}
+                <Row label={t.ocr.enable}>
+                  <Toggle
+                    checked={settings.ocrEnabled}
+                    onChange={(v) => patch({ ocrEnabled: v })}
+                  />
+                </Row>
+                <p className="text-[11px] text-text-muted -mt-1 mb-2">{t.ocr.desc}</p>
+
+                {settings.ocrEnabled && (
+                  <div className="pl-3 border-l-2 border-border-subtle mb-2">
+                    {/* Binary status — what indexing will actually use */}
+                    {tessStatus !== null && (
+                      tessStatus.found ? (
+                        <p className="text-[11px] text-emerald-400 flex items-center gap-1.5 mb-2">
+                          <CheckCircle2 size={11} className="shrink-0" />
+                          <span className="truncate" title={tessStatus.path}>
+                            {t.ocr.found(tessStatus.version)}
+                          </span>
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-amber-400 flex items-center gap-1.5 mb-2">
+                          <XCircle size={11} className="shrink-0" />
+                          {t.ocr.notFound}
+                        </p>
+                      )
+                    )}
+
+                    <Row label={t.ocr.langs}>
+                      <SegmentedControl
+                        value={settings.ocrLanguages}
+                        options={[
+                          { value: "eng"     as const, label: t.ocr.langEn   },
+                          { value: "fra"     as const, label: t.ocr.langFr   },
+                          { value: "eng+fra" as const, label: t.ocr.langBoth },
+                        ]}
+                        onChange={(v) => patch({ ocrLanguages: v })}
+                      />
+                    </Row>
+                    {missingOcrLangs.length > 0 && (
+                      <div className="-mt-1 mb-2">
+                        <p className="text-[11px] text-amber-400 mb-1.5">
+                          {t.ocr.missingLang(missingOcrLangs.join(", "))}
+                        </p>
+                        <button
+                          onClick={downloadPacks}
+                          disabled={downloadingPacks}
+                          className="flex items-center gap-1.5 h-7 px-2.5 rounded text-[11px] text-text-primary border border-border bg-surface-3 hover:bg-surface-4 disabled:opacity-60 transition-colors"
+                        >
+                          {downloadingPacks
+                            ? <><Loader2 size={11} className="animate-spin" /> {t.ocr.downloading}</>
+                            : <><RefreshCw size={11} /> {t.ocr.downloadPacks(missingOcrLangs.join(", "))}</>}
+                        </button>
+                        {packError && (
+                          <p className="text-[11px] text-red-400 mt-1.5" title={packError}>
+                            {t.ocr.downloadFailed}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    <Row label={t.ocr.path}>
+                      <input
+                        value={settings.ocrTesseractPath}
+                        onChange={(e) => updateSettings({ ocrTesseractPath: e.target.value })}
+                        onBlur={(e) => {
+                          // Persist + re-probe on blur only — probing spawns a
+                          // process, doing it per keystroke would be wasteful.
+                          patch({ ocrTesseractPath: e.target.value.trim() }).then(probeTesseract);
+                        }}
+                        placeholder={t.ocr.pathPh}
+                        spellCheck={false}
+                        className="w-56 h-7 px-2 rounded bg-surface-2 border border-border text-[11px] text-text-primary placeholder-text-muted outline-none focus:border-accent font-mono"
+                      />
+                    </Row>
+                    <p className="text-[11px] text-text-muted -mt-1 mb-1">{t.ocr.reindexHint}</p>
+                  </div>
+                )}
 
                 <div className="pt-4 flex items-center justify-between">
                   <div>

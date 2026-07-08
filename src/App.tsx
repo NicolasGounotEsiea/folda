@@ -77,8 +77,19 @@ export function App() {
     updateSettings, setShowHidden, openFile, settings,
     dualPaneActive, setDualPaneActive,
     activePaneIndex, stepBack2, stepForward2, setPane2Entries,
-    activeContextId,
+    activeContextId, setSortExplicit, setLayoutMode,
   } = useStore();
+
+  // Apply the user's saved Explorer defaults (sort column + direction, layout,
+  // hidden-files) to the store's live view state. Called once per startup for
+  // both the main window and popups. Without this, the store's hardcoded
+  // initial values ("name"/"asc"/"list"/hidden-off) always won regardless of
+  // what the user set in Settings → Explorer.
+  const applyExplorerDefaults = (s: ReturnType<typeof deserializeSettings>) => {
+    setSortExplicit(s.defaultSort, s.defaultSortDir);
+    setLayoutMode(s.defaultLayout);
+    setShowHidden(s.showHiddenDefault);
+  };
 
   // Ref so async callbacks always read the current contextId without stale closures
   const activeContextIdRef = useRef(activeContextId);
@@ -119,6 +130,7 @@ export function App() {
           const loaded = deserializeSettings(rawSettings);
           updateSettings(loaded);
           applySettings(loaded);
+          applyExplorerDefaults(loaded);
 
           if (initData.mode === "folder") {
             setCurrentPath(initData.path);
@@ -167,7 +179,7 @@ export function App() {
       const loadedSettings = deserializeSettings(rawSettings);
       updateSettings(loadedSettings);
       applySettings(loadedSettings);
-      if (loadedSettings.showHiddenDefault) setShowHidden(true);
+      applyExplorerDefaults(loadedSettings);
       if (!loadedSettings.hasSeenOnboarding) setOnboardingOpen(true);
 
       setContexts(ctxs); // sets activeContextId + rootPaths from DB-active workspace

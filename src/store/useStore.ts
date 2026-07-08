@@ -145,6 +145,10 @@ interface AppStore {
   setClipboard: (cb: { action: "copy" | "cut"; paths: string[]; isRemote: boolean; entries: ClipEntry[] } | null) => void;
   addRemoteFolderTabs: (rootPaths: string[]) => void;
   setSortBy: (col: "name" | "size" | "modified" | "type") => void;
+  /// Set sort column AND direction explicitly (no toggle). Used to apply the
+  /// user's saved Explorer defaults at startup — `setSortBy` toggles direction
+  /// so it can't express "sort by size, descending" from a cold state.
+  setSortExplicit: (col: "name" | "size" | "modified" | "type", dir: "asc" | "desc") => void;
   toggleShowHidden: () => void;
   setShowHidden: (v: boolean) => void;
 
@@ -613,6 +617,7 @@ export const useStore = create<AppStore>((set, get) => ({
       sortBy: col,
       sortDir: s.sortBy === col ? (s.sortDir === "asc" ? "desc" : "asc") : "asc",
     })),
+  setSortExplicit: (col, dir) => set({ sortBy: col, sortDir: dir }),
   toggleShowHidden: () => set((s) => ({ showHidden: !s.showHidden })),
   setShowHidden: (v) => set({ showHidden: v }),
 

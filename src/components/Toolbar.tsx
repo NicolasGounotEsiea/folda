@@ -106,7 +106,7 @@ export function Toolbar({
     try {
       const [fileEntries, folderEntries] = await Promise.all([
         type !== "folders"
-          ? invoke<SearchHit[]>("search_files", { query: q }).then((hits) =>
+          ? invoke<SearchHit[]>("search_files", { query: q, contextId: activeContextId ?? 0 }).then((hits) =>
               hits.map((f): ListEntry => ({
                 is_dir: false, name: f.name, path: f.path, size: f.size,
                 created_at: f.created_at, modified_at: f.modified_at, extension: f.extension, id: f.id, tags: f.tags,
@@ -119,7 +119,7 @@ export function Toolbar({
             )
           : Promise.resolve([] as ListEntry[]),
         type !== "files"
-          ? invoke<ListEntry[]>("search_folders", { query: q })
+          ? invoke<ListEntry[]>("search_folders", { query: q, contextId: activeContextId ?? 0 })
           : Promise.resolve([] as ListEntry[]),
       ]);
       startTransition(() => setListEntries([...folderEntries, ...fileEntries]));

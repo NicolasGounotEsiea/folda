@@ -84,9 +84,25 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-function formatDate(unixSecs: number): string {
+function formatDate(unixSecs: number, mode: "relative" | "absolute" = "absolute"): string {
   if (!unixSecs) return "—";
-  return new Date(unixSecs * 1000).toLocaleDateString(undefined, {
+  const d = new Date(unixSecs * 1000);
+  if (mode === "relative") {
+    const diffMs = Date.now() - d.getTime();
+    const sec = Math.round(diffMs / 1000);
+    const min = Math.round(sec / 60);
+    const hr = Math.round(min / 60);
+    const day = Math.round(hr / 24);
+    // Future timestamps (clock skew, files copied with a future mtime) fall
+    // through to the absolute format rather than showing "in -3 days".
+    if (sec >= 0) {
+      if (sec < 45) return "just now";
+      if (min < 60) return `${min}m ago`;
+      if (hr < 24) return `${hr}h ago`;
+      if (day < 30) return `${day}d ago`;
+    }
+  }
+  return d.toLocaleDateString(undefined, {
     day: "numeric", month: "short", year: "numeric",
   });
 }
@@ -372,7 +388,7 @@ const EntryRow = memo(function EntryRow({
   renaming, onRenameSubmit, onRenameCancel,
   isDragTarget, onPointerDown,
   gitStatus, gitDimmed,
-  staggerIndex,
+  staggerIndex, dateFormat,
 }: {
   entry: ListEntry;
   selected: boolean;
@@ -395,6 +411,9 @@ const EntryRow = memo(function EntryRow({
   /// animation has played and changes to staggerIndex have no visual effect.
   /// Pass undefined to skip the animation (e.g. when rendering skeletons).
   staggerIndex?: number;
+  /// Date display mode from Settings → Explorer. A plain string prop, so memo
+  /// only re-renders rows when the user actually changes the setting.
+  dateFormat: "relative" | "absolute";
 }) {
   const [renameVal, setRenameVal] = useState(entry.name);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -519,7 +538,7 @@ const EntryRow = memo(function EntryRow({
           </span>
           {/* col 4: modified */}
           <span className="text-[11px] text-text-muted text-right">
-            {formatDate(entry.modified_at)}
+            {formatDate(entry.modified_at, dateFormat)}
           </span>
           {/* col 5: empty (mirrors header actions column) */}
           <span />
@@ -836,6 +855,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   // settings object's churn.
   const gitEnabled = useStore((s) => s.settings.gitEnabled);
   const gitDimIgnored = useStore((s) => s.settings.gitDimIgnored);
+  const dateFormat = useStore((s) => s.settings.dateFormat);
   // Selector-scoped to avoid re-rendering FileList on unrelated GitStore changes.
   const gitStatus = useGitStore((s) => s.status);
   const gitByPath = useGitStore((s) => s.statusByPath);
@@ -921,7 +941,11 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
     if (pane === 0) pushNav(path);
     else pushNav2(path);
     const folderName = path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
-    invoke("record_activity", { path, name: folderName, action: "navigated" }).catch(() => {});
+    // Gated on the Settings → Activity toggle. Reading from getState() (not a
+    // subscribed value) keeps `navigate` out of the store-churn path.
+    if (useStore.getState().settings.activityTracking) {
+      invoke("record_activity", { path, name: folderName, action: "navigated" }).catch(() => {});
+    }
     try {
       const entries = await listDir(path);
       setPaneEntries(entries);
@@ -1110,7 +1134,9 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   };
 
   const handleOpen = (e: ListEntry) => {
-    invoke("record_activity", { path: e.path, name: e.name, action: "opened" }).catch(() => {});
+    if (useStore.getState().settings.activityTracking) {
+      invoke("record_activity", { path: e.path, name: e.name, action: "opened" }).catch(() => {});
+    }
     openFile(toFileEntry(e));
   };
 
@@ -2088,6 +2114,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
               gitStatus={gs?.status ?? null}
               gitDimmed={gitDimIgnored && gs?.status === "ignored"}
               staggerIndex={useStagger ? i : undefined}
+              dateFormat={dateFormat}
             />
           );
         })}
