@@ -1,6 +1,6 @@
 [package]
 name = "nxs"
-version = "0.1.18"
+version = "0.1.19"
 edition = "2021"
 
 [lib]
@@ -42,7 +42,7 @@ getrandom = "0.2"
 # ALREADY compiled into the binary as tauri-plugin-updater's transitive dep
 # (same 0.13, same rustls flavor) — declaring it directly adds ~zero build
 # cost. default-features off: we only need TLS + async GET.
-reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 tauri-plugin-drag = "2"
 tauri-plugin-single-instance = "2"
 # In-app updater. Signs releases with a private key (one-time setup, see

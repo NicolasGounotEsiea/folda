@@ -2,6 +2,39 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.19] - 2026-07-10
+
+> First published build since v0.1.16. It therefore also delivers everything in
+> the **v0.1.17** section (quick filter, quick-start popover, taskbar icon,
+> recents noise filter, automation numeric-condition fix) and the **v0.1.18**
+> section (**end-to-end encrypted workspace sharing** — Noise NNpsk0) below,
+> which were tagged but never shipped a release. Notably, LAN workspace sharing
+> is now encrypted — earlier builds sent the password and file contents in
+> cleartext.
+
+### Added
+
+- **OCR — text extraction from images and scanned PDFs** (opt-in, Settings → Activity). Photos, screenshots, receipts and scanned documents get their text indexed so content search and the AI assistant find them. Requires a system-installed Tesseract (free, open source); the Settings panel detects it, shows the version, and warns when a selected language pack is missing. Runs only during background indexing (never slows browsing) — inherits the indexer's 30 s per-file timeout, 2-worker parallelism and below-normal thread priority. Scanned PDFs are handled by pulling their embedded page-JPEGs (no heavy rasterizer dependency). Images: png/jpg/jpeg/webp/tif/tiff/bmp, capped at 5 MB.
+- **One-click OCR language pack download.** When a selected language (e.g. French) isn't installed in Tesseract, the Settings panel offers a "Download pack" button that fetches the `.traineddata` from the official `tessdata_fast` repo into nxs's own user-writable folder (`%LOCALAPPDATA%\com.nxs.app\tessdata\`) — no admin rights, the system Tesseract install is never touched. nxs passes `--tessdata-dir` so the downloaded packs are picked up transparently.
+- **Opt-in crash reporting — self-hosted, no third party** (Settings → About, off by default). When a crash happens (JS error, unhandled rejection, or Rust panic) an anonymous report is sent to an endpoint the maintainer controls (a Google Apps Script writing to their own Google Sheet, with a login-gated admin dashboard). Sends: error kind, message, stack, minified bundle location, app version, OS, arch, and a random anonymous install id. **Never** sends file paths, file contents, tags, workspace names, AI conversations, or the database. Offline crashes are buffered locally and retried at next launch. The consent toggle spells out exactly what is sent and where. See `docs/crash-telemetry-setup.md`.
+
+### Fixed
+
+- **Crash ("Maximum call stack size exceeded") when switching sheets in a large XLSX/CSV.** `SpreadsheetViewer` computed the column count with `Math.max(0, ...rows.map(r => r.length))`; the spread pushes one argument per row onto the call stack, and a sheet past ~65k rows (the cap is 500k) blew the JS argument limit. Replaced with an O(n) reduce — no stack growth.
+- **Search returned files from outside the active workspace.** `search_files` / `search_folders` ignored the workspace scope: the command accepted a `contextId` but the Toolbar and Command Palette never passed it, and the backend never filtered by the workspace's watched folders. Both now pass the context id and the backend restricts results to the workspace's roots (path-prefix match, case- and separator-insensitive, with a trailing-slash guard so `/foo/bar` doesn't match `/foo/barbecue`). Global scope (no active workspace) still searches everything.
+- **Content indexing skipped text files with unrecognized extensions** (`.sqlx`, `.env`, `.dockerfile`, `Makefile`, project-specific extensions, …). Added a byte-sniffing fallback: files whose extension isn't in the known list are read (bounded to ~12 KB), and indexed as text when they contain no NUL byte and decode as UTF-8 — so real text files get indexed while binaries are correctly skipped.
+- **Several Settings → Explorer / Editor options did nothing.** The default sort column, sort direction, and layout were never applied at startup (the store's hardcoded `name`/`asc`/`list` always won) and changing them in Settings had no live effect — both fixed. The editor's line-numbers, word-wrap and tab-size toggles were hardcoded in CodeMirror and are now wired to the settings. The date-format setting ("relative" vs "absolute") was ignored — the file list always showed absolute dates; it now honors the setting (`just now` / `5m ago` / `3d ago`). The "activity tracking" toggle didn't gate anything — navigation and file-open events were always recorded; they're now gated on it.
+
+### Removed
+
+- **Third-party telemetry (Sentry + PostHog) removed** in favor of the self-hosted crash reporting above. Per the requirement that all telemetry stay under the maintainer's control, the `@sentry/browser` dependency and the PostHog analytics wiring are gone; nothing is sent to any external analytics/error-tracking vendor.
+
+### Internal
+
+- **New `commands/ocr.rs`** — Tesseract detection, image OCR (child process with `CREATE_NO_WINDOW`, concurrent stdout drain to avoid pipe deadlock on multi-page TIFFs, 25 s hard kill), scanned-PDF embedded-JPEG extraction via `lopdf`, language-pack download + resolution (`--list-langs` intersection so a missing pack degrades cleanly instead of erroring on every file). 10 unit tests incl. a real end-to-end OCR test. New dep `lopdf` (already transitive via pdf-extract) + `reqwest` (already transitive via the updater). See CLAUDE.md §42.
+- **New `commands/telemetry.rs`** + `src/utils/telemetry.ts` — the crash pipeline. Process-wide `AtomicBool` gate read by the panic hook (so panics buffer only after opt-in), JSONL disk buffer capped at 50, `submit_crash_report` / `flush_pending_crash_reports` commands. `ENDPOINT` + `SHARED_SECRET` are constants; while `ENDPOINT` is the placeholder, submit/flush are silent no-ops (safe to ship unconfigured). `admin/crash-telemetry.gs` is the Apps Script (ingest `doPost` + dashboard `doGet`). CLAUDE.md §13 rewritten.
+- **5 new tests for search workspace-scoping** (`path_in_roots`) covering descendants, outside-rejection, sibling-prefix confusion, case/separator insensitivity, and multiple roots.
+
 ## [0.1.18] - 2026-06-18
 
 ### Security

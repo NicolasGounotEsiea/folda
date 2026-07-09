@@ -21,3 +21,4 @@ pub mod notes;
 pub mod automation;
 pub mod git;
 pub mod ocr;
+pub mod telemetry;

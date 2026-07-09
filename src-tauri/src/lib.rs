@@ -30,6 +30,21 @@ fn install_quiet_panic_hook() {
         {
             return; // silently swallow
         }
+        // Buffer the panic for crash telemetry (no-op unless the user opted in).
+        // Best-effort + synchronous — the process may be unwinding to death, so
+        // we only append to a local file; the next launch flushes it.
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".to_string());
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_default();
+        commands::telemetry::buffer_panic(&message, &location);
+
         default_hook(info);
     }));
 }
@@ -227,6 +242,10 @@ pub fn run() {
             // OCR (Tesseract) — status probe + one-click language pack download
             commands::ocr::detect_tesseract,
             commands::ocr::download_ocr_langs,
+            // Crash telemetry (self-owned, opt-in)
+            commands::telemetry::set_crash_reporting_enabled,
+            commands::telemetry::submit_crash_report,
+            commands::telemetry::flush_pending_crash_reports,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

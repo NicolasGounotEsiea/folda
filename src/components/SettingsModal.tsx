@@ -4,6 +4,7 @@ import { clsx } from "clsx";
 import { Activity, BookOpen, Bot, CheckCircle2, ChevronDown, Eye, FileText, FolderOpen, GitBranch, Info, LayoutList, Loader2, Palette, RefreshCw, Trash2, X, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { clearLog, getLogPath } from "../utils/errorLog";
+import { telemetrySetEnabled } from "../utils/telemetry";
 import { useStore } from "../store/useStore";
 import { ACCENT_PRESETS, serializeSettings, type AppSettings } from "../utils/settings";
 import { useTranslation } from "../utils/i18n";
@@ -80,8 +81,8 @@ const T = {
     about: {
       version: "Version", builtWith: "Built with Tauri 2 + React + Rust",
       changelog: "View changelog",
-      telemetry: "Anonymous telemetry & crash reports",
-      telemetryDesc: "Help improve nxs by sharing anonymous usage data and crash reports.",
+      telemetry: "Automatic crash reports",
+      telemetryDesc: "When a crash happens, send an anonymous report so bugs can be fixed. Sent only to the nxs developer's own server — never to any third party. Includes: the error message, a technical stack trace, app version and OS. Never your file paths, file contents, tags, or AI conversations. Off by default; you can turn it off anytime.",
       guide: "View onboarding guide",
       logFile: "Error log",
       logFileDesc: "Crashes and errors are saved locally in a plain text file.",
@@ -163,8 +164,8 @@ const T = {
     about: {
       version: "Version", builtWith: "Construit avec Tauri 2 + React + Rust",
       changelog: "Voir le changelog",
-      telemetry: "Télémétrie anonyme & rapports de plantage",
-      telemetryDesc: "Aidez à améliorer nxs en partageant des données d'utilisation anonymes.",
+      telemetry: "Rapports de plantage automatiques",
+      telemetryDesc: "Quand un plantage survient, envoie un rapport anonyme pour que les bugs soient corrigés. Envoyé uniquement au serveur du développeur de nxs — jamais à un tiers. Contient : le message d'erreur, une trace technique, la version de l'app et l'OS. Jamais tes chemins de fichiers, le contenu de tes fichiers, tes étiquettes ni tes conversations IA. Désactivé par défaut ; tu peux le couper à tout moment.",
       guide: "Voir le guide de démarrage",
       logFile: "Journal d'erreurs",
       logFileDesc: "Les plantages et erreurs sont enregistrés localement dans un fichier texte.",
@@ -1147,10 +1148,10 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                 <Row label={t.about.telemetry}>
                   <Toggle
                     checked={settings.telemetryEnabled}
-                    onChange={(v) => patch({ telemetryEnabled: v })}
+                    onChange={(v) => { patch({ telemetryEnabled: v }); telemetrySetEnabled(v); }}
                   />
                 </Row>
-                <p className="text-[11px] text-text-muted -mt-1 mb-2">{t.about.telemetryDesc}</p>
+                <p className="text-[11px] text-text-muted -mt-1 mb-2 leading-relaxed">{t.about.telemetryDesc}</p>
 
                 {onShowGuide && (
                   <button
