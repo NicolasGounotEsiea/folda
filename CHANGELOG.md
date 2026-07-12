@@ -2,6 +2,30 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.20] - 2026-07-11
+
+### Added
+
+- **Real progress + cancellation for file copy/move.** Copying or moving a large folder no longer freezes the window. A new transfer engine (`fs_ops.rs`) runs the whole operation on a background worker (`spawn_blocking`) instead of the main thread — the previous `copy_path` was a *synchronous* Tauri command, which in Tauri 2 executes on the main thread and blocked the entire event loop (no repaint, no input) until the copy finished. The engine also pre-scans the tree (stat-only, fast) to compute the real total byte count, then streams every file with throttled byte-level progress events — directories used to emit a fake 0/1 → 1/1 "progress". The progress card now shows a live percentage, `350 MB / 2.1 GB`, and a **cancel button**: cancelling deletes the partially-written destination (all-or-nothing) and never touches the source, so a cancelled move loses nothing. Same-volume moves stay instant `rename` calls with no progress bar.
+
+### Improved
+
+- **FileList is virtualized in list mode.** Folders with 200+ visible entries now DOM-mount only the viewport slice (+12 rows of overscan) instead of every row: a 10 000-entry folder renders ~40 rows instead of 10 000, so first paint and scrolling stay smooth. Hand-rolled fixed-height virtualizer (rows are a fixed 36 px) reusing the proven SpreadsheetViewer pattern — no new dependency. **Below 200 entries the render path is byte-for-byte the previous one** (all rows mounted, no spacers, no scroll-state updates), so small folders are provably unchanged, and the mount-time stagger animation (threshold 50) can never overlap with virtualization. The three interaction systems that depend on row DOM nodes were adapted: rubber-band selection becomes geometric in virtual mode (band rect → index range, so rows scrolled out of the DOM mid-drag are still selected), keyboard nav / type-ahead / quick-filter go through a new `scrollRowIntoView` that computes scroll offsets for rows outside the slice, and drag-and-drop needed no change (the drop target under the cursor is by definition mounted). Grid mode is not virtualized (CSS auto-fill grid has no fixed row math). See CLAUDE.md §37.
+
+### Fixed
+
+- **Indexing badge drifted into the folder tree.** In the Sidebar, the "12%" indexing badge and the remove-folder ✕ were vertically centered against a flex row that also contains the folder's *entire expanded subtree* — so on a workspace folder with many subfolders, they floated down next to a random child instead of the root row. Both are now anchored to the root folder's row (`items-start` + fixed row height).
+- **Progress card could stay on screen forever after a cross-device move.** If deleting the source failed after a fully successful copy (source file locked by another application — common on Windows), the error returned before the `finished: true` event was emitted, so the overlay card never cleared until the app restarted. The completion event is now emitted as soon as the copy finishes; the delete error still surfaces as a toast.
+- **Blank strip at the bottom of long lists on tall windows.** The ResizeObserver tracking the scroll container's height kept observing a detached element after the workspace-scan placeholder remounted the list, freezing the measured viewport height at its default — the virtual slice then under-covered the real viewport. It now re-attaches on every remount.
+- **Inline rename lost its text when scrolled out of view in a big folder.** In a virtualized list, scrolling the row being renamed outside the slice unmounted its input, silently dropping the typed name and leaving a phantom rename state that re-opened an empty input on scroll-back. The rename is now cancelled cleanly on unmount.
+- **Copy progress could display above 100%** when a file grew during the copy, or when a directory contained symlinked content the byte pre-scan didn't count. The percentage is clamped.
+
+### Internal
+
+- **CI clippy lints fixed in the sharing module** (`collapsible_match` in `client.rs`, missing `Default` impl + over-indented doc lists in `frame.rs`). The `rust` job of `ci.yml` runs `cargo clippy -- -D warnings`, which turns every lint into an error — these were invisible to `cargo check` and `cargo build --release` and had been failing CI since the Noise crypto work landed.
+- **`copy_with_progress` removed** from `files.rs` and unregistered — it had no frontend callers and its directory branch only emitted fake progress. The new transfer engine supersedes it.
+- New `cancel_transfer` command backed by a process-wide cancel-flag registry keyed by a frontend-generated transfer id.
+
 ## [0.1.19] - 2026-07-10
 
 > First published build since v0.1.16. It therefore also delivers everything in
