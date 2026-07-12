@@ -100,6 +100,172 @@ fn unique_dst(dst: &Path) -> std::path::PathBuf {
     }
 }
 
+// ── Transfer engine ───────────────────────────────────────────────────────────
+//
+// One shared engine behind BOTH `copy_path` and `move_path`'s cross-device
+// fallback. Fixes two real user-facing problems the old code had:
+//
+//   1. **Whole-window freeze.** `copy_path` was a SYNC command — in Tauri 2,
+//      sync commands run on the MAIN thread, so copying a big folder blocked
+//      the entire event loop (no repaint, no input) until it finished. All
+//      work now runs inside `spawn_blocking`.
+//   2. **No real progress for directories.** Dir copies emitted a fake
+//      0/1 → 1/1. The engine now pre-scans the tree (stat-only walk, fast)
+//      to get the total byte count, then streams every file with throttled
+//      byte-level progress events the existing `ProgressOverlay` renders.
+//
+// Cancellation: the frontend passes an optional `transfer_id`; `cancel_transfer`
+// flips the matching AtomicBool. The engine checks it between chunks/files.
+// On cancel the PARTIAL DESTINATION is deleted (all-or-nothing semantics) and
+// the source is never touched — a cancelled move loses nothing.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::Instant;
+
+static TRANSFER_CANCELS: OnceLock<StdMutex<HashMap<u64, Arc<AtomicBool>>>> = OnceLock::new();
+
+fn cancels() -> &'static StdMutex<HashMap<u64, Arc<AtomicBool>>> {
+    TRANSFER_CANCELS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+fn register_cancel_flag(id: Option<u64>) -> Option<Arc<AtomicBool>> {
+    let id = id?;
+    let flag = Arc::new(AtomicBool::new(false));
+    cancels().lock().unwrap().insert(id, flag.clone());
+    Some(flag)
+}
+
+fn clear_cancel_flag(id: Option<u64>) {
+    if let Some(id) = id {
+        cancels().lock().unwrap().remove(&id);
+    }
+}
+
+/// Flip the cancel flag for an in-flight transfer. Sync + trivial (a map
+/// lookup), safe on the main thread. Unknown ids are a no-op — the transfer
+/// may have already finished.
+#[tauri::command]
+pub fn cancel_transfer(id: u64) {
+    if let Some(flag) = cancels().lock().unwrap().get(&id) {
+        flag.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Throttled progress emitter. At most one event per 100 ms (plus the final
+/// one) — an unthrottled 256 KB-chunk loop on a 2 GB file would emit ~8000
+/// events and hammer the webview's event bridge.
+struct ProgressEmitter {
+    app: tauri::AppHandle,
+    event: &'static str,
+    id: Option<u64>,
+    name: String,
+    total: u64,
+    done: u64,
+    last_emit: Instant,
+}
+
+impl ProgressEmitter {
+    fn new(app: tauri::AppHandle, event: &'static str, id: Option<u64>, name: String, total: u64) -> Self {
+        let mut em = Self { app, event, id, name, total, done: 0, last_emit: Instant::now() };
+        em.emit(false); // initial event so the overlay card appears at 0% immediately
+        em
+    }
+
+    fn add(&mut self, bytes: u64) {
+        self.done += bytes;
+        if self.last_emit.elapsed().as_millis() >= 100 {
+            self.emit(false);
+            self.last_emit = Instant::now();
+        }
+    }
+
+    fn emit(&mut self, finished: bool) {
+        use tauri::Emitter;
+        let _ = self.app.emit(self.event, serde_json::json!({
+            "id": self.id,
+            "name": self.name,
+            "done": self.done,
+            "total": self.total,
+            "finished": finished,
+        }));
+    }
+
+    fn finish(&mut self) {
+        self.done = self.total;
+        self.emit(true);
+    }
+}
+
+/// Total byte size of a file or directory tree. Stat-only walk — cheap even
+/// on tens of thousands of files, and it's what makes the progress bar
+/// meaningful instead of the old fake 0/1.
+fn scan_total_bytes(path: &Path) -> u64 {
+    if path.is_dir() {
+        walkdir::WalkDir::new(path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter_map(|e| e.metadata().ok())
+            .map(|m| m.len())
+            .sum()
+    } else {
+        std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+    }
+}
+
+fn check_cancel(cancel: &Option<Arc<AtomicBool>>) -> Result<(), String> {
+    if cancel.as_ref().is_some_and(|f| f.load(Ordering::Relaxed)) {
+        return Err("cancelled".to_string());
+    }
+    Ok(())
+}
+
+fn copy_file_streamed(
+    src: &Path,
+    dst: &Path,
+    em: &mut ProgressEmitter,
+    cancel: &Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+    let mut src_file = std::fs::File::open(src).map_err(human_io_error)?;
+    let mut dst_file = std::fs::File::create(dst).map_err(human_io_error)?;
+    let mut buf = vec![0u8; 1024 * 1024]; // 1 MiB — fewer syscalls than 256 KB, still responsive cancel
+    loop {
+        check_cancel(cancel)?;
+        let n = src_file.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        dst_file.write_all(&buf[..n]).map_err(human_io_error)?;
+        em.add(n as u64);
+    }
+    Ok(())
+}
+
+fn copy_tree_streamed(
+    src: &Path,
+    dst: &Path,
+    em: &mut ProgressEmitter,
+    cancel: &Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst).map_err(human_io_error)?;
+        for entry in std::fs::read_dir(src).map_err(human_io_error)? {
+            check_cancel(cancel)?;
+            let entry = entry.map_err(|e| e.to_string())?;
+            copy_tree_streamed(&entry.path(), &dst.join(entry.file_name()), em, cancel)?;
+        }
+        Ok(())
+    } else {
+        copy_file_streamed(src, dst, em, cancel)
+    }
+}
+
+/// Plain recursive copy without progress/cancel — kept for `duplicate_file`,
+/// which duplicates in place (same folder, typically small) and doesn't need
+/// the full transfer engine.
 fn copy_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     if src.is_dir() {
         std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
@@ -113,18 +279,84 @@ fn copy_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn copy_path(
-    src: String, dst_dir: String,
-    state: tauri::State<AppState>,
+/// Best-effort removal of a partially-written destination after cancel/error.
+/// All-or-nothing: the user never finds a half-copied tree they'd mistake for
+/// the real thing.
+fn cleanup_partial(dst: &Path) {
+    if dst.is_dir() {
+        let _ = std::fs::remove_dir_all(dst);
+    } else {
+        let _ = std::fs::remove_file(dst);
+    }
+}
+
+/// Blocking body shared by copy_path and move_path's cross-device fallback.
+/// Runs inside spawn_blocking. Returns the final destination path.
+fn transfer_blocking(
+    src: String,
+    dst_dir: String,
+    transfer_id: Option<u64>,
+    app: tauri::AppHandle,
+    event: &'static str,
+    delete_src_after: bool,
 ) -> Result<String, String> {
     let src_path = Path::new(&src);
     let file_name = src_path.file_name().ok_or("Invalid source path")?;
+    let name = file_name.to_string_lossy().to_string();
     let dst = unique_dst(&Path::new(&dst_dir).join(file_name));
-    copy_recursive(src_path, &dst)?;
-    let dst_str = dst.to_string_lossy().to_string();
+
+    let total = scan_total_bytes(src_path);
+    let cancel = register_cancel_flag(transfer_id);
+    let mut em = ProgressEmitter::new(app, event, transfer_id, name, total);
+
+    let result = copy_tree_streamed(src_path, &dst, &mut em, &cancel);
+    clear_cancel_flag(transfer_id);
+
+    match result {
+        Ok(()) => {
+            // finish() BEFORE the source delete: if the delete fails (source
+            // file locked by another app — common on Windows), the `?` below
+            // would otherwise return before finished:true is ever emitted and
+            // the overlay card would be stuck on screen forever. The copy IS
+            // complete at this point, so "done" is accurate; the delete error
+            // still propagates to the caller's toast.
+            em.finish();
+            if delete_src_after {
+                // Move: source removed only after a FULLY successful copy —
+                // a failure or cancel anywhere leaves the source intact.
+                if src_path.is_dir() {
+                    std::fs::remove_dir_all(src_path).map_err(human_io_error)?;
+                } else {
+                    std::fs::remove_file(src_path).map_err(human_io_error)?;
+                }
+            }
+            Ok(dst.to_string_lossy().to_string())
+        }
+        Err(e) => {
+            cleanup_partial(&dst);
+            em.finish(); // clears the overlay card
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn copy_path(
+    src: String,
+    dst_dir: String,
+    transfer_id: Option<u64>,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let dst_str = tokio::task::spawn_blocking(move || {
+        transfer_blocking(src, dst_dir, transfer_id, app, "copy-progress", false)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
     if let Ok(db) = state.db.lock() {
-        let name = dst.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let name = Path::new(&dst_str)
+            .file_name().and_then(|n| n.to_str()).unwrap_or("");
         log_activity(&db, &dst_str, name, "created");
     }
     Ok(dst_str)
@@ -132,64 +364,37 @@ pub fn copy_path(
 
 #[tauri::command]
 pub async fn move_path(
-    src: String, dst_dir: String,
+    src: String,
+    dst_dir: String,
+    transfer_id: Option<u64>,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    use tauri::Emitter;
-    use std::io::{Read, Write};
     let src_path = Path::new(&src);
     let file_name = src_path.file_name().ok_or("Invalid source path")?;
-    let name = file_name.to_string_lossy().to_string();
     let dst = unique_dst(&Path::new(&dst_dir).join(file_name));
 
-    match std::fs::rename(&src, &dst) {
-        Ok(_) => {} // Same-device rename: instant, no progress needed
+    let dst_str = match std::fs::rename(&src, &dst) {
+        // Same-device rename: instant, no progress needed.
+        Ok(_) => dst.to_string_lossy().to_string(),
         Err(e) => {
             let is_cross_device = e.kind() == std::io::ErrorKind::CrossesDevices
                 || e.raw_os_error() == Some(17);
             if !is_cross_device {
                 return Err(human_io_error(e));
             }
-            // Cross-device: copy with byte-level progress, then delete source
-            let meta = std::fs::metadata(&src).map_err(human_io_error)?;
-            if meta.is_dir() {
-                let _ = app.emit("move-progress", serde_json::json!({
-                    "name": name, "done": 0u64, "total": 1u64, "finished": false
-                }));
-                copy_recursive(src_path, &dst)?;
-                std::fs::remove_dir_all(&src).map_err(human_io_error)?;
-                let _ = app.emit("move-progress", serde_json::json!({
-                    "name": name, "done": 1u64, "total": 1u64, "finished": true
-                }));
-            } else {
-                let total = meta.len();
-                let mut src_file = std::fs::File::open(&src).map_err(human_io_error)?;
-                let mut dst_file = std::fs::File::create(&dst).map_err(human_io_error)?;
-                let mut buf = vec![0u8; 256 * 1024];
-                let mut copied: u64 = 0;
-                loop {
-                    let n = src_file.read(&mut buf).map_err(|e| e.to_string())?;
-                    if n == 0 { break; }
-                    dst_file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-                    copied += n as u64;
-                    let _ = app.emit("move-progress", serde_json::json!({
-                        "name": name, "done": copied, "total": total, "finished": false
-                    }));
-                }
-                drop(src_file);
-                drop(dst_file);
-                std::fs::remove_file(&src).map_err(human_io_error)?;
-                let _ = app.emit("move-progress", serde_json::json!({
-                    "name": name, "done": total, "total": total, "finished": true
-                }));
-            }
+            // Cross-device: streamed copy with real progress, then delete source.
+            tokio::task::spawn_blocking(move || {
+                transfer_blocking(src, dst_dir, transfer_id, app, "move-progress", true)
+            })
+            .await
+            .map_err(|e| e.to_string())??
         }
-    }
+    };
 
-    let dst_str = dst.to_string_lossy().to_string();
     if let Ok(db) = state.db.lock() {
-        let n = dst.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let n = Path::new(&dst_str)
+            .file_name().and_then(|n| n.to_str()).unwrap_or("");
         log_activity(&db, &dst_str, n, "renamed");
     }
     Ok(dst_str)

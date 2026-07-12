@@ -84,6 +84,17 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+// Monotonic transfer-id generator for copy/move progress tracking. The id
+// keys the ProgressOverlay card and routes `cancel_transfer` to the right
+// backend flag. Epoch-ms base + counter keeps ids unique across rapid
+// successive transfers within the same millisecond, and stays well inside
+// Number.MAX_SAFE_INTEGER (backend receives it as u64).
+let _transferSeq = 0;
+function newTransferId(): number {
+  _transferSeq = (_transferSeq + 1) % 1000;
+  return Date.now() * 1000 + _transferSeq;
+}
+
 function formatDate(unixSecs: number, mode: "relative" | "absolute" = "absolute"): string {
   if (!unixSecs) return "—";
   const d = new Date(unixSecs * 1000);
@@ -362,6 +373,22 @@ function SortHeader({ col, label, width, sortBy, sortDir, onSort }: {
 const ROW_GRID = "grid items-center gap-x-3 px-4" as const;
 const ROW_COLS = { gridTemplateColumns: "15px 1fr 64px 96px 42px" } as const;
 
+// ── List virtualization ───────────────────────────────────────────────────────
+// Row height in px — MUST match EntryRow's `h-9` class (and the ".." row).
+// The virtualizer's slice math and the rubber-band geometric selection both
+// assume every list row is exactly this tall.
+const VIRTUAL_ROW_H = 36;
+// Folders below this many visible entries render ALL rows — the exact
+// pre-virtualization code path, zero behavioral change. Chosen comfortably
+// above STAGGER_THRESHOLD (50) so the mount-time stagger animation can never
+// interact with row mounting/unmounting during scroll. Above it, only the
+// viewport slice (+ overscan) is DOM-mounted: a 10k-entry folder renders
+// ~40 rows instead of 10 000.
+const VIRTUALIZE_FROM = 200;
+// Extra rows rendered above/below the viewport. Absorbs fast scrolling and
+// the one-frame lag of the rAF-throttled scroll state.
+const VIRTUAL_OVERSCAN = 12;
+
 /// Total-row threshold for the entrance-stagger animation. Below this, every
 /// row gets the fade-up cascade on first mount. At or above, the animation is
 /// skipped for ALL rows — an all-or-nothing rule because partial staggering
@@ -428,6 +455,18 @@ const EntryRow = memo(function EntryRow({
       }, 10);
     }
   }, [renaming, entry.name]);
+
+  // Cancel an in-progress rename if this row UNMOUNTS while editing — in a
+  // virtualized list, scrolling the row outside the slice unmounts it, which
+  // would silently drop the typed text and leave a phantom `renamingPath`
+  // that re-opens an empty input when the row scrolls back in. Cancelling is
+  // predictable. The cleanup also fires on normal renaming→false flips
+  // (submit/escape), where the extra cancel is an idempotent no-op.
+  useEffect(() => {
+    if (!renaming) return;
+    return () => onRenameCancel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renaming]);
 
   return (
     <div
@@ -753,6 +792,90 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   const [rubberBand, setRubberBand] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
   const rubberBandActive = useRef<{ startX: number; startY: number } | null>(null);
 
+  // ─── List virtualization state ───────────────────────────────────────────────
+  // Hand-rolled fixed-row-height virtualizer, same pattern as SpreadsheetViewer
+  // (rAF-throttled scroll state + ResizeObserver viewport height + slice).
+  // Active only in list mode when visibleEntries.length >= VIRTUALIZE_FROM —
+  // below that, the render path is byte-for-byte the previous one.
+  const [listScrollTop, setListScrollTop] = useState(0);
+  const [listViewportH, setListViewportH] = useState(800);
+  const rowsWrapRef = useRef<HTMLDivElement>(null);
+  // Offset of the rows region from the top of the scroll container's content
+  // (header + optional new-file/new-folder inputs + optional ".." row).
+  // Measured after layout; read during render for the slice math. A one-frame
+  // staleness when the inputs toggle shifts the slice by <1 row — absorbed by
+  // the overscan.
+  const rowsOffsetRef = useRef(0);
+  // Mirrors "virtualization active" for the scroll handler: when false, the
+  // handler does NOT push scroll positions into state — small folders keep
+  // today's zero-re-renders-during-scroll behavior.
+  const virtualActiveRef = useRef(false);
+  const scrollRafPendingRef = useRef(false);
+  const pendingScrollTopRef = useRef(0);
+  const handleListScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (!virtualActiveRef.current) return;
+    pendingScrollTopRef.current = e.currentTarget.scrollTop;
+    if (scrollRafPendingRef.current) return;
+    scrollRafPendingRef.current = true;
+    requestAnimationFrame(() => {
+      setListScrollTop(pendingScrollTopRef.current);
+      scrollRafPendingRef.current = false;
+    });
+  }, []);
+
+  // Track the scroll container's inner height (ResizeObserver fires on mount
+  // and on window/panel resizes). Guarded setState avoids redundant renders.
+  // Deps: every flag whose flip REPLACES the container element (early returns /
+  // separate render branches) — after such a remount the previous observer
+  // watches a detached node and the viewport height would freeze at its last
+  // value, making the virtual slice under-cover tall windows (blank strip at
+  // the bottom). `isScanning` is the sneaky one: the scanning placeholder is a
+  // full early-return that unmounts the container.
+  useEffect(() => {
+    const el = listContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      const h = el.clientHeight;
+      setListViewportH((prev) => (prev === h ? prev : h));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutMode, isScanning]);
+
+  // Measure the rows region offset after every layout — cheap (one offsetTop
+  // read; the container is position:relative so offsetTop is container-local).
+  useEffect(() => {
+    rowsOffsetRef.current = rowsWrapRef.current?.offsetTop ?? 0;
+  });
+
+  // (The slice/scroll re-sync effect lives AFTER the visibleEntries useMemo —
+  // its dependency array reads visibleEntries.length, which is declared later
+  // in the component; putting it here would evaluate a TDZ binding at render.)
+
+  // Scroll a row into view whether or not it's currently DOM-mounted. Mounted →
+  // native scrollIntoView (exact current behavior). Unmounted (virtualized,
+  // outside the slice) → compute the row's offset from its index and move the
+  // container's scrollTop directly; the row mounts on the next render.
+  const scrollRowIntoView = (path: string) => {
+    const el = document.querySelector(`[data-entry-path="${CSS.escape(path)}"]`);
+    if (el) {
+      el.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    const container = listContainerRef.current;
+    if (!container) return;
+    const idx = visibleEntries.findIndex((x) => x.path === path);
+    if (idx < 0) return;
+    const rowTop = rowsOffsetRef.current + idx * VIRTUAL_ROW_H;
+    const rowBottom = rowTop + VIRTUAL_ROW_H;
+    if (rowTop < container.scrollTop) {
+      container.scrollTop = rowTop;
+    } else if (rowBottom > container.scrollTop + container.clientHeight) {
+      container.scrollTop = rowBottom - container.clientHeight;
+    }
+  };
+
   // ─── Drag state (mouse-event based, avoids WebView2 HTML5 DnD issues) ───────
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number; label: string } | null>(null);
@@ -922,6 +1045,20 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
       .reduce((s, e) => s + e.size, 0),
   [visibleEntries, paneSelectedPaths]);
 
+  // Re-sync the virtual slice with the container's REAL scroll position when
+  // the content changes (navigation, filter, tag toggle). The browser clamps
+  // scrollTop when content shrinks — without this sync the slice would be
+  // computed from a stale offset and rows would render outside the viewport.
+  // Declared here (not with the rest of the virtualization state) because the
+  // dependency array reads visibleEntries.length.
+  useEffect(() => {
+    const el = listContainerRef.current;
+    if (!el) return;
+    pendingScrollTopRef.current = el.scrollTop;
+    setListScrollTop((prev) => (prev === el.scrollTop ? prev : el.scrollTop));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panePath, visibleEntries.length]);
+
   // ─── Helpers ───────────────────────────────────────────────────────────────
   const refreshList = useCallback(async (path?: string) => {
     const target = path ?? panePath;
@@ -1051,13 +1188,34 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
         const bottom = Math.max(rb.y1, rb.y2);
         if (right - left > 4 || bottom - top > 4) {
           const selected: string[] = [];
-          listContainerRef.current?.querySelectorAll("[data-entry-path]").forEach((el) => {
-            const r = el.getBoundingClientRect();
-            if (r.right > left && r.left < right && r.bottom > top && r.top < bottom) {
-              const path = (el as HTMLElement).dataset.entryPath;
-              if (path) selected.push(path);
+          if (virtualActiveRef.current && rowsWrapRef.current) {
+            // Virtualized list: off-screen rows have no DOM node, so DOM
+            // hit-testing would silently drop them (e.g. band + wheel-scroll).
+            // Rows are fixed-height at known offsets — compute the intersected
+            // index range geometrically instead. Horizontal check against the
+            // rows region keeps the semantics of the DOM version.
+            const wrap = rowsWrapRef.current.getBoundingClientRect();
+            if (right > wrap.left && left < wrap.right) {
+              const firstIdx = Math.max(0, Math.floor((top - wrap.top) / VIRTUAL_ROW_H));
+              const lastIdx = Math.min(
+                visibleEntries.length - 1,
+                Math.ceil((bottom - wrap.top) / VIRTUAL_ROW_H) - 1,
+              );
+              for (let i = firstIdx; i <= lastIdx; i++) {
+                selected.push(visibleEntries[i].path);
+              }
             }
-          });
+          } else {
+            // Non-virtualized (small folders + grid mode): DOM hit-testing,
+            // the exact pre-virtualization behavior.
+            listContainerRef.current?.querySelectorAll("[data-entry-path]").forEach((el) => {
+              const r = el.getBoundingClientRect();
+              if (r.right > left && r.left < right && r.bottom > top && r.top < bottom) {
+                const path = (el as HTMLElement).dataset.entryPath;
+                if (path) selected.push(path);
+              }
+            });
+          }
           if (selected.length > 0) setPaneSelectedPaths(selected);
         }
         return null;
@@ -1092,9 +1250,14 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
               const name = src.replace(/\\/g, "/").split("/").pop()!;
               await invoke("rename_remote_path", { fromPath: src, toPath: target.replace(/\\/g, "/") + "/" + name });
             } else {
-              await invoke("move_path", { src, dstDir: target });
+              // transferId → ProgressOverlay card + cancel support. Same-device
+              // drops are instant renames (no events fire); cross-device drops
+              // get the streamed-copy progress bar.
+              await invoke("move_path", { src, dstDir: target, transferId: newTransferId() });
             }
-          } catch (err) { console.error(err); }
+          } catch (err) {
+            if (!String(err).includes("cancelled")) console.error(err);
+          }
         }
       } else {
         for (const src of paths) {
@@ -1192,9 +1355,9 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
     if (!entry) return;
     setPaneSelectedPaths([entry.path]);
     selectEntry(entry.is_dir ? { kind: "folder", entry } : { kind: "file", entry: toFileEntry(entry) });
-    // Same scroll-into-view affordance as the global ArrowDown/Up handler.
-    document.querySelector(`[data-entry-path="${CSS.escape(entry.path)}"]`)
-      ?.scrollIntoView({ block: "nearest" });
+    // Same scroll-into-view affordance as the global ArrowDown/Up handler
+    // (mode-aware — works when the row is outside the virtualized slice).
+    scrollRowIntoView(entry.path);
   };
 
   const handleOpenFolderInNewTab = async (path: string) => {
@@ -1438,12 +1601,21 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
               await invoke("rename_remote_path", { fromPath: src, toPath: panePath.replace(/\\/g, "/") + "/" + name });
             }
           } else {
-            // local → local
-            if (clipboard.action === "copy") await invoke("copy_path", { src, dstDir: panePath });
-            else await invoke("move_path", { src, dstDir: panePath });
+            // local → local. The transferId keys the ProgressOverlay card and
+            // enables its cancel button (backend `cancel_transfer`). Generated
+            // per item — each file/folder in the clipboard gets its own card.
+            const transferId = newTransferId();
+            if (clipboard.action === "copy") await invoke("copy_path", { src, dstDir: panePath, transferId });
+            else await invoke("move_path", { src, dstDir: panePath, transferId });
           }
         } catch (e) {
-          addToast({ type: "error", message: `Failed to ${clipboard.action} file`, detail: humanizeError(e) });
+          // A user-initiated cancel is not an error — the overlay card just
+          // disappears and the partial destination was cleaned up backend-side.
+          if (String(e).includes("cancelled")) {
+            addToast({ type: "info", message: t.transferCancelled });
+          } else {
+            addToast({ type: "error", message: `Failed to ${clipboard.action} file`, detail: humanizeError(e) });
+          }
         }
       }
     } else {
@@ -1677,6 +1849,9 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
           setPaneSelectedPaths([entry.path]);
           selectEntry(entry.is_dir ? { kind: "folder", entry } : { kind: "file", entry: toFileEntry(entry) });
         }
+        // Keep the newly-selected row visible. Mode-aware: works even when
+        // the target row is outside the virtualized slice (not DOM-mounted).
+        scrollRowIntoView(entry.path);
       }
 
       // Letter-key type-ahead jump
@@ -1695,9 +1870,9 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
           const entry = visibleEntries[idx];
           setPaneSelectedPaths([entry.path]);
           selectEntry(entry.is_dir ? { kind: "folder", entry } : { kind: "file", entry: toFileEntry(entry) });
-          // Scroll the row into view
-          document.querySelector(`[data-entry-path="${CSS.escape(entry.path)}"]`)
-            ?.scrollIntoView({ block: "nearest" });
+          // Scroll the row into view (mode-aware — the row may not be mounted
+          // when the list is virtualized).
+          scrollRowIntoView(entry.path);
         }
       }
 
@@ -1943,6 +2118,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
       <div
         ref={listContainerRef}
         className="flex-1 overflow-y-auto flex flex-col relative"
+        onScroll={handleListScroll}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
@@ -2089,35 +2265,61 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
         {/* All-or-nothing stagger decision: animate every row OR none, never
             partial. Partial staggering creates a visible seam where the
             cascade hits the static rows. See STAGGER_THRESHOLD comment. */}
-        {!skeletonVisible && visibleEntries.map((e, i) => {
-          // Resolve git status once per row, only when git is on. Cheap Map.get
-          // lookup; falls through to undefined for non-tracked / non-changed files.
-          const gs = gitEnabled ? statusForAbsolutePath(e.path, gitStatus, gitByPath) : null;
-          const useStagger = visibleEntries.length < STAGGER_THRESHOLD;
+        {!skeletonVisible && (() => {
+          const N = visibleEntries.length;
+          // Virtualize only big folders. Below the threshold this IIFE renders
+          // exactly what the old direct .map() produced — same DOM, no spacers,
+          // stagger animation untouched (STAGGER_THRESHOLD 50 < 200 so the two
+          // features never overlap).
+          const virtual = N >= VIRTUALIZE_FROM;
+          virtualActiveRef.current = virtual;
+          let start = 0;
+          let end = N;
+          if (virtual) {
+            const rel = Math.max(0, listScrollTop - rowsOffsetRef.current);
+            start = Math.max(0, Math.floor(rel / VIRTUAL_ROW_H) - VIRTUAL_OVERSCAN);
+            end = Math.min(N, Math.ceil((rel + listViewportH) / VIRTUAL_ROW_H) + VIRTUAL_OVERSCAN);
+          }
+          const useStagger = N < STAGGER_THRESHOLD;
           return (
-            <EntryRow
-              key={e.path}
-              entry={e}
-              selected={paneSelectedPaths.includes(e.path)}
-              cut={clipboard?.action === "cut" && clipboard.paths.includes(e.path)}
-              renaming={renamingPath === e.path}
-              // Stable refs — pass the wrappers above instead of per-row
-              // inline closures so memo() can actually skip re-renders.
-              onClick={stableOnClick}
-              onDoubleClick={stableOnDoubleClick}
-              onNavigate={stableOnNavigate}
-              onContextMenu={stableOnContextMenu}
-              onRenameSubmit={stableOnRenameSubmit}
-              onRenameCancel={stableOnRenameCancel}
-              isDragTarget={dropTarget === e.path}
-              onPointerDown={stableOnPointerDown}
-              gitStatus={gs?.status ?? null}
-              gitDimmed={gitDimIgnored && gs?.status === "ignored"}
-              staggerIndex={useStagger ? i : undefined}
-              dateFormat={dateFormat}
-            />
+            // shrink-0: the wrapper must never be flex-compressed — the
+            // virtualizer's geometry (spacers + fixed 36px rows) assumes the
+            // wrapper's height is exactly N * VIRTUAL_ROW_H.
+            <div ref={rowsWrapRef} className="shrink-0">
+              {virtual && start > 0 && <div style={{ height: start * VIRTUAL_ROW_H }} />}
+              {visibleEntries.slice(start, end).map((e, si) => {
+                const i = start + si; // absolute index in visibleEntries
+                // Resolve git status once per MOUNTED row, only when git is on.
+                // With virtualization this runs ~40 times instead of N.
+                const gs = gitEnabled ? statusForAbsolutePath(e.path, gitStatus, gitByPath) : null;
+                return (
+                  <EntryRow
+                    key={e.path}
+                    entry={e}
+                    selected={paneSelectedPaths.includes(e.path)}
+                    cut={clipboard?.action === "cut" && clipboard.paths.includes(e.path)}
+                    renaming={renamingPath === e.path}
+                    // Stable refs — pass the wrappers above instead of per-row
+                    // inline closures so memo() can actually skip re-renders.
+                    onClick={stableOnClick}
+                    onDoubleClick={stableOnDoubleClick}
+                    onNavigate={stableOnNavigate}
+                    onContextMenu={stableOnContextMenu}
+                    onRenameSubmit={stableOnRenameSubmit}
+                    onRenameCancel={stableOnRenameCancel}
+                    isDragTarget={dropTarget === e.path}
+                    onPointerDown={stableOnPointerDown}
+                    gitStatus={gs?.status ?? null}
+                    gitDimmed={gitDimIgnored && gs?.status === "ignored"}
+                    staggerIndex={useStagger ? i : undefined}
+                    dateFormat={dateFormat}
+                  />
+                );
+              })}
+              {virtual && end < N && <div style={{ height: (N - end) * VIRTUAL_ROW_H }} />}
+            </div>
           );
-        })}
+        })()}
 
         {/* Rubber-band selection rect */}
         {rubberBand && (() => {

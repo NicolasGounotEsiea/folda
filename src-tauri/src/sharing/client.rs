@@ -192,7 +192,15 @@ pub async fn connect(
                         }
 
                         Some(Ok(Message::Ping(data))) => {
-                            if sink.send(Message::Pong(data)).await.is_err() { break; }
+                            // Reply to WS keepalive pings; drop the connection
+                            // if the socket died. The intermediate `let` also
+                            // keeps clippy from suggesting we fold the async
+                            // send into a match guard (a side-effecting guard
+                            // would be far less readable).
+                            let pong = sink.send(Message::Pong(data)).await;
+                            if pong.is_err() {
+                                break;
+                            }
                         }
 
                         Some(Ok(Message::Close(_))) => break,

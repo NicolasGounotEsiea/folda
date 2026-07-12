@@ -54,6 +54,7 @@ type AppStrings = {
   quickFilterNoMatches: string;          // empty state title when filter narrows to zero
   quickFilterNoMatchesHint: string;      // hint — supports {query} placeholder
   quickFilterClear: string;              // ghost button label inside the no-match empty state
+  transferCancelled: string;             // info toast when the user cancels a copy/move
   quickStartTitle: string;               // tooltip + ARIA label for the logo button popover
   quickStartWorkspace: string;           // section label "Workspace"
   quickStartNoWorkspace: string;         // fallback when no workspace active
@@ -423,6 +424,7 @@ const translations: Record<string, AppStrings> = {
     quickFilterNoMatches: "Nothing matches in this folder",
     quickFilterNoMatchesHint: "No entries in this folder contain “{query}”. Press Esc to clear.",
     quickFilterClear: "Clear filter",
+    transferCancelled: "Transfer cancelled",
     quickStartTitle: "Quick start",
     quickStartWorkspace: "Workspace",
     quickStartNoWorkspace: "No workspace active",
@@ -776,6 +778,7 @@ const translations: Record<string, AppStrings> = {
     quickFilterNoMatches: "Aucun élément dans ce dossier",
     quickFilterNoMatchesHint: "Rien ne contient « {query} » ici. Appuie sur Esc pour effacer.",
     quickFilterClear: "Effacer le filtre",
+    transferCancelled: "Transfert annulé",
     quickStartTitle: "Accès rapide",
     quickStartWorkspace: "Workspace",
     quickStartNoWorkspace: "Aucun workspace actif",

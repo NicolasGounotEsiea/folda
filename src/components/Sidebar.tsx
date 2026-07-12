@@ -879,17 +879,26 @@ export function Sidebar() {
           ) : (
             <div className="flex flex-col gap-0.5">
               {activeCtx.watched_paths.map((p) => (
-                <div key={p} className="group/root flex items-center">
+                // items-start (NOT items-center): FolderNode renders its whole
+                // expanded subtree inside the flex-1 wrapper, so centering
+                // would pull the badge + remove button down to the vertical
+                // middle of the expanded tree — the "12%" badge appeared to
+                // float next to some random subfolder. Anchoring to the top
+                // plus a fixed h-6 (FolderNode row height) keeps both pinned
+                // to the ROOT folder's row no matter how deep the tree unfolds.
+                <div key={p} className="group/root flex items-start">
                   <div className="flex-1 min-w-0">
                     <FolderNode path={p} name={folderName(p)} depth={0}
                       currentPath={currentPath} onNavigate={navigateTo} />
                   </div>
-                  <IndexingBadge path={p} />
-                  <button
-                    onClick={() => handleRemoveFolder(p)}
-                    title="Remove from workspace"
-                    className="opacity-0 group-hover/root:opacity-100 w-4 h-4 flex items-center justify-center shrink-0 text-text-muted hover:text-red-400 transition-all mr-0.5"
-                  ><X size={9} /></button>
+                  <div className="h-6 flex items-center shrink-0">
+                    <IndexingBadge path={p} />
+                    <button
+                      onClick={() => handleRemoveFolder(p)}
+                      title="Remove from workspace"
+                      className="opacity-0 group-hover/root:opacity-100 w-4 h-4 flex items-center justify-center shrink-0 text-text-muted hover:text-red-400 transition-all mr-0.5"
+                    ><X size={9} /></button>
+                  </div>
                 </div>
               ))}
             </div>

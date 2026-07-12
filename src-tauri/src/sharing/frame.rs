@@ -94,22 +94,22 @@ pub fn encrypt_chunks(
 /// long-lived across the loop's lifetime. Each WebSocket Binary frame is fed
 /// via `push`; when the last chunk of a message arrives, `push` returns
 /// `Some(plaintext)` containing the fully reassembled application message.
+#[derive(Default)]
 pub struct ChunkReader {
     buffer: Vec<u8>,
 }
 
 impl ChunkReader {
     pub fn new() -> Self {
-        Self { buffer: Vec::new() }
+        Self::default()
     }
 
     /// Feed one received ciphertext frame. Returns:
-    ///   - `Ok(None)`           — chunk was a non-terminal one, keep reading.
-    ///   - `Ok(Some(bytes))`    — the message is complete; the caller should
-    ///                            parse `bytes` as JSON.
-    ///   - `Err(msg)`           — decrypt failed, frame malformed, or the
-    ///                            accumulated message exceeded the cap. The
-    ///                            caller should drop the connection.
+    /// - `Ok(None)` — chunk was a non-terminal one, keep reading.
+    /// - `Ok(Some(bytes))` — the message is complete; the caller should parse
+    ///   `bytes` as JSON.
+    /// - `Err(msg)` — decrypt failed, frame malformed, or the accumulated
+    ///   message exceeded the cap. The caller should drop the connection.
     pub fn push(
         &mut self,
         transport: &mut TransportState,
