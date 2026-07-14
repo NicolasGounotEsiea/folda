@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { clsx } from "clsx";
-import { FilePlus, Loader2, Lock, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { ChevronRight, FilePlus, Folder, Loader2, Lock, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "./EmptyState";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -26,15 +26,17 @@ import { useTranslation } from "../utils/i18n";
  * merely avoided — and it gives the user an honest signal that they are in a
  * different, protected space.
  *
- * Deliberately NOT supported in V1 (each would need its own care):
- *   - sub-folders inside a vault (the index is flat)
- *   - renaming inside a vault
- *   - drag-and-drop out of a vault
+ * Sub-folders ARE supported: the index keys are `/`-separated relative paths, so
+ * the folder tree is reconstructed here from `vault_list(sub_path)` while the
+ * blobs stay flat on disk. `subPath` tracks the folder currently being viewed.
+ *
+ * Deliberately NOT supported yet: renaming inside a vault, drag-and-drop out.
  */
 
 interface VaultEntry {
-  name: string;
-  size: number;
+  name: string;      // leaf name at the current level
+  is_dir: boolean;
+  size: number;      // file: bytes; folder: item count
   modified_at: number;
 }
 
@@ -67,14 +69,22 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
   const openFile = useStore((s) => s.openFile);
 
   const [entries, setEntries] = useState<VaultEntry[] | null>(null);
+  const [subPath, setSubPath] = useState("");
   const [busy, setBusy] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleteFileTarget, setDeleteFileTarget] = useState<string | null>(null);
+  const [deleteFolderTarget, setDeleteFolderTarget] = useState<string | null>(null);
 
   const folderName = vaultPath.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? vaultPath;
 
+  // The full index key for a leaf at the current level.
+  const keyFor = (leaf: string) => (subPath ? `${subPath}/${leaf}` : leaf);
+
+  // Reset to the root whenever the vault itself changes (switching vaults).
+  useEffect(() => { setSubPath(""); }, [vaultPath]);
+
   const load = useCallback(async () => {
     try {
-      const list = await invoke<VaultEntry[]>("vault_list", { path: vaultPath });
+      const list = await invoke<VaultEntry[]>("vault_list", { path: vaultPath, subPath });
       setEntries(list);
     } catch (e) {
       // The idle sweeper can lock the vault between renders — that is not an
@@ -84,21 +94,22 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
       addToast({ type: "warning", message: t.vaultLockedNow, detail: String(e) });
       refreshVaults();
     }
-  }, [vaultPath, addToast, t.vaultLockedNow]);
+  }, [vaultPath, subPath, addToast, t.vaultLockedNow]);
 
   useEffect(() => { load(); }, [load]);
 
   /** Decrypt to a temp file and hand it to the normal viewer pipeline. */
-  const handleOpen = async (name: string) => {
+  const handleOpen = async (leaf: string) => {
     setBusy(true);
     try {
-      const tmpPath = await invoke<string>("vault_read_file", { path: vaultPath, name });
-      const dot = name.lastIndexOf(".");
+      const key = keyFor(leaf);
+      const tmpPath = await invoke<string>("vault_read_file", { path: vaultPath, name: key });
+      const dot = leaf.lastIndexOf(".");
       openFile({
         id: -1,
         path: tmpPath,
-        name,
-        extension: dot > 0 ? name.slice(dot + 1).toLowerCase() : "",
+        name: leaf,
+        extension: dot > 0 ? leaf.slice(dot + 1).toLowerCase() : "",
         size: 0,
         created_at: 0,
         modified_at: 0,
@@ -112,7 +123,7 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
     }
   };
 
-  /** Pick files from disk, encrypt them in, and delete the originals. */
+  /** Pick files from disk, encrypt them into the CURRENT folder, delete originals. */
   const handleAdd = async () => {
     const picked = await openDialog({ multiple: true, directory: false });
     if (!picked) return;
@@ -121,7 +132,7 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
     let ok = 0;
     for (const src of paths) {
       try {
-        await invoke("vault_add_file", { path: vaultPath, src });
+        await invoke("vault_add_file", { path: vaultPath, src, destDir: subPath });
         ok++;
       } catch (e) {
         addToast({ type: "error", message: t.vaultAddFailed, detail: String(e) });
@@ -134,16 +145,29 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
     }
   };
 
-  const handleDelete = async (name: string) => {
+  const handleDeleteFile = async (leaf: string) => {
     setBusy(true);
     try {
-      await invoke("vault_delete_file", { path: vaultPath, name });
+      await invoke("vault_delete_file", { path: vaultPath, name: keyFor(leaf) });
       await load();
     } catch (e) {
       addToast({ type: "error", message: t.vaultDeleteFailed, detail: String(e) });
     } finally {
       setBusy(false);
-      setDeleteTarget(null);
+      setDeleteFileTarget(null);
+    }
+  };
+
+  const handleDeleteFolder = async (leaf: string) => {
+    setBusy(true);
+    try {
+      await invoke("vault_delete_folder", { path: vaultPath, subPath: keyFor(leaf) });
+      await load();
+    } catch (e) {
+      addToast({ type: "error", message: t.vaultDeleteFailed, detail: String(e) });
+    } finally {
+      setBusy(false);
+      setDeleteFolderTarget(null);
     }
   };
 
@@ -154,14 +178,24 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
     // in the unlocked set.
   };
 
+  const segments = subPath ? subPath.split("/") : [];
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {deleteTarget && (
+      {deleteFileTarget && (
         <ConfirmDialog
-          message={t.vaultDeleteConfirm.replace("{name}", deleteTarget)}
+          message={t.vaultDeleteConfirm.replace("{name}", deleteFileTarget)}
           detail={t.vaultDeleteConfirmDetail}
-          onConfirm={() => handleDelete(deleteTarget)}
-          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => handleDeleteFile(deleteFileTarget)}
+          onCancel={() => setDeleteFileTarget(null)}
+        />
+      )}
+      {deleteFolderTarget && (
+        <ConfirmDialog
+          message={t.vaultDeleteFolderConfirm.replace("{name}", deleteFolderTarget)}
+          detail={t.vaultDeleteConfirmDetail}
+          onConfirm={() => handleDeleteFolder(deleteFolderTarget)}
+          onCancel={() => setDeleteFolderTarget(null)}
         />
       )}
 
@@ -194,6 +228,37 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
         </button>
       </div>
 
+      {/* Breadcrumb — always shows the vault root; segments are clickable */}
+      <div className="flex items-center gap-0.5 px-4 h-8 border-b border-border-subtle shrink-0 text-[11px] overflow-x-auto">
+        <button
+          onClick={() => setSubPath("")}
+          className={clsx(
+            "px-1.5 py-0.5 rounded hover:bg-surface-3 transition-colors shrink-0",
+            segments.length === 0 ? "text-text-primary font-medium" : "text-text-muted",
+          )}
+        >
+          {t.vaultRoot}
+        </button>
+        {segments.map((seg, i) => {
+          const target = segments.slice(0, i + 1).join("/");
+          const isLast = i === segments.length - 1;
+          return (
+            <span key={target} className="flex items-center gap-0.5 shrink-0">
+              <ChevronRight size={11} className="text-text-muted" />
+              <button
+                onClick={() => setSubPath(target)}
+                className={clsx(
+                  "px-1.5 py-0.5 rounded hover:bg-surface-3 transition-colors truncate max-w-[160px]",
+                  isLast ? "text-text-primary font-medium" : "text-text-muted",
+                )}
+              >
+                {seg}
+              </button>
+            </span>
+          );
+        })}
+      </div>
+
       {/* Contents */}
       <div className="flex-1 overflow-y-auto flex flex-col">
         {entries === null ? (
@@ -214,30 +279,49 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
             />
           </div>
         ) : (
-          entries.map((e) => (
-            <div
-              key={e.name}
-              onDoubleClick={() => handleOpen(e.name)}
-              className={clsx(
-                "group grid items-center gap-x-3 px-4 h-9 shrink-0 cursor-pointer select-none",
-                "hover:bg-surface-2 transition-colors",
-              )}
-              style={{ gridTemplateColumns: "15px 1fr 80px 28px" }}
-            >
-              <FileIcon entry={iconEntryFor(e.name)} />
-              <span className="text-[12px] text-text-primary truncate">{e.name}</span>
-              <span className="text-[11px] text-text-muted text-right tabular-nums">
-                {formatSize(e.size)}
-              </span>
-              <button
-                onClick={(ev) => { ev.stopPropagation(); setDeleteTarget(e.name); }}
-                title={t.delete}
-                className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-red-400 hover:bg-surface-3 transition-all"
+          entries.map((e) =>
+            e.is_dir ? (
+              <div
+                key={`d:${e.name}`}
+                onDoubleClick={() => setSubPath(keyFor(e.name))}
+                className="group grid items-center gap-x-3 px-4 h-9 shrink-0 cursor-pointer select-none hover:bg-surface-2 transition-colors"
+                style={{ gridTemplateColumns: "15px 1fr 80px 28px" }}
               >
-                <Trash2 size={11} />
-              </button>
-            </div>
-          ))
+                <Folder size={14} className="text-accent" />
+                <span className="text-[12px] text-text-primary truncate">{e.name}</span>
+                <span className="text-[11px] text-text-muted text-right tabular-nums">
+                  {t.vaultItems.replace("{n}", String(e.size))}
+                </span>
+                <button
+                  onClick={(ev) => { ev.stopPropagation(); setDeleteFolderTarget(e.name); }}
+                  title={t.delete}
+                  className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-red-400 hover:bg-surface-3 transition-all"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            ) : (
+              <div
+                key={`f:${e.name}`}
+                onDoubleClick={() => handleOpen(e.name)}
+                className="group grid items-center gap-x-3 px-4 h-9 shrink-0 cursor-pointer select-none hover:bg-surface-2 transition-colors"
+                style={{ gridTemplateColumns: "15px 1fr 80px 28px" }}
+              >
+                <FileIcon entry={iconEntryFor(e.name)} />
+                <span className="text-[12px] text-text-primary truncate">{e.name}</span>
+                <span className="text-[11px] text-text-muted text-right tabular-nums">
+                  {formatSize(e.size)}
+                </span>
+                <button
+                  onClick={(ev) => { ev.stopPropagation(); setDeleteFileTarget(e.name); }}
+                  title={t.delete}
+                  className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-red-400 hover:bg-surface-3 transition-all"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            ),
+          )
         )}
       </div>
     </div>

@@ -97,6 +97,9 @@ type AppStrings = {
   vaultDeleteFailed: string;
   vaultDeleteConfirm: string;            // {name}
   vaultDeleteConfirmDetail: string;
+  vaultDeleteFolderConfirm: string;      // {name} — deleting a whole sub-folder
+  vaultItems: string;                    // {n} — item count on a folder row
+  vaultRoot: string;                     // breadcrumb root label
   vaultEmpty: string;
   vaultEmptyHint: string;
   vaultSettingsTitle: string;
@@ -515,6 +518,9 @@ const translations: Record<string, AppStrings> = {
     vaultDeleteFailed: "Could not delete this file",
     vaultDeleteConfirm: "Permanently delete \"{name}\" from the vault?",
     vaultDeleteConfirmDetail: "This cannot be undone — vault files don't go to the trash.",
+    vaultDeleteFolderConfirm: "Permanently delete the folder \"{name}\" and everything inside it?",
+    vaultItems: "{n} items",
+    vaultRoot: "Vault",
     vaultEmpty: "This vault is empty",
     vaultEmptyHint: "Add files to encrypt them. Their originals are deleted once encrypted.",
     vaultSettingsTitle: "Encrypted vaults",
@@ -917,6 +923,9 @@ const translations: Record<string, AppStrings> = {
     vaultDeleteFailed: "Impossible de supprimer ce fichier",
     vaultDeleteConfirm: "Supprimer définitivement « {name} » du coffre ?",
     vaultDeleteConfirmDetail: "Irréversible — les fichiers d'un coffre ne passent pas par la corbeille.",
+    vaultDeleteFolderConfirm: "Supprimer définitivement le dossier « {name} » et tout son contenu ?",
+    vaultItems: "{n} éléments",
+    vaultRoot: "Coffre",
     vaultEmpty: "Ce coffre est vide",
     vaultEmptyHint: "Ajoute des fichiers pour les chiffrer. Leurs originaux sont supprimés une fois chiffrés.",
     vaultSettingsTitle: "Coffres chiffrés",

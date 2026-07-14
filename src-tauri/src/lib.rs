@@ -290,6 +290,7 @@ pub fn run() {
             commands::vault::vault_write_back,
             commands::vault::vault_add_file,
             commands::vault::vault_delete_file,
+            commands::vault::vault_delete_folder,
             commands::vault::vault_encrypt_existing,
         ])
         .run(tauri::generate_context!())

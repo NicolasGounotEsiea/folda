@@ -99,6 +99,22 @@ jobs:
 
       - run: npm ci
 
+      # Diagnostic: confirm the signing secret actually reaches the runner
+      # BEFORE the 10-minute build. `createUpdaterArtifacts` is on, so Tauri
+      # hard-fails at the end of the build if the key is missing — this surfaces
+      # that in seconds and says WHY, without ever printing the key (length only).
+      - name: Check signing secret is present
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          $k = $env:TAURI_SIGNING_PRIVATE_KEY
+          if ([string]::IsNullOrWhiteSpace($k)) {
+            Write-Error "TAURI_SIGNING_PRIVATE_KEY is EMPTY on this runner. The repository secret isn't reaching the workflow — check it is a Repository secret (not an Environment/Organization secret), named exactly TAURI_SIGNING_PRIVATE_KEY, non-empty, on the 'folda' repo."
+            exit 1
+          }
+          Write-Host "Signing key present — length $($k.Length)."
+
       - name: Build Tauri app
         # When the two signing secrets are configured in the repo, Tauri
         # auto-signs each bundle artifact and writes a `.sig` file next to

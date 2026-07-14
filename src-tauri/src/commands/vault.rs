@@ -31,12 +31,18 @@ fn ui_err(e: VaultError) -> String {
     e.to_string()
 }
 
-/// One decrypted entry inside an unlocked vault.
+/// One entry inside an unlocked vault at a given level — either a file or a
+/// virtual sub-folder. Folders are not stored anywhere; they are derived from
+/// the `/`-separated relative-path keys in the encrypted index, so the on-disk
+/// blobs stay flat and the folder structure never leaks to disk.
 #[derive(Serialize)]
 pub struct VaultEntry {
+    /// Leaf name at this level (not the full path). Combined with the current
+    /// `sub_path` by the caller to form the full index key for open/delete.
     pub name: String,
-    /// Plaintext size in bytes. Derived from the blob size minus the AEAD
-    /// overhead (nonce + tag) — exact, and avoids decrypting just to list.
+    pub is_dir: bool,
+    /// File: plaintext size in bytes (blob size minus AEAD overhead — exact,
+    /// no decryption needed). Folder: number of files it contains (recursively).
     pub size: u64,
     pub modified_at: i64,
 }
@@ -231,28 +237,79 @@ fn require_unlocked<T>(
     state::with_vault(dir, f).unwrap_or_else(|| Err("This vault is locked".to_string()))
 }
 
-/// List the real file names inside an unlocked vault.
-#[tauri::command]
-pub fn vault_list(path: String) -> Result<Vec<VaultEntry>, String> {
-    let dir = PathBuf::from(&path);
-    require_unlocked(&dir, |_key, index| {
-        let mut out: Vec<VaultEntry> = Vec::with_capacity(index.files.len());
-        for (name, blob_id) in index.files.iter() {
-            // Size and mtime come from the blob's own metadata — no decryption
-            // needed just to render a listing.
-            let meta = std::fs::metadata(format::blob_path(&dir, blob_id)).ok();
-            let raw = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            out.push(VaultEntry {
-                name: name.clone(),
-                size: raw.saturating_sub(BLOB_OVERHEAD),
-                modified_at: meta
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0),
-            });
+/// Normalize a vault sub-path: strip surrounding slashes, unify separators.
+/// `""` means the vault root. Used as a prefix against the index's `/`-keys.
+fn norm_sub(sub: &str) -> String {
+    sub.replace('\\', "/").trim_matches('/').to_string()
+}
+
+/// Given all index keys and a sub-path, return the immediate children at that
+/// level: `(folder_name → recursive file count, leaf file keys)`. Pure so it
+/// can be unit-tested without a live vault. A key `a/b/c.pdf` under sub `a`
+/// yields folder `b`; under sub `a/b` it yields file `c.pdf`.
+fn immediate_children<'a>(
+    keys: impl Iterator<Item = &'a String>,
+    sub: &str,
+) -> (std::collections::BTreeMap<String, u64>, Vec<String>) {
+    let prefix = if sub.is_empty() { String::new() } else { format!("{}/", sub) };
+    let mut folders: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut files: Vec<String> = Vec::new();
+    for key in keys {
+        let rest = if prefix.is_empty() {
+            key.as_str()
+        } else if let Some(r) = key.strip_prefix(&prefix) {
+            r
+        } else {
+            continue; // not under this sub-path
+        };
+        match rest.split_once('/') {
+            Some((folder, _)) => *folders.entry(folder.to_string()).or_insert(0) += 1,
+            None => files.push(rest.to_string()),
         }
-        out.sort_by_key(|a| a.name.to_lowercase());
+    }
+    (folders, files)
+}
+
+/// List the immediate entries (sub-folders + files) at `sub_path` inside an
+/// unlocked vault. `sub_path` is `None`/empty for the vault root. Folders are
+/// virtual — derived from the `/`-separated keys — and returned first.
+#[tauri::command]
+pub fn vault_list(path: String, sub_path: Option<String>) -> Result<Vec<VaultEntry>, String> {
+    let dir = PathBuf::from(&path);
+    let sub = norm_sub(&sub_path.unwrap_or_default());
+    require_unlocked(&dir, |_key, index| {
+        let (folders, files) = immediate_children(index.files.keys(), &sub);
+
+        let mut out: Vec<VaultEntry> = folders
+            .into_iter()
+            .map(|(name, count)| VaultEntry { name, is_dir: true, size: count, modified_at: 0 })
+            .collect();
+
+        let prefix = if sub.is_empty() { String::new() } else { format!("{}/", sub) };
+        let mut file_entries: Vec<VaultEntry> = files
+            .into_iter()
+            .map(|leaf| {
+                let full_key = format!("{}{}", prefix, leaf);
+                // Size + mtime from the blob's own metadata — no decryption to list.
+                let meta = index
+                    .files
+                    .get(&full_key)
+                    .and_then(|blob_id| std::fs::metadata(format::blob_path(&dir, blob_id)).ok());
+                let raw = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                VaultEntry {
+                    name: leaf,
+                    is_dir: false,
+                    size: raw.saturating_sub(BLOB_OVERHEAD),
+                    modified_at: meta
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0),
+                }
+            })
+            .collect();
+        file_entries.sort_by_key(|a| a.name.to_lowercase());
+        out.extend(file_entries);
         Ok(out)
     })
 }
@@ -399,15 +456,19 @@ pub fn vault_write_file(path: String, name: String, content: Vec<u8>) -> Result<
 
 /// Move a plaintext file from disk INTO the vault: encrypt it, then delete the
 /// original. The original is removed only after the encrypted copy is committed.
+/// `dest_dir` is the sub-folder (inside the vault) to place it in — `None`/empty
+/// for the vault root.
 #[tauri::command]
-pub fn vault_add_file(path: String, src: String) -> Result<(), String> {
+pub fn vault_add_file(path: String, src: String, dest_dir: Option<String>) -> Result<(), String> {
     let src_path = PathBuf::from(&src);
-    let name = src_path
+    let base = src_path
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or("Invalid file name")?
         .to_string();
-    let content = std::fs::read(&src_path).map_err(|e| format!("Cannot read '{}': {}", name, e))?;
+    let dest = norm_sub(&dest_dir.unwrap_or_default());
+    let name = if dest.is_empty() { base.clone() } else { format!("{}/{}", dest, base) };
+    let content = std::fs::read(&src_path).map_err(|e| format!("Cannot read '{}': {}", base, e))?;
 
     vault_write_file(path, name, content)?;
 
@@ -432,12 +493,125 @@ pub fn vault_delete_file(path: String, name: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Encrypt every loose plaintext file already sitting in the vault folder.
+/// Delete a whole virtual sub-folder inside the vault: every file whose key is
+/// under `sub_path/` is removed (index entries first, then their blobs, mirroring
+/// `vault_delete_file`'s ordering so a crash can't leave the index pointing at a
+/// gone blob).
+#[tauri::command]
+pub fn vault_delete_folder(path: String, sub_path: String) -> Result<(), String> {
+    let dir = PathBuf::from(&path);
+    let sub = norm_sub(&sub_path);
+    if sub.is_empty() {
+        return Err("No folder specified".to_string());
+    }
+    let prefix = format!("{}/", sub);
+
+    let removed_blobs: Vec<String> = require_unlocked(&dir, |_key, index| {
+        let keys: Vec<String> = index
+            .files
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        let mut blobs = Vec::with_capacity(keys.len());
+        for k in &keys {
+            if let Some(b) = index.files.remove(k) {
+                blobs.push(b);
+            }
+        }
+        Ok(blobs)
+    })?;
+
+    if removed_blobs.is_empty() {
+        return Ok(()); // nothing under that path — treat as success
+    }
+
+    require_unlocked(&dir, |key, index| {
+        vault::save_index(&dir, key, index).map_err(ui_err)
+    })?;
+    for b in removed_blobs {
+        let _ = vault::delete_blob(&dir, &b);
+    }
+    Ok(())
+}
+
+/// Recursively collect every plaintext file under `cur`, paired with its
+/// `/`-separated path RELATIVE to the vault `root`. Skips vault metadata and our
+/// own blobs (which only ever live at the root). Pure filesystem read — testable
+/// against a real temp tree.
+fn collect_plaintext_files(
+    root: &Path,
+    cur: &Path,
+    known_blobs: &std::collections::HashSet<String>,
+    out: &mut Vec<(PathBuf, String)>,
+) -> std::io::Result<()> {
+    for e in std::fs::read_dir(cur)? {
+        let e = e?;
+        let p = e.path();
+        if p.is_dir() {
+            collect_plaintext_files(root, &p, known_blobs, out)?;
+            continue;
+        }
+        let rel = p.strip_prefix(root).unwrap_or(&p);
+        let rel_key = rel.to_string_lossy().replace('\\', "/");
+
+        // Vault metadata + our own blobs only ever sit at the ROOT (blobs are
+        // written flat via `blob_path`). A `.dat` inside a sub-folder is a user
+        // file and MUST be encrypted, so only apply the skip at depth 0.
+        if !rel_key.contains('/') {
+            let fname = p.file_name().unwrap_or_default().to_string_lossy();
+            if fname == format::VAULT_FILE || fname.starts_with(&format!("{}.", format::VAULT_FILE)) {
+                continue;
+            }
+            let is_our_blob = p.extension().and_then(|x| x.to_str()) == Some(format::BLOB_EXT)
+                && p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|stem| known_blobs.contains(stem))
+                    .unwrap_or(false);
+            if is_our_blob {
+                continue;
+            }
+        }
+        out.push((p.clone(), rel_key));
+    }
+    Ok(())
+}
+
+/// Remove now-empty sub-directories under `dir` (deepest first). Best-effort:
+/// `remove_dir` only succeeds on an empty directory, so a folder still holding a
+/// file we intentionally skipped is left untouched. Never removes `dir` itself.
+fn remove_empty_subdirs(dir: &Path) {
+    fn recurse(p: &Path) {
+        if let Ok(rd) = std::fs::read_dir(p) {
+            for e in rd.flatten() {
+                let cp = e.path();
+                if cp.is_dir() {
+                    recurse(&cp);
+                }
+            }
+        }
+        let _ = std::fs::remove_dir(p); // no-op if not empty
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let cp = e.path();
+            if cp.is_dir() {
+                recurse(&cp);
+            }
+        }
+    }
+}
+
+/// Encrypt every loose plaintext file already sitting in the vault folder —
+/// INCLUDING those in sub-folders. The folder structure is preserved as
+/// `/`-separated keys in the encrypted index while the blobs stay flat on disk,
+/// so encrypting a folder tree leaves nothing readable behind and the structure
+/// itself never leaks.
 ///
-/// Called right after `vault_create`. Resumable by design: each file is
-/// encrypted, indexed and only THEN deleted, so a crash halfway leaves a vault
-/// with some files encrypted and the rest still plainly there — running it again
-/// finishes the job. Nothing is ever lost.
+/// Called right after `vault_create`. Resumable by design: files are collected
+/// FIRST (so blobs we create mid-run aren't re-collected), then each is
+/// encrypted, indexed and only THEN deleted — a crash halfway leaves the rest
+/// still plainly there, and running it again finishes the job. Nothing is lost.
 ///
 /// Returns how many files were encrypted.
 #[tauri::command]
@@ -454,38 +628,25 @@ pub fn vault_encrypt_existing(path: String) -> Result<usize, String> {
     let known_blobs: std::collections::HashSet<String> =
         require_unlocked(&dir, |_key, index| Ok(index.files.values().cloned().collect()))?;
 
-    let entries = std::fs::read_dir(&dir).map_err(|e| format!("Cannot read the folder: {}", e))?;
-    let mut to_encrypt: Vec<PathBuf> = Vec::new();
-    for e in entries.flatten() {
-        let p = e.path();
-        if !p.is_file() {
-            continue; // sub-folders are out of scope for V1
-        }
-        let fname = e.file_name().to_string_lossy().to_string();
-
-        // Our own metadata — including a `.nxsvault.tmp` left by a crash during
-        // the atomic header write.
-        if fname == format::VAULT_FILE || fname.starts_with(&format!("{}.", format::VAULT_FILE)) {
-            continue;
-        }
-        // One of our blobs (exact match on the index), never a user file.
-        let is_our_blob = p.extension().and_then(|x| x.to_str()) == Some(format::BLOB_EXT)
-            && p.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|stem| known_blobs.contains(stem))
-                .unwrap_or(false);
-        if is_our_blob {
-            continue;
-        }
-
-        to_encrypt.push(p);
-    }
+    let mut to_encrypt: Vec<(PathBuf, String)> = Vec::new();
+    collect_plaintext_files(&dir, &dir, &known_blobs, &mut to_encrypt)
+        .map_err(|e| format!("Cannot read the folder: {}", e))?;
 
     let mut count = 0usize;
-    for p in to_encrypt {
-        vault_add_file(path.clone(), p.to_string_lossy().to_string())?;
+    for (abs, rel_key) in &to_encrypt {
+        let content =
+            std::fs::read(abs).map_err(|e| format!("Cannot read '{}': {}", rel_key, e))?;
+        vault_write_file(path.clone(), rel_key.clone(), content)?;
+        std::fs::remove_file(abs).map_err(|e| {
+            format!("Encrypted '{}', but the original could not be deleted: {}", rel_key, e)
+        })?;
         count += 1;
     }
+
+    // The plaintext tree is gone; drop the emptied sub-directories so the vault
+    // folder shows only blobs + the header.
+    remove_empty_subdirs(&dir);
+
     Ok(count)
 }
 
@@ -513,7 +674,9 @@ pub fn idle_lock_secs(state: &AppState) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::like_escape;
+    use super::{collect_plaintext_files, immediate_children, like_escape, norm_sub};
+    use std::collections::HashSet;
+    use std::path::PathBuf;
 
     #[test]
     fn like_escape_neutralizes_wildcards_and_escape_char() {
@@ -527,5 +690,78 @@ mod tests {
         assert_eq!(like_escape("a\\b_c%d"), "a\\\\b\\_c\\%d");
         // A plain path is untouched.
         assert_eq!(like_escape("C:/Users/me/Docs"), "C:/Users/me/Docs");
+    }
+
+    #[test]
+    fn norm_sub_strips_slashes_and_unifies_separators() {
+        assert_eq!(norm_sub(""), "");
+        assert_eq!(norm_sub("/"), "");
+        assert_eq!(norm_sub("a/b/"), "a/b");
+        assert_eq!(norm_sub("\\a\\b\\"), "a/b");
+    }
+
+    #[test]
+    fn immediate_children_derives_the_folder_tree_from_flat_keys() {
+        let keys = [
+            "root.txt".to_string(),
+            "photos/a.jpg".to_string(),
+            "photos/b.jpg".to_string(),
+            "photos/2024/x.jpg".to_string(),
+            "docs/cv.pdf".to_string(),
+        ];
+
+        // At the root: two folders (with recursive counts) + one file.
+        let (folders, files) = immediate_children(keys.iter(), "");
+        assert_eq!(folders.get("photos"), Some(&3)); // a, b, 2024/x
+        assert_eq!(folders.get("docs"), Some(&1));
+        assert_eq!(files, vec!["root.txt".to_string()]);
+
+        // Inside `photos`: one sub-folder (2024) + two files.
+        let (folders, mut files) = immediate_children(keys.iter(), "photos");
+        assert_eq!(folders.get("2024"), Some(&1));
+        files.sort();
+        assert_eq!(files, vec!["a.jpg".to_string(), "b.jpg".to_string()]);
+
+        // Deep leaf level: just the file, no folders.
+        let (folders, files) = immediate_children(keys.iter(), "photos/2024");
+        assert!(folders.is_empty());
+        assert_eq!(files, vec!["x.jpg".to_string()]);
+    }
+
+    #[test]
+    fn collect_plaintext_files_recurses_and_skips_metadata_and_blobs() {
+        let base =
+            std::env::temp_dir().join(format!("nxs-vault-collect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("sub/deep")).unwrap();
+        std::fs::write(base.join(".nxsvault"), b"header").unwrap();
+        std::fs::write(base.join("deadbeef.dat"), b"a real blob").unwrap();
+        std::fs::write(base.join("note.txt"), b"root file").unwrap();
+        std::fs::write(base.join("sub/a.pdf"), b"nested").unwrap();
+        std::fs::write(base.join("sub/deep/b.png"), b"deep").unwrap();
+        // A user file that happens to end in .dat but is NOT one of our blobs.
+        std::fs::write(base.join("sub/save.dat"), b"user data").unwrap();
+
+        let mut known = HashSet::new();
+        known.insert("deadbeef".to_string()); // the real blob's id
+
+        let mut out: Vec<(PathBuf, String)> = Vec::new();
+        collect_plaintext_files(&base, &base, &known, &mut out).unwrap();
+
+        let mut keys: Vec<String> = out.iter().map(|(_, k)| k.clone()).collect();
+        keys.sort();
+        // The header and the known blob are skipped; the sub-folder `.dat` (a
+        // user file) is kept; every path is relative with `/` separators.
+        assert_eq!(
+            keys,
+            vec![
+                "note.txt".to_string(),
+                "sub/a.pdf".to_string(),
+                "sub/deep/b.png".to_string(),
+                "sub/save.dat".to_string(),
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
