@@ -274,6 +274,23 @@ pub fn is_vault(dir: &Path) -> bool {
 /// exclusions). Using `is_vault` where `path_is_in_vault` is meant would index
 /// every file *inside* a vault — the exact catastrophe.
 pub fn path_is_in_vault(path: &Path) -> bool {
+    // A DECRYPTED vault file living in the temp folder is still vault content —
+    // it just isn't inside the vault directory. Every exclusion keys off this
+    // predicate, so without this branch they all silently switch off the moment
+    // a viewer opens a vault file:
+    //
+    //   - `create_snapshot` would write the file's PLAINTEXT BYTES into the
+    //     (unencrypted) `snapshots` table, where they outlive locking the vault.
+    //   - `read_file_full` would log the file's REAL NAME into `activity`.
+    //   - the indexer/watcher would extract its text into `file_content` + FTS5.
+    //
+    // Any one of those turns the vault into theatre. Treating the temp folder as
+    // vault territory is not a patch around a leak — it is the correct meaning
+    // of "is this path protected?".
+    if is_in_vault_temp_dir(path) {
+        return true;
+    }
+
     let mut cur = Some(path);
     while let Some(p) = cur {
         if p.is_dir() && is_vault(p) {
@@ -282,6 +299,19 @@ pub fn path_is_in_vault(path: &Path) -> bool {
         cur = p.parent();
     }
     false
+}
+
+/// `%LOCALAPPDATA%\com.nxs.app\.vault-tmp\` — where `vault_read_file` drops
+/// decrypted copies for the viewers. Kept in sync with `vault::state::temp_dir`
+/// (that module owns the folder; this one only needs to recognise it, and
+/// importing it here would make `format` depend on `state`, which owns keys).
+fn is_in_vault_temp_dir(path: &Path) -> bool {
+    let Some(base) = std::env::var_os("LOCALAPPDATA") else { return false };
+    let tmp = Path::new(&base).join("com.nxs.app").join(".vault-tmp");
+    // Compare lexically, not with `canonicalize`: the path may not exist yet
+    // (a caller asking about a file it is about to create), and canonicalize
+    // would fail and wrongly answer "not protected".
+    path.starts_with(&tmp)
 }
 
 /// A fresh random blob id, hex-encoded — the on-disk name of one encrypted file.

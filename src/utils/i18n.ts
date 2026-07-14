@@ -88,6 +88,8 @@ type AppStrings = {
   vaultUnlockedLabel: string;
   vaultLockedNow: string;                // toast: the sweeper locked it under us
   vaultAutoLocked: string;               // {n} = vaults auto-locked
+  vaultLockedOpenToView: string;         // bounced out of a locked vault reached by a direct route
+  vaultDropBlocked: string;              // blocked a drag-drop INTO a vault folder (would land as plaintext)
   vaultAddFiles: string;
   vaultAdded: string;                    // {n} = files added
   vaultAddFailed: string;
@@ -504,6 +506,8 @@ const translations: Record<string, AppStrings> = {
     vaultUnlockedLabel: "Unlocked",
     vaultLockedNow: "This vault has just been locked",
     vaultAutoLocked: "{n} vault(s) locked after inactivity",
+    vaultLockedOpenToView: "This vault is locked — open it to view its contents.",
+    vaultDropBlocked: "Open the vault and use “Add files” to store files encrypted. Dropping them here would leave them unencrypted.",
     vaultAddFiles: "Add files…",
     vaultAdded: "{n} file(s) encrypted into the vault",
     vaultAddFailed: "Could not add this file",
@@ -904,6 +908,8 @@ const translations: Record<string, AppStrings> = {
     vaultUnlockedLabel: "Déverrouillé",
     vaultLockedNow: "Ce coffre vient d'être verrouillé",
     vaultAutoLocked: "{n} coffre(s) verrouillé(s) après inactivité",
+    vaultLockedOpenToView: "Ce coffre est verrouillé — ouvrez-le pour voir son contenu.",
+    vaultDropBlocked: "Ouvrez le coffre et utilisez « Ajouter des fichiers » pour les stocker chiffrés. Les déposer ici les laisserait en clair.",
     vaultAddFiles: "Ajouter des fichiers…",
     vaultAdded: "{n} fichier(s) chiffré(s) dans le coffre",
     vaultAddFailed: "Impossible d'ajouter ce fichier",

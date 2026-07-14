@@ -128,22 +128,38 @@ pub fn vault_create(
 /// `files` rows takes the extracted text and the search index with them.
 fn purge_index_under(path: &str, state: &AppState) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    // Both separator flavours: `files.path` is stored OS-native (backslashes on
-    // Windows), while callers may hand us a forward-slash path.
-    let a = format!("{}%", path);
-    let b = format!("{}%", path.replace('\\', "/"));
-    let c = format!("{}%", path.replace('/', "\\"));
+    // Match everything strictly BENEATH the folder. The trailing separator is
+    // load-bearing: `path LIKE 'C:\Secret%'` (no separator) also matches a
+    // sibling `C:\SecretPlans\...`, and deleting those `files` rows would
+    // cascade-delete the user's TAGS (file_tags ON DELETE CASCADE) on an
+    // unrelated folder — silent, permanent data loss. We also LIKE-escape
+    // `%` / `_` (and the `\` escape char) so a vault path containing them
+    // can't widen the match either.
+    //
+    // `files.path` is stored OS-native (backslashes on Windows) but callers may
+    // hand us either flavour, so we purge under both spellings.
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    let bs = format!("{}\\\\%", like_escape(&trimmed.replace('/', "\\"))); // …\Secret\%
+    let fs = format!("{}/%", like_escape(&trimmed.replace('\\', "/"))); // …/Secret/%
     db.execute(
-        "DELETE FROM files WHERE path LIKE ?1 OR path LIKE ?2 OR path LIKE ?3",
-        rusqlite::params![a, b, c],
+        "DELETE FROM files WHERE path LIKE ?1 ESCAPE '\\' OR path LIKE ?2 ESCAPE '\\'",
+        rusqlite::params![bs, fs],
     )
     .map_err(|e| format!("Vault created, but its old search-index entries could not be removed: {}", e))?;
     db.execute(
-        "DELETE FROM directories WHERE path LIKE ?1 OR path LIKE ?2 OR path LIKE ?3",
-        rusqlite::params![a, b, c],
+        "DELETE FROM directories WHERE path LIKE ?1 ESCAPE '\\' OR path LIKE ?2 ESCAPE '\\'",
+        rusqlite::params![bs, fs],
     )
     .ok();
     Ok(())
+}
+
+/// Escape LIKE metacharacters (`%`, `_`) and the `\` escape char so a literal
+/// path can be used as a LIKE prefix under `ESCAPE '\'`. Order matters: the
+/// backslash pass must run first so it doesn't double-escape the `\` we add
+/// in front of `%` / `_`.
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
 /// Unlock with a password. On success the master key lives in RAM until the
@@ -266,15 +282,78 @@ pub fn vault_read_file(path: String, name: String) -> Result<String, String> {
     let tmp_dir = state::temp_dir().ok_or("Cannot resolve the temp folder")?;
     std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("Cannot create temp folder: {}", e))?;
 
-    // Keep the real name (viewers dispatch on the extension) but prefix a random
-    // id so two vaults holding `notes.txt` cannot collide, and so the temp name
-    // alone doesn't reveal which vault it came from.
-    let tmp_path = tmp_dir.join(format!("{}-{}", format::generate_blob_id(), name));
+    // Name the temp file with a RANDOM id + the real EXTENSION only — never the
+    // real basename. The temp PATH gets persisted in places we don't fully
+    // control (a restored-open-tabs list in the DB, for one), and a basename
+    // there would leak a vault filename the encrypted index is meant to hide.
+    // Nothing needs the name in the path: the viewer shows it from the tab
+    // metadata (in RAM), and write-back re-encrypts by the name tracked in
+    // `track_temp_file`. The extension is kept so extension-based viewer/handler
+    // dispatch still works. A random id also stops two vaults' files colliding.
+    let ext = Path::new(&name).extension().and_then(|e| e.to_str()).unwrap_or("");
+    let tmp_name = if ext.is_empty() {
+        format::generate_blob_id()
+    } else {
+        format!("{}.{}", format::generate_blob_id(), ext)
+    };
+    let tmp_path = tmp_dir.join(tmp_name);
     std::fs::write(&tmp_path, &plaintext)
         .map_err(|e| format!("Cannot write the decrypted file: {}", e))?;
-    state::track_temp_file(&dir, tmp_path.clone());
+    // Track the temp WITH its vault entry name — that mapping is what lets a
+    // later save be re-encrypted back into the vault instead of being written
+    // to the temp copy and then deleted on lock (silently losing the user's work).
+    state::track_temp_file(&dir, tmp_path.clone(), name.clone());
 
     Ok(tmp_path.to_string_lossy().to_string())
+}
+
+/// Is this path a decrypted vault temp file, and which vault entry is it?
+/// The viewers call this to decide whether a save must be re-encrypted.
+/// Returns `null` for ordinary files (and for a vault that has since locked).
+#[derive(Serialize)]
+pub struct TempTarget {
+    pub vault_path: String,
+    pub name: String,
+}
+
+#[tauri::command]
+pub fn vault_temp_target(path: String) -> Option<TempTarget> {
+    state::resolve_temp(Path::new(&path)).map(|(dir, name)| TempTarget {
+        vault_path: dir.to_string_lossy().to_string(),
+        name,
+    })
+}
+
+/// Save an edited vault file: re-encrypt it into the vault, and refresh the
+/// decrypted temp copy so the viewer doesn't read stale bytes if it reloads.
+///
+/// Errors — never destructive:
+///   - The vault locked between opening and saving (idle sweeper, "Lock all",
+///     another window): we return a clear message and change NOTHING. The
+///     caller still holds the user's text in its editor buffer, so the fix is
+///     "unlock and press save again", not "your work is gone". This is the case
+///     that matters: the sweeper firing mid-edit must never cost anyone a
+///     document.
+///   - The re-encryption itself fails: `vault_write_file` rolls the index back
+///     and deletes the orphan blob, so the vault is left exactly as it was.
+#[tauri::command]
+pub fn vault_write_back(temp_path: String, content: Vec<u8>) -> Result<(), String> {
+    let tmp = PathBuf::from(&temp_path);
+    let (vault_dir, name) = state::resolve_temp(&tmp).ok_or_else(|| {
+        "This vault was locked while you were editing. Unlock it and save again — your changes are still here.".to_string()
+    })?;
+
+    vault_write_file(
+        vault_dir.to_string_lossy().to_string(),
+        name,
+        content.clone(),
+    )?;
+
+    // Keep the on-disk temp in step with what's now in the vault. Without this,
+    // closing and re-opening the tab (without locking) would re-read the OLD
+    // bytes and the user would watch their save silently revert.
+    std::fs::write(&tmp, &content)
+        .map_err(|e| format!("Saved to the vault, but the working copy could not be refreshed: {}", e))
 }
 
 /// Encrypt bytes into the vault under `name`, replacing any existing entry.
@@ -368,6 +447,13 @@ pub fn vault_encrypt_existing(path: String) -> Result<usize, String> {
         return Err("This vault is locked".to_string());
     }
 
+    // Which `.dat` files are OURS. Checked against the index, not by extension:
+    // skipping every `*.dat` would silently leave a user's own `backup.dat` /
+    // `save.dat` UNENCRYPTED in a folder they believe is protected — a plaintext
+    // leak that looks exactly like success.
+    let known_blobs: std::collections::HashSet<String> =
+        require_unlocked(&dir, |_key, index| Ok(index.files.values().cloned().collect()))?;
+
     let entries = std::fs::read_dir(&dir).map_err(|e| format!("Cannot read the folder: {}", e))?;
     let mut to_encrypt: Vec<PathBuf> = Vec::new();
     for e in entries.flatten() {
@@ -376,12 +462,22 @@ pub fn vault_encrypt_existing(path: String) -> Result<usize, String> {
             continue; // sub-folders are out of scope for V1
         }
         let fname = e.file_name().to_string_lossy().to_string();
-        // Never re-encrypt our own metadata or the blobs themselves.
-        if fname == format::VAULT_FILE
-            || p.extension().and_then(|x| x.to_str()) == Some(format::BLOB_EXT)
-        {
+
+        // Our own metadata — including a `.nxsvault.tmp` left by a crash during
+        // the atomic header write.
+        if fname == format::VAULT_FILE || fname.starts_with(&format!("{}.", format::VAULT_FILE)) {
             continue;
         }
+        // One of our blobs (exact match on the index), never a user file.
+        let is_our_blob = p.extension().and_then(|x| x.to_str()) == Some(format::BLOB_EXT)
+            && p.file_stem()
+                .and_then(|s| s.to_str())
+                .map(|stem| known_blobs.contains(stem))
+                .unwrap_or(false);
+        if is_our_blob {
+            continue;
+        }
+
         to_encrypt.push(p);
     }
 
@@ -413,4 +509,23 @@ pub fn idle_lock_secs(state: &AppState) -> u64 {
         })
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(state::DEFAULT_IDLE_LOCK_SECS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::like_escape;
+
+    #[test]
+    fn like_escape_neutralizes_wildcards_and_escape_char() {
+        // `%` and `_` are LIKE wildcards; `\` is our escape char. All three must
+        // come out escaped so a literal path can't widen a LIKE prefix match.
+        assert_eq!(like_escape("My_Vault"), "My\\_Vault");
+        assert_eq!(like_escape("50%off"), "50\\%off");
+        // Backslash first, so the separators in a Windows path become literal
+        // `\\` rather than getting tangled with the `%`/`_` escapes.
+        assert_eq!(like_escape("C:\\Secret"), "C:\\\\Secret");
+        assert_eq!(like_escape("a\\b_c%d"), "a\\\\b\\_c\\%d");
+        // A plain path is untouched.
+        assert_eq!(like_escape("C:/Users/me/Docs"), "C:/Users/me/Docs");
+    }
 }

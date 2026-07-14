@@ -2,6 +2,23 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.21] - 2026-07-14
+
+### Added
+
+- **Encrypted vaults — password-protected folders.** Right-click any folder → **Encrypt this folder** turns it into a vault: its contents are stored encrypted on disk and unreadable without the password. A three-step wizard walks you through it — an honest warning of what vaults do and don't protect, a password with a strength meter, and a one-time **recovery code** you must confirm you've saved (the only way back in if you forget the password). Locked vaults show a padlock in the file list; double-click to unlock. Inside an unlocked vault you see the real file names, open files in the normal viewers, add files (they're encrypted in and the plaintext originals deleted), and edit-and-save re-encrypts back into the vault. Vaults **auto-lock** on inactivity (15 min default, configurable), on "Lock all", and on app close — and locking wipes the decrypted working copies from disk. Crypto: a random master key wraps each file with XChaCha20-Poly1305, and the master key is itself wrapped by an Argon2id-derived key (m=64 MiB, OWASP 2024) so changing the password is instant and never re-encrypts your files. **By design, vault contents are never indexed, never reachable by the AI assistant, and never shared over P2P** — so plaintext never lands in the unencrypted database. Honest threat model, surfaced in the UI: protects against a stolen/cloned disk, cloud-sync leakage, and other OS accounts; does **not** protect against active malware while a vault is unlocked, and there is no backdoor if you lose both the password and the recovery code. See CLAUDE.md §43.
+
+### Security
+
+- **P2P workspace sharing: fixed arbitrary file access outside the shared folder.** An authenticated peer (someone you gave the sharing password to) could read, write, or delete files anywhere on the host the process could reach, by sending a path like `C:/Shared/../../Windows/…` — the host validated the string prefix but then let the OS resolve the `..`, escaping the shared tree. Fixed: the host now rejects any path containing a `..` segment, validates **both** ends of a rename (the destination was previously unchecked, so a shared file could be moved out of the tree), and matches shared roots with a trailing separator so a shared `C:/Shared` no longer also grants a sibling `C:/SharedSecrets`. If you use LAN sharing, this is the important fix in this release. Tests added in `sharing/server.rs`.
+
+### Internal
+
+- **Vault leak-prevention hardening.** The decrypted working copy of a vault file lives in a temp folder *outside* the vault directory, which several subsystems keyed off — so this pass closed every path by which its plaintext (or a vault filename) could reach the unencrypted `contextual.db` or `localStorage`: the crash-recovery draft is no longer persisted for vault files, temp files are named with a random id + extension only (no real basename leaking into the restored-tabs list), dropping a file *into* a vault folder is blocked (it would land as plaintext), a locked vault reached by session-restore / back / breadcrumb bounces to its parent instead of showing raw blobs, and the AI tool guard now covers every path argument name (a `rename_path` on a vault file previously slipped through). Editing a vault file that locks mid-edit is non-destructive — the save is refused with a "unlock and save again" message and the editor keeps your text. See CLAUDE.md §43.
+- **Crash reports now scrub filesystem paths** from error messages and stacks before sending (Windows drive + UNC paths → `<path>`), so an unhandled backend error that interpolates a path — or a vault filename — can't leak it to the crash sheet. Minified JS bundle locations are preserved so stacks stay useful.
+- **`vault_create` index purge no longer over-matches sibling folders.** The `path LIKE 'folder%'` purge lacked a trailing separator, so encrypting `…/Secret` also deleted the index rows of a sibling `…/SecretPlans` — and those deletions cascade to `file_tags`, silently dropping the user's tags on an unrelated folder. Now separator-terminated and LIKE-escaped.
+- 6 new unit tests (`like_escape`, `resolve_temp`, and 4 covering the sharing path validation). Local Rust toolchain aligned to the CI's `stable` (clippy 1.97) so pipeline lints are caught before push; the `for_kv_map` clippy error in `ocr.rs` is fixed.
+
 ## [0.1.20] - 2026-07-11
 
 ### Added

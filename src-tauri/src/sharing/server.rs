@@ -390,7 +390,22 @@ fn path_allowed(path: &str, roots: &[String]) -> bool {
         return false;
     }
     let norm = path.replace('\\', "/");
-    roots.iter().any(|r| norm.starts_with(&r.replace('\\', "/")))
+    // Reject traversal. A guest builds every path by descending from entries the
+    // host handed it, so a legitimate request NEVER contains a `..` segment.
+    // Without this, `C:/SharedRoot/../../Windows/win.ini` passes the prefix test
+    // below and the OS then resolves the `..` inside fs::read/write/remove/rename
+    // — handing an authenticated peer arbitrary access outside the shared tree.
+    if norm.split('/').any(|seg| seg == "..") {
+        return false;
+    }
+    // Separator-terminated prefix (mirrors `resolve_perms`): a shared root
+    // `C:/Shared` must grant `C:/Shared` and its descendants, but NOT a sibling
+    // `C:/SharedSecrets` that merely shares the name prefix.
+    roots.iter().any(|r| {
+        let root = r.replace('\\', "/");
+        let root = root.trim_end_matches('/');
+        norm == root || norm.starts_with(&format!("{}/", root))
+    })
 }
 
 /// Permission flags resolved for a given path via longest-prefix match.
@@ -553,7 +568,12 @@ async fn handle_cmd(
             }
         }
         GuestMsg::RenamePath { id, from, to } => {
+            // BOTH ends must be inside the shared tree. Validating only `from`
+            // let a guest with can_update rename a shared file to an arbitrary
+            // destination — moving host data out of the shared tree or clobbering
+            // a file elsewhere on disk via fs::rename.
             if !path_allowed(&from, &root_paths) { denied!(id); }
+            if !path_allowed(&to, &root_paths) { denied!(id); }
             {
                 let db_g = db.lock().unwrap();
                 let p = resolve_perms(&db_g, context_id, &from);
@@ -646,4 +666,47 @@ fn list_dir_sync(path: &str) -> Result<Vec<ListEntry>, String> {
     });
 
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::path_allowed;
+
+    fn roots() -> Vec<String> {
+        vec!["C:\\Users\\bob\\Shared".to_string()]
+    }
+
+    #[test]
+    fn allows_the_root_and_its_descendants() {
+        let r = roots();
+        assert!(path_allowed("C:\\Users\\bob\\Shared", &r));
+        assert!(path_allowed("C:\\Users\\bob\\Shared\\doc.txt", &r));
+        assert!(path_allowed("C:/Users/bob/Shared/sub/a.txt", &r)); // forward-slash flavour
+    }
+
+    #[test]
+    fn rejects_a_sibling_that_shares_the_name_prefix() {
+        // The bug this guards: `starts_with("…/Shared")` also matched
+        // `…/SharedSecrets`, leaking a sibling folder the host never shared.
+        let r = roots();
+        assert!(!path_allowed("C:\\Users\\bob\\SharedSecrets\\secret.txt", &r));
+        assert!(!path_allowed("C:\\Users\\bob\\Shared_backup\\x", &r));
+    }
+
+    #[test]
+    fn rejects_parent_dir_traversal() {
+        // The critical one: without the `..` reject, this passes the prefix test
+        // and the OS resolves the `..`, giving arbitrary access outside the tree.
+        let r = roots();
+        assert!(!path_allowed("C:\\Users\\bob\\Shared\\..\\..\\Windows\\win.ini", &r));
+        assert!(!path_allowed("C:/Users/bob/Shared/../secret.txt", &r));
+        assert!(!path_allowed("C:\\Users\\bob\\Shared\\sub\\..\\..\\outside.txt", &r));
+    }
+
+    #[test]
+    fn rejects_a_path_entirely_outside_the_tree() {
+        let r = roots();
+        assert!(!path_allowed("C:\\Windows\\System32\\drivers\\etc\\hosts", &r));
+        assert!(!path_allowed("D:\\anything", &r));
+    }
 }

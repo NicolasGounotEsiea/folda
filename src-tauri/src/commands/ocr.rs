@@ -456,7 +456,7 @@ fn extract_pdf_jpegs(pdf_path: &str) -> Vec<Vec<u8>> {
     };
 
     let mut jpegs: Vec<Vec<u8>> = Vec::new();
-    for (_id, obj) in doc.objects.iter() {
+    for obj in doc.objects.values() {
         if jpegs.len() >= MAX_PDF_IMAGES {
             break;
         }

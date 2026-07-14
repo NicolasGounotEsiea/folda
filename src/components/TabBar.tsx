@@ -6,6 +6,7 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import type { ListEntry } from "../types";
+import { saveTextFile } from "../utils/vaultSave";
 
 function TabIcon({ ext }: { ext: string }) {
   const e = ext.toLowerCase();
@@ -655,7 +656,11 @@ export function TabBar() {
           onDiscard={() => { closeTab(dirtyClose.id); setDirtyClose(null); }}
           onSave={async () => {
             if (dirtyClose.content !== null) {
-              await invoke("write_file", { path: dirtyClose.id, content: dirtyClose.content }).catch(console.error);
+              // saveTextFile (not raw write_file): re-encrypts back into the vault
+              // when this tab is a decrypted vault working copy. A plain write_file
+              // would land the edit in the temp copy, which is deleted on lock —
+              // losing the user's work exactly at the moment they chose "Save".
+              await saveTextFile(dirtyClose.id, dirtyClose.content).catch(console.error);
             }
             closeTab(dirtyClose.id);
             setDirtyClose(null);

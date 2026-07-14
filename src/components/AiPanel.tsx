@@ -813,7 +813,15 @@ async function executeTool(
     // them permanently undecryptable.
     //
     // Covers locked vaults too: see `vault_path_is_protected`.
-    const pathFields = ["path", "src", "dst_dir", "dir", "from", "to", "file_path"];
+    // Superset of every path-bearing argument any tool uses. Omitting a real
+    // field is the only dangerous mistake (it silently lets the AI act inside a
+    // vault — e.g. rename_path uses old_path/new_path, NOT from/to), whereas
+    // listing a field no tool uses costs nothing. When adding a tool with a new
+    // path argument name, add it here.
+    const pathFields = [
+      "path", "src", "dst", "dst_dir", "dir",
+      "old_path", "new_path", "from", "to", "file_path", "target",
+    ];
     const candidates = pathFields
       .map((f) => input[f])
       .filter((v): v is string => typeof v === "string" && v.length > 0);

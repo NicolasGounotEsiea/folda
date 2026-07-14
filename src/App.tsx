@@ -35,6 +35,7 @@ import { TabBar } from "./components/TabBar";
 import { Titlebar } from "./components/Titlebar";
 import { VaultView } from "./components/VaultView";
 import { useVaultStore, refreshVaults, normVaultPath } from "./store/useVaultStore";
+import { isVaultTempPath } from "./utils/vaultSave";
 import { Toolbar } from "./components/Toolbar";
 import { useStore, pathToTab } from "./store/useStore";
 import type { Context, FileEntry, ListEntry, Tag } from "./types";
@@ -146,6 +147,32 @@ export function App() {
 
   const addToast = useToastStore((s) => s.addToast);
   const t = useTranslation();
+
+  // Never render a LOCKED vault's raw `.dat` blobs. FileList.navigate() gates the
+  // entry-based routes (double-click / Enter / context menu / quick-filter), but
+  // direct routes bypass it: session restore landing on a vault, back/forward,
+  // a breadcrumb click, a pinned item. Catch currentPath being a locked vault by
+  // ANY route and bounce to its parent with a hint — so the user never lands
+  // among opaque blobs, and can't accidentally break the vault by moving one.
+  // (Blobs are ciphertext, so this is integrity/UX, not a plaintext leak.)
+  useEffect(() => {
+    if (!currentPath || currentPathIsUnlockedVault) return;
+    let cancelled = false;
+    invoke<boolean>("vault_is_vault", { path: currentPath })
+      .then((isVault) => {
+        if (cancelled || !isVault) return;
+        const parent = currentPath.replace(/\\/g, "/").split("/").slice(0, -1).join("\\");
+        if (!parent) return;
+        addToast({ type: "info", message: t.vaultLockedOpenToView });
+        setCurrentPath(parent);
+        invoke<ListEntry[]>("list_directory", {
+          path: parent, contextId: activeContextIdRef.current ?? 0,
+        }).then(setListEntries).catch(() => {});
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [currentPath, currentPathIsUnlockedVault, setCurrentPath, setListEntries, addToast, t]);
+
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
@@ -248,7 +275,12 @@ export function App() {
 
       // Restore active workspace's file tabs, hydrating any crash-saved drafts
       if (activeCtx?.open_file_tabs?.length) {
-        const restoredTabs = activeCtx.open_file_tabs.map((path) => {
+        const restoredTabs = activeCtx.open_file_tabs
+          // Vault working copies live in a temp dir that the startup sweep wipes,
+          // so a restored vault tab always points at a now-deleted file. Skip them
+          // rather than surfacing a broken tab (and never re-read vault plaintext).
+          .filter((path) => !isVaultTempPath(path))
+          .map((path) => {
           const tab = pathToTab(path);
           try {
             const saved = localStorage.getItem(`nxs_draft:${path}`);

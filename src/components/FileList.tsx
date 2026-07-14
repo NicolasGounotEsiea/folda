@@ -1281,6 +1281,15 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
 
     if (target && paths.length > 0) {
       const entries = listEntriesRef.current;
+      // Never drop into a vault folder. The file would land there as PLAINTEXT —
+      // the scanner skips vault subtrees, so it would sit unencrypted inside a
+      // folder the user believes is protected, silently breaking the promise.
+      // Adding to a vault must go through unlock → "Add files", which encrypts.
+      if (!dstRemote && entries.find((e) => e.path === target)?.is_vault) {
+        addToast({ type: "info", message: t.vaultDropBlocked });
+        setPaneSelectedPaths([]);
+        return;
+      }
       if (srcRemote === dstRemote) {
         for (const src of paths) {
           if (src === target) continue;

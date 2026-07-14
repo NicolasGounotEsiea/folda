@@ -38,6 +38,20 @@ interface CrashPayload {
   url: string;         // minified bundle location, e.g. "index-abc.js:102" — not sensitive
 }
 
+// Strip OS filesystem paths out of anything we send. Backend errors reaching the
+// frontend as rejected `invoke` promises routinely interpolate real paths — and
+// even vault file NAMES ("'budget.xlsx' is not in this vault") — so an unhandled
+// rejection could otherwise ship a user's private path/filename to the crash
+// sheet, breaking the "we never send file paths" promise (and the vault's).
+// We target Windows drive paths (`C:\…`) and UNC paths (`\\server\…`); minified
+// bundle locations use forward-slash URLs (`…/index-abc.js:102`) and are left
+// intact so stacks stay useful.
+function scrubPaths(s: string): string {
+  return s
+    .replace(/[A-Za-z]:\\[^\s"'<>|]*/g, "<path>")
+    .replace(/\\\\[^\s"'<>|]+/g, "<path>");
+}
+
 function send(p: CrashPayload) {
   if (!_enabled) return;
   // Fire-and-forget. The backend buffers to disk on network failure and
@@ -45,8 +59,8 @@ function send(p: CrashPayload) {
   invoke("submit_crash_report", {
     report: {
       kind: p.kind,
-      message: p.message.slice(0, 2000),
-      stack: p.stack.slice(0, 8000),
+      message: scrubPaths(p.message).slice(0, 2000),
+      stack: scrubPaths(p.stack).slice(0, 8000),
       url: p.url.slice(0, 500),
       install_id: _installId,
       app_version: __APP_VERSION__,

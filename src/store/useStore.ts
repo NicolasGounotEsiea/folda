@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { FileEntry, ListEntry, Tag, Context, PinnedItem, ViewMode, LayoutMode, SavedView, TagStat } from "../types";
 import { type AppSettings, DEFAULT_SETTINGS, applySettings } from "../utils/settings";
+import { isVaultTempPath } from "../utils/vaultSave";
 
 export type SelectedEntry =
   | { kind: "file"; entry: FileEntry }
@@ -690,8 +691,13 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   updateTabCache: (id, draft, original) => {
-    // Persist unsaved draft so it survives crashes
-    if (draft !== original) {
+    // Persist unsaved draft so it survives crashes — EXCEPT for vault working
+    // copies. Their draft is decrypted plaintext, and localStorage lives on disk
+    // unencrypted: persisting it would leave a vault file's contents readable
+    // after the vault locks and after an app restart, which is exactly the leak
+    // the vault feature exists to prevent. Vault edits are protected by the
+    // write-back-on-save path instead (see utils/vaultSave).
+    if (draft !== original && !isVaultTempPath(id)) {
       try { localStorage.setItem(`nxs_draft:${id}`, draft); } catch { /* quota */ }
     } else {
       try { localStorage.removeItem(`nxs_draft:${id}`); } catch { /* ignore */ }

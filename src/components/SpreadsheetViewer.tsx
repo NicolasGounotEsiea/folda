@@ -5,6 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useViewerFindStore } from "../store/useViewerFindStore";
 import * as XLSX from "xlsx";
 import { useStore } from "../store/useStore";
+import { saveTextFile } from "../utils/vaultSave";
 import { useTranslation } from "../utils/i18n";
 import { SnapshotPanel } from "./SnapshotPanel";
 
@@ -302,7 +303,9 @@ export function SpreadsheetViewer({ path, ext, onSaved, onRestored }: Props) {
       if (settings.snapshotMode === "auto") {
         invoke("create_snapshot", { filePath: path, maxCount: settings.snapshotMaxCount }).catch(() => {});
       }
-      await invoke("write_file", { path, content: newContent });
+      // Vault-aware: re-encrypts into the vault when this is a decrypted vault
+      // working copy. A plain write_file here would lose the edit on lock.
+      await saveTextFile(path, newContent);
       setRawContent(newContent);
       setEditMode(false);
       setSnapshotKey((k) => k + 1);

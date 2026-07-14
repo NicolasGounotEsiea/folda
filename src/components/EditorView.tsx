@@ -11,11 +11,12 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView as CMView, type EditorView as CMEditorView } from "@codemirror/view";
 import CodeMirror, { type Statistics } from "@uiw/react-codemirror";
-import { Ban, FileCode, History, Save, X } from "lucide-react";
+import { Ban, FileCode, History, Lock, Save, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import { useViewerFindStore } from "../store/useViewerFindStore";
 import { SnapshotPanel } from "./SnapshotPanel";
+import { isVaultWorkingCopy, saveTextFile } from "../utils/vaultSave";
 
 // These extensions are handled by MediaViewer or DocumentViewer — EditorView only sees them
 // if somehow routed here, in which case we show a "can't edit" message.
@@ -63,12 +64,28 @@ export function EditorView() {
   const isRemote = sharingMode === "joined";
   const readFile = (path: string) =>
     isRemote ? invoke<string>("read_remote_file", { path }) : invoke<string>("read_file_full", { path });
+  // Local saves go through saveTextFile, which re-encrypts back into the vault
+  // when the file is a decrypted vault working copy. Calling write_file directly
+  // here would write the edit to the temp copy, never to the vault, and the temp
+  // is deleted on lock — silently destroying the user's work.
   const writeFile = (path: string, content: string) =>
-    isRemote ? invoke("write_remote_file", { path, content }) : invoke("write_file", { path, content });
+    isRemote ? invoke("write_remote_file", { path, content }) : saveTextFile(path, content);
   const [content, setContent] = useState("");
   const [originalContent, setOriginalContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Is this file a decrypted vault working copy? Purely for the badge — the
+  // save routing itself is decided backend-side, per save, so a vault that
+  // locks mid-edit is caught even if this flag is stale.
+  const [isVaultFile, setIsVaultFile] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    if (!openedFile) { setIsVaultFile(false); return; }
+    isVaultWorkingCopy(openedFile.path)
+      .then((v) => { if (!cancelled) setIsVaultFile(v); })
+      .catch(() => { if (!cancelled) setIsVaultFile(false); });
+    return () => { cancelled = true; };
+  }, [openedFile]);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ line: 1, col: 1 });
   const [confirmClose, setConfirmClose] = useState(false);
@@ -120,8 +137,10 @@ export function EditorView() {
     const current = contentRef.current;
     setSaving(true);
     try {
-      // Auto-snapshot before saving (local files only, ≤1 MB enforced server-side)
-      if (!isRemote && settings.snapshotMode === "auto") {
+      // Auto-snapshot before saving (local, non-vault files only; ≤1 MB enforced
+      // server-side). Vault files are excluded — a snapshot stores plaintext bytes
+      // in the unencrypted DB, which the backend rejects anyway.
+      if (!isRemote && !isVaultFile && settings.snapshotMode === "auto") {
         invoke("create_snapshot", {
           filePath: openedFile.path,
           maxCount: settings.snapshotMaxCount,
@@ -136,7 +155,7 @@ export function EditorView() {
     } finally {
       setSaving(false);
     }
-  }, [openedFile, activeTabId, updateTabCache, isRemote, settings.snapshotMode, settings.snapshotMaxCount]);
+  }, [openedFile, activeTabId, updateTabCache, isRemote, isVaultFile, settings.snapshotMode, settings.snapshotMaxCount]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -211,6 +230,15 @@ export function EditorView() {
         <span className="text-[10px] text-text-muted bg-surface-3 px-1.5 py-0.5 rounded shrink-0">
           {langName}
         </span>
+        {isVaultFile && (
+          <span
+            className="flex items-center gap-1 text-[10px] text-emerald-300 bg-emerald-500/10 px-1.5 py-0.5 rounded shrink-0"
+            title="This file lives in an encrypted vault. Saving re-encrypts it back into the vault."
+          >
+            <Lock size={9} />
+            Vault
+          </span>
+        )}
         {isDirty && (
           <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" title="Unsaved changes" />
         )}
@@ -222,7 +250,7 @@ export function EditorView() {
           <Save size={10} />
           {saving ? "Saving…" : "Save"}
         </button>
-        {!isRemote && (
+        {!isRemote && !isVaultFile && (
           <button
             onClick={() => setSnapshotOpen((v) => !v)}
             title="Snapshots"

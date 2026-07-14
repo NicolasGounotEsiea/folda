@@ -38,6 +38,19 @@ pub const DEFAULT_IDLE_LOCK_SECS: u64 = 15 * 60;
 /// `0` in the setting means "never auto-lock".
 pub const NEVER_AUTO_LOCK: u64 = 0;
 
+/// A decrypted copy handed to a viewer, and the vault entry it came from.
+///
+/// The `name` is what makes SAVING possible: when the editor writes back, we
+/// look the temp path up here to learn which vault file to re-encrypt into.
+/// Without it, an edit to a vault file would land in the temp copy, never reach
+/// the vault, and be deleted on lock — silently destroying the user's work.
+#[derive(Clone)]
+pub struct TempFile {
+    pub path: PathBuf,
+    /// The real file name inside the vault (the index key).
+    pub name: String,
+}
+
 struct UnlockedVault {
     key: VaultKey,
     index: VaultIndex,
@@ -46,7 +59,7 @@ struct UnlockedVault {
     /// See the threat-model note in `mod.rs`: these are the one place where
     /// plaintext touches the disk, in a user-only-ACL folder, for as long as
     /// the vault is unlocked.
-    temp_files: Vec<PathBuf>,
+    temp_files: Vec<TempFile>,
 }
 
 type Registry = HashMap<PathBuf, UnlockedVault>;
@@ -108,13 +121,33 @@ pub fn with_vault<T>(
     Some(f(&v.key, &mut v.index))
 }
 
-/// Record a decrypted temp file so it gets deleted when the vault locks.
-pub fn track_temp_file(dir: &Path, path: PathBuf) {
+/// Record a decrypted temp file so it gets deleted when the vault locks, and so
+/// a later save can be routed back to the right vault entry.
+pub fn track_temp_file(dir: &Path, path: PathBuf, name: String) {
     let mut reg = lock_registry();
     if let Some(v) = reg.get_mut(&key_for(dir)) {
         v.last_activity = Instant::now();
-        v.temp_files.push(path);
+        // Re-opening the same file reuses the entry rather than growing the list.
+        v.temp_files.retain(|t| t.path != path);
+        v.temp_files.push(TempFile { path, name });
     }
+}
+
+/// Which vault entry does this decrypted temp file belong to?
+///
+/// Returns `(vault_dir, name_in_vault)`, or `None` when the path is not a
+/// tracked temp — which is also what happens once the vault has LOCKED, since
+/// locking drops the entry. Callers must treat `None` as "the vault closed
+/// under you", never as "not a vault file, write it to disk as-is": doing the
+/// latter would dump the user's plaintext into the temp folder forever.
+pub fn resolve_temp(temp_path: &Path) -> Option<(PathBuf, String)> {
+    let reg = lock_registry();
+    for (dir, v) in reg.iter() {
+        if let Some(t) = v.temp_files.iter().find(|t| t.path == temp_path) {
+            return Some((dir.clone(), t.name.clone()));
+        }
+    }
+    None
 }
 
 /// Lock one vault: drop its master key and delete its decrypted temp files.
@@ -143,11 +176,11 @@ pub fn lock_all() -> usize {
     n
 }
 
-fn purge_temp_files(paths: &[PathBuf]) {
-    for p in paths {
+fn purge_temp_files(files: &[TempFile]) {
+    for f in files {
         // Best-effort: a viewer may still hold the handle. The startup sweep
         // (`purge_orphaned_temp_files`) catches whatever survives.
-        let _ = std::fs::remove_file(p);
+        let _ = std::fs::remove_file(&f.path);
     }
 }
 
@@ -342,11 +375,37 @@ mod tests {
 
         let tmp = std::env::temp_dir().join(format!("nxs-vault-tmp-{}.txt", std::process::id()));
         std::fs::write(&tmp, b"decrypted plaintext").unwrap();
-        track_temp_file(&dir, tmp.clone());
+        track_temp_file(&dir, tmp.clone(), "secret.txt".to_string());
         assert!(tmp.exists());
 
         lock(&dir);
         assert!(!tmp.exists(), "locking must delete decrypted temp files");
+    }
+
+    #[test]
+    fn resolve_temp_maps_back_then_returns_none_once_locked() {
+        let _serial = serial();
+        let dir = unique_dir("resolve");
+        insert(&dir, fake_key(), VaultIndex::default());
+
+        let tmp = std::env::temp_dir().join(format!("nxs-vault-resolve-{}.txt", std::process::id()));
+        track_temp_file(&dir, tmp.clone(), "secret.txt".to_string());
+
+        // While unlocked, the temp maps back to (vault_dir, name_in_vault).
+        let got = resolve_temp(&tmp);
+        assert_eq!(got, Some((dir.clone(), "secret.txt".to_string())));
+
+        // An unrelated path is never a tracked temp.
+        assert_eq!(resolve_temp(Path::new("C:/nope/whatever.txt")), None);
+
+        // After lock, resolution MUST be None — the contract that stops a save
+        // from being written to the temp folder as plaintext after the key is gone.
+        lock(&dir);
+        assert_eq!(
+            resolve_temp(&tmp),
+            None,
+            "a locked vault's temp must not resolve — otherwise a save leaks plaintext"
+        );
     }
 
     #[test]
