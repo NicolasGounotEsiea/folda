@@ -4,7 +4,7 @@ import {
   ArrowDown, ArrowUp, ChevronUp,
   Binary, Code, Cog, Database, File, FileImage, FileSpreadsheet, FileText, FileType,
   Film, Filter, Folder, FolderOpen, FolderPlus, Music, Package, Presentation,
-  SearchX, FilterX, X,
+  SearchX, FilterX, X, Lock, ShieldCheck,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -14,6 +14,9 @@ import { QuickLookModal } from "./QuickLookModal";
 import { FolderPickerModal } from "./FolderPickerModal";
 import { useStore } from "../store/useStore";
 import { useIndexingStore } from "../store/useIndexingStore";
+import { useVaultStore, refreshVaults, normVaultPath } from "../store/useVaultStore";
+import { VaultCreateWizard } from "./VaultCreateWizard";
+import { VaultUnlockModal } from "./VaultUnlockModal";
 import { useGitStore, statusForAbsolutePath } from "../store/useGitStore";
 import { highlightSnippet } from "../utils/highlightSnippet";
 import { DiffCompareModal } from "./DiffCompareModal";
@@ -415,7 +418,7 @@ const EntryRow = memo(function EntryRow({
   renaming, onRenameSubmit, onRenameCancel,
   isDragTarget, onPointerDown,
   gitStatus, gitDimmed,
-  staggerIndex, dateFormat,
+  staggerIndex, dateFormat, vaultUnlocked,
 }: {
   entry: ListEntry;
   selected: boolean;
@@ -441,6 +444,9 @@ const EntryRow = memo(function EntryRow({
   /// Date display mode from Settings → Explorer. A plain string prop, so memo
   /// only re-renders rows when the user actually changes the setting.
   dateFormat: "relative" | "absolute";
+  /// This folder is an encrypted vault, and whether it's currently open.
+  /// Two booleans (not one enum) so memo's shallow compare stays cheap.
+  vaultUnlocked?: boolean;
 }) {
   const [renameVal, setRenameVal] = useState(entry.name);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -528,6 +534,15 @@ const EntryRow = memo(function EntryRow({
       ) : (
         <>
           <div className="flex items-center gap-1.5 min-w-0">
+            {entry.is_vault && (
+              // Padlock: amber+closed when locked, emerald+open when unlocked.
+              // Placed before the name so the "this is protected" signal is the
+              // first thing read, and so it can't be pushed off-screen by a long
+              // file name (the name has `truncate`, this has `shrink-0`).
+              vaultUnlocked
+                ? <ShieldCheck size={12} className="text-emerald-400 shrink-0" />
+                : <Lock size={12} className="text-amber-400 shrink-0" />
+            )}
             {gitStatus && (
               // 6px dot in the same row as the name. Position before the name so
               // it doesn't shift the entry tags chip group. Color from GitPanel's
@@ -770,6 +785,16 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
 
   // ─── Quick Look ───────────────────────────────────────────────────────────────
   const [quickLookEntry, setQuickLookEntry] = useState<ListEntry | null>(null);
+
+  // ─── Vaults ───────────────────────────────────────────────────────────────────
+  // Which vault (if any) the user is being asked to unlock, and which folder is
+  // being turned into one. Local state: both are transient modals owned by this
+  // pane, and putting them in the store would re-render every subscriber.
+  const [vaultToUnlock, setVaultToUnlock] = useState<{ path: string; name: string } | null>(null);
+  const [vaultToCreate, setVaultToCreate] = useState<{ path: string; name: string } | null>(null);
+  // Subscribe to the unlocked SET (not the list) so a re-render only happens when
+  // a vault actually locks/unlocks — not on every idle-second tick.
+  const unlockedSet = useVaultStore((s) => s.unlockedSet);
 
 
   // ─── Quick filter ─────────────────────────────────────────────────────────────
@@ -1074,6 +1099,20 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   useEffect(() => { refreshListRef.current = refreshList; }, [refreshList]);
 
   const navigate = async (path: string) => {
+    // Vault gate. Navigating INTO a locked vault must open the unlock modal
+    // instead — otherwise the user would land in a folder full of opaque
+    // `.dat` blobs and a `.nxsvault`, which is confusing and useless.
+    //
+    // Intercepting here (rather than in the row's double-click handler) covers
+    // every route into a folder at once: double-click, Enter, the context menu,
+    // and the quick-filter's Enter. Missing one of those would be a hole the
+    // user finds by accident.
+    const target = listEntriesRef.current.find((e) => e.path === path);
+    if (target?.is_vault && !useVaultStore.getState().isUnlocked(path)) {
+      setVaultToUnlock({ path, name: target.name });
+      return;
+    }
+
     setPanePath(path);
     if (pane === 0) pushNav(path);
     else pushNav2(path);
@@ -1412,6 +1451,36 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
       : [entry];
 
     const items: ContextMenuEntry[] = [];
+
+    // ── Vault actions (single folder only) ──
+    // Placed FIRST: on a vault folder these are the only actions that make
+    // sense, and burying "Lock" under six other entries invites the user to
+    // leave a vault open. On a plain folder, "Encrypt this folder…" is the
+    // single entry point into the whole feature — it has to be findable.
+    if (!isMulti && entry.is_dir && !isCurrentTabRemote) {
+      const isUnlocked = unlockedSet.has(normVaultPath(entry.path));
+      if (entry.is_vault) {
+        if (isUnlocked) {
+          items.push({
+            label: t.vaultLock,
+            onClick: async () => {
+              await invoke("vault_lock", { path: entry.path }).catch(() => {});
+              await refreshVaults();
+            },
+          });
+        } else {
+          items.push({
+            label: t.vaultUnlock,
+            onClick: () => setVaultToUnlock({ path: entry.path, name: entry.name }),
+          });
+        }
+      } else {
+        items.push({
+          label: t.vaultEncryptFolder,
+          onClick: () => setVaultToCreate({ path: entry.path, name: entry.name }),
+        });
+      }
+    }
 
     if (!isMulti) {
       if (!entry.is_dir) {
@@ -1897,6 +1966,37 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paneSelectedPaths, visibleEntries, clipboard, activePaneIndex, pane, panePath, quickFilter]);
 
+  // Vault modals. Rendered from BOTH the list and grid branches (they each
+  // have their own return), so they live in one shared fragment rather than
+  // being duplicated — a copy-paste here is how one of the two layouts ends up
+  // silently unable to unlock a vault.
+  const vaultModals = (
+    <>
+      {vaultToUnlock && (
+        <VaultUnlockModal
+          folderPath={vaultToUnlock.path}
+          folderName={vaultToUnlock.name}
+          onClose={() => setVaultToUnlock(null)}
+          onUnlocked={() => {
+            // Now that it's open, actually go in. `navigate` re-checks the
+            // unlocked state, which the store has just refreshed.
+            const p = vaultToUnlock.path;
+            setVaultToUnlock(null);
+            navigate(p);
+          }}
+        />
+      )}
+      {vaultToCreate && (
+        <VaultCreateWizard
+          folderPath={vaultToCreate.path}
+          folderName={vaultToCreate.name}
+          onClose={() => setVaultToCreate(null)}
+          onCreated={() => { refreshList(); }}
+        />
+      )}
+    </>
+  );
+
   // ─── Early returns ──────────────────────────────────────────────────────────
   if (isScanning && pane === 0) {
     // Show live file count from the scan-progress event stream. The number
@@ -2082,6 +2182,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
         {ctxMenu && (
           <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={buildMenuItems(ctxMenu.entry)} onClose={() => setCtxMenu(null)} />
         )}
+        {vaultModals}
       </>
     );
   }
@@ -2313,6 +2414,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
                     gitDimmed={gitDimIgnored && gs?.status === "ignored"}
                     staggerIndex={useStagger ? i : undefined}
                     dateFormat={dateFormat}
+                    vaultUnlocked={e.is_vault ? unlockedSet.has(normVaultPath(e.path)) : undefined}
                   />
                 );
               })}
@@ -2360,6 +2462,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
       {ctxMenu && (
         <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={buildMenuItems(ctxMenu.entry)} onClose={() => setCtxMenu(null)} />
       )}
+        {vaultModals}
 
       {emptyCtxMenu && (
         <ContextMenu

@@ -16,6 +16,16 @@ pub fn create_snapshot(
     max_count: i64,
     state: tauri::State<AppState>,
 ) -> Result<(), String> {
+    // Snapshots store file bytes in the `snapshots` table — an UNENCRYPTED
+    // database. Snapshotting a decrypted vault file would therefore write its
+    // plaintext into contextual.db, where it would outlive the vault being
+    // locked. Silently skip (Ok, not Err): the editor calls this automatically
+    // on save, and a hard error would surface as a scary toast for what is
+    // correct, intended behaviour.
+    if crate::vault::format::path_is_in_vault(std::path::Path::new(&file_path)) {
+        return Ok(());
+    }
+
     let content = std::fs::read(&file_path).map_err(|e| e.to_string())?;
     if content.len() > 10 * 1024 * 1024 {
         return Ok(()); // silently skip large files (>10 MB)

@@ -71,6 +71,11 @@ export interface ListEntry {
   extension: string;
   id: number | null;
   tags: Tag[];
+  /// True when this directory is an encrypted-vault root (it holds a valid
+  /// `.nxsvault`). Computed backend-side by `list_directory` — one cheap probe
+  /// per folder — so the UI never has to round-trip per entry to ask.
+  /// Drives the padlock icon and the "unlock instead of navigate" behaviour.
+  is_vault?: boolean;
   /// Set by the Toolbar/CommandPalette when a file appears in search results
   /// because its INDEXED CONTENT matched the query (not just the filename).
   /// Undefined / false for regular list_directory results. Drives the small

@@ -331,6 +331,7 @@ pub fn search_folders(
                 extension: String::new(),
                 id: None,
                 tags: vec![],
+                is_vault: false,
             })
         })
         .map_err(|e| e.to_string())?

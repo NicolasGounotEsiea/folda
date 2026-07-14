@@ -803,6 +803,42 @@ async function executeTool(
   requestPlan?: PlanFn,
 ): Promise<string> {
   try {
+    // ── Vault guard ──────────────────────────────────────────────────────────
+    // ONE check, at the single choke point every tool passes through, rather
+    // than a check inside each of the ~25 cases. Adding a new tool therefore
+    // gets the protection for free — the alternative (per-case guards) fails
+    // the moment someone adds a tool and forgets one, and the cost of forgetting
+    // here is vault plaintext in the model's context window, or an AI-driven
+    // `plan_moves` dragging encrypted blobs out of their vault and rendering
+    // them permanently undecryptable.
+    //
+    // Covers locked vaults too: see `vault_path_is_protected`.
+    const pathFields = ["path", "src", "dst_dir", "dir", "from", "to", "file_path"];
+    const candidates = pathFields
+      .map((f) => input[f])
+      .filter((v): v is string => typeof v === "string" && v.length > 0);
+    // plan_moves carries its paths one level down, inside the moves array.
+    const moves = input.moves;
+    if (Array.isArray(moves)) {
+      for (const m of moves) {
+        if (m && typeof m === "object") {
+          const mm = m as Record<string, unknown>;
+          for (const f of ["src", "dst_dir"]) {
+            if (typeof mm[f] === "string" && mm[f]) candidates.push(mm[f] as string);
+          }
+        }
+      }
+    }
+    for (const p of candidates) {
+      const protectedPath = await invoke<boolean>("vault_path_is_protected", { path: p })
+        .catch(() => false);
+      if (protectedPath) {
+        // Told to the MODEL, not just the user: it must understand this is a
+        // hard boundary and stop retrying, rather than reformulating the call.
+        return `Error: "${p}" is inside an encrypted vault. Vaults are off-limits — you cannot read, list, search, move, tag or delete anything inside one. Tell the user they must open the vault themselves in nxs. Do not retry.`;
+      }
+    }
+
     switch (name) {
       case "list_directory": {
         const entries = await invoke<ListEntry[]>("list_directory", { path: input.path, contextId });

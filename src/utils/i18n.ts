@@ -17,6 +17,8 @@ type AppStrings = {
 
   // ── common actions ────────────────────────────────────────────────────────
   cancel: string;
+  back: string;
+  done: string;
   close: string;
   refresh: string;
   save: string;
@@ -55,6 +57,51 @@ type AppStrings = {
   quickFilterNoMatchesHint: string;      // hint — supports {query} placeholder
   quickFilterClear: string;              // ghost button label inside the no-match empty state
   transferCancelled: string;             // info toast when the user cancels a copy/move
+  // ── Encrypted vaults ──────────────────────────────────────────────────────
+  vaultEncryptFolder: string;            // context-menu action + wizard CTA
+  vaultCreateTitle: string;
+  vaultWarnNoRecoveryTitle: string;      // the "you can lose your data" warning
+  vaultWarnNoRecoveryBody: string;
+  vaultWarnProtectsTitle: string;
+  vaultWarnProtects: string;
+  vaultWarnLimitsTitle: string;          // honest limits — do NOT oversell
+  vaultWarnLimits: string;
+  vaultWarnIndexing: string;             // search/AI are disabled inside vaults
+  vaultUnderstand: string;
+  vaultPassword: string;
+  vaultPasswordConfirm: string;
+  vaultPasswordMismatch: string;
+  vaultWeakPassword: string;
+  vaultNewPassword: string;
+  vaultEncrypting: string;
+  vaultCreatedBody: string;              // {n} = files encrypted
+  vaultCreateFailed: string;
+  vaultRecoveryTitle: string;
+  vaultRecoveryBody: string;
+  vaultRecoverySavedAck: string;         // the checkbox that gates closing
+  vaultRecoveryCode: string;
+  vaultRecoveryUseBody: string;
+  vaultForgotPassword: string;
+  vaultUsePasswordInstead: string;
+  vaultUnlock: string;
+  vaultLock: string;
+  vaultUnlockedLabel: string;
+  vaultLockedNow: string;                // toast: the sweeper locked it under us
+  vaultAutoLocked: string;               // {n} = vaults auto-locked
+  vaultAddFiles: string;
+  vaultAdded: string;                    // {n} = files added
+  vaultAddFailed: string;
+  vaultOpenFailed: string;
+  vaultDeleteFailed: string;
+  vaultDeleteConfirm: string;            // {name}
+  vaultDeleteConfirmDetail: string;
+  vaultEmpty: string;
+  vaultEmptyHint: string;
+  vaultSettingsTitle: string;
+  vaultIdleLock: string;
+  vaultIdleNever: string;
+  vaultLockOnClose: string;
+  vaultSettingsWarning: string;
   quickStartTitle: string;               // tooltip + ARIA label for the logo button popover
   quickStartWorkspace: string;           // section label "Workspace"
   quickStartNoWorkspace: string;         // fallback when no workspace active
@@ -390,6 +437,8 @@ const translations: Record<string, AppStrings> = {
     watching: "watching",
 
     cancel: "Cancel",
+    back: "Back",
+    done: "Done",
     close: "Close",
     refresh: "Refresh",
     save: "Save",
@@ -425,6 +474,50 @@ const translations: Record<string, AppStrings> = {
     quickFilterNoMatchesHint: "No entries in this folder contain “{query}”. Press Esc to clear.",
     quickFilterClear: "Clear filter",
     transferCancelled: "Transfer cancelled",
+    vaultEncryptFolder: "Encrypt this folder…",
+    vaultCreateTitle: "Encrypt folder",
+    vaultWarnNoRecoveryTitle: "If you lose both, your files are gone",
+    vaultWarnNoRecoveryBody: "There is no backdoor and no reset. If you forget the password AND lose the recovery code, nobody — not even us — can decrypt these files. That is what makes them safe.",
+    vaultWarnProtectsTitle: "What this protects you from",
+    vaultWarnProtects: "A stolen or lost laptop, a cloned hard drive, and cloud sync (Dropbox/OneDrive only ever see scrambled data). Another Windows account on this PC cannot read them either.",
+    vaultWarnLimitsTitle: "What it does NOT protect you from",
+    vaultWarnLimits: "Malware already running on this machine while the vault is open. Encryption cannot help a computer that is already compromised.",
+    vaultWarnIndexing: "Files in a vault are never indexed: they won't appear in search (Ctrl+K) and the AI assistant cannot see them. That's the price of keeping them out of the (unencrypted) database.",
+    vaultUnderstand: "I understand — continue",
+    vaultPassword: "Password",
+    vaultPasswordConfirm: "Confirm password",
+    vaultPasswordMismatch: "The passwords don't match",
+    vaultWeakPassword: "This password is short. A stolen disk gives an attacker unlimited time to guess it.",
+    vaultNewPassword: "New password",
+    vaultEncrypting: "Encrypting…",
+    vaultCreatedBody: "Folder encrypted. {n} file(s) were encrypted and their originals removed.",
+    vaultCreateFailed: "Could not encrypt this folder",
+    vaultRecoveryTitle: "Your recovery code",
+    vaultRecoveryBody: "This is shown ONCE and is never stored. Write it down or print it, and keep it somewhere other than this computer. It is the only way back in if you forget your password.",
+    vaultRecoverySavedAck: "I have saved this recovery code somewhere safe. I understand it will never be shown again.",
+    vaultRecoveryCode: "Recovery code",
+    vaultRecoveryUseBody: "Enter your recovery code and choose a new password. Your files are not affected.",
+    vaultForgotPassword: "Forgot your password? Use the recovery code",
+    vaultUsePasswordInstead: "Use the password instead",
+    vaultUnlock: "Unlock",
+    vaultLock: "Lock",
+    vaultUnlockedLabel: "Unlocked",
+    vaultLockedNow: "This vault has just been locked",
+    vaultAutoLocked: "{n} vault(s) locked after inactivity",
+    vaultAddFiles: "Add files…",
+    vaultAdded: "{n} file(s) encrypted into the vault",
+    vaultAddFailed: "Could not add this file",
+    vaultOpenFailed: "Could not open this file",
+    vaultDeleteFailed: "Could not delete this file",
+    vaultDeleteConfirm: "Permanently delete \"{name}\" from the vault?",
+    vaultDeleteConfirmDetail: "This cannot be undone — vault files don't go to the trash.",
+    vaultEmpty: "This vault is empty",
+    vaultEmptyHint: "Add files to encrypt them. Their originals are deleted once encrypted.",
+    vaultSettingsTitle: "Encrypted vaults",
+    vaultIdleLock: "Auto-lock after inactivity",
+    vaultIdleNever: "Never",
+    vaultLockOnClose: "Lock all vaults when nxs closes",
+    vaultSettingsWarning: "Vaults protect against a stolen device and cloud-sync leaks — not against malware running while a vault is open. Files inside a vault are never indexed, so search and the AI assistant cannot see them.",
     quickStartTitle: "Quick start",
     quickStartWorkspace: "Workspace",
     quickStartNoWorkspace: "No workspace active",
@@ -744,6 +837,8 @@ const translations: Record<string, AppStrings> = {
     watching: "surveillance",
 
     cancel: "Annuler",
+    back: "Retour",
+    done: "Terminé",
     close: "Fermer",
     refresh: "Rafraîchir",
     save: "Enregistrer",
@@ -779,6 +874,50 @@ const translations: Record<string, AppStrings> = {
     quickFilterNoMatchesHint: "Rien ne contient « {query} » ici. Appuie sur Esc pour effacer.",
     quickFilterClear: "Effacer le filtre",
     transferCancelled: "Transfert annulé",
+    vaultEncryptFolder: "Chiffrer ce dossier…",
+    vaultCreateTitle: "Chiffrer le dossier",
+    vaultWarnNoRecoveryTitle: "Si tu perds les deux, tes fichiers sont perdus",
+    vaultWarnNoRecoveryBody: "Il n'existe aucune porte dérobée et aucune réinitialisation. Si tu oublies le mot de passe ET que tu perds le code de récupération, personne — pas même nous — ne pourra déchiffrer ces fichiers. C'est précisément ce qui les rend sûrs.",
+    vaultWarnProtectsTitle: "Ce contre quoi ça te protège",
+    vaultWarnProtects: "Un ordinateur volé ou perdu, un disque dur cloné, et la synchronisation cloud (Dropbox/OneDrive ne voient que des données illisibles). Un autre compte Windows sur ce PC ne peut pas les lire non plus.",
+    vaultWarnLimitsTitle: "Ce contre quoi ça NE te protège PAS",
+    vaultWarnLimits: "Un logiciel malveillant déjà actif sur cette machine pendant que le coffre est ouvert. Le chiffrement ne peut rien pour un ordinateur déjà compromis.",
+    vaultWarnIndexing: "Les fichiers d'un coffre ne sont jamais indexés : ils n'apparaîtront pas dans la recherche (Ctrl+K) et l'assistant IA ne peut pas les voir. C'est le prix à payer pour les garder hors de la base de données (non chiffrée).",
+    vaultUnderstand: "J'ai compris — continuer",
+    vaultPassword: "Mot de passe",
+    vaultPasswordConfirm: "Confirmer le mot de passe",
+    vaultPasswordMismatch: "Les mots de passe ne correspondent pas",
+    vaultWeakPassword: "Ce mot de passe est court. Un disque volé donne à un attaquant un temps illimité pour le deviner.",
+    vaultNewPassword: "Nouveau mot de passe",
+    vaultEncrypting: "Chiffrement…",
+    vaultCreatedBody: "Dossier chiffré. {n} fichier(s) ont été chiffrés et leurs originaux supprimés.",
+    vaultCreateFailed: "Impossible de chiffrer ce dossier",
+    vaultRecoveryTitle: "Ton code de récupération",
+    vaultRecoveryBody: "Il est affiché UNE SEULE FOIS et n'est jamais stocké. Note-le ou imprime-le, et garde-le ailleurs que sur cet ordinateur. C'est le seul moyen de rentrer si tu oublies ton mot de passe.",
+    vaultRecoverySavedAck: "J'ai sauvegardé ce code de récupération en lieu sûr. Je comprends qu'il ne sera plus jamais affiché.",
+    vaultRecoveryCode: "Code de récupération",
+    vaultRecoveryUseBody: "Saisis ton code de récupération et choisis un nouveau mot de passe. Tes fichiers ne sont pas affectés.",
+    vaultForgotPassword: "Mot de passe oublié ? Utiliser le code de récupération",
+    vaultUsePasswordInstead: "Utiliser le mot de passe",
+    vaultUnlock: "Déverrouiller",
+    vaultLock: "Verrouiller",
+    vaultUnlockedLabel: "Déverrouillé",
+    vaultLockedNow: "Ce coffre vient d'être verrouillé",
+    vaultAutoLocked: "{n} coffre(s) verrouillé(s) après inactivité",
+    vaultAddFiles: "Ajouter des fichiers…",
+    vaultAdded: "{n} fichier(s) chiffré(s) dans le coffre",
+    vaultAddFailed: "Impossible d'ajouter ce fichier",
+    vaultOpenFailed: "Impossible d'ouvrir ce fichier",
+    vaultDeleteFailed: "Impossible de supprimer ce fichier",
+    vaultDeleteConfirm: "Supprimer définitivement « {name} » du coffre ?",
+    vaultDeleteConfirmDetail: "Irréversible — les fichiers d'un coffre ne passent pas par la corbeille.",
+    vaultEmpty: "Ce coffre est vide",
+    vaultEmptyHint: "Ajoute des fichiers pour les chiffrer. Leurs originaux sont supprimés une fois chiffrés.",
+    vaultSettingsTitle: "Coffres chiffrés",
+    vaultIdleLock: "Verrouillage auto après inactivité",
+    vaultIdleNever: "Jamais",
+    vaultLockOnClose: "Verrouiller tous les coffres à la fermeture de nxs",
+    vaultSettingsWarning: "Les coffres protègent contre le vol d'appareil et les fuites de synchronisation cloud — pas contre un malware actif pendant qu'un coffre est ouvert. Les fichiers d'un coffre ne sont jamais indexés : la recherche et l'assistant IA ne peuvent pas les voir.",
     quickStartTitle: "Accès rapide",
     quickStartWorkspace: "Workspace",
     quickStartNoWorkspace: "Aucun workspace actif",

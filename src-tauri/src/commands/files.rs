@@ -398,6 +398,18 @@ const SCAN_PROGRESS_INTERVAL: usize = 500;
 const MAX_FILES_PER_SCAN: usize = 100_000;
 
 fn should_skip(path: &std::path::Path) -> bool {
+    // Encrypted vaults are never scanned. This runs inside walkdir's
+    // `filter_entry`, so returning true on a vault DIRECTORY prunes the whole
+    // subtree — the walker never even sees the blobs inside. That is what keeps
+    // vault plaintext (and even vault file names) out of `files`, `file_content`
+    // and FTS5. See CLAUDE.md §43.
+    //
+    // Only the directory case is checked here, not `path_is_in_vault`: pruning
+    // at the root means descendants are never visited, so paying for an
+    // ancestor walk per entry would be wasted work.
+    if path.is_dir() && crate::vault::format::is_vault(path) {
+        return true;
+    }
     path.components().any(|c| {
         let s = c.as_os_str().to_string_lossy();
         matches!(
@@ -732,6 +744,22 @@ fn handle_fs_event(
     for path in &event.paths {
         if path.is_dir() { continue; }
 
+        // NEVER index anything inside a vault. This is the most dangerous
+        // exclusion point in the app: while a vault is unlocked, decrypted
+        // files legitimately appear and change on disk, and the watcher would
+        // otherwise extract their text straight into `file_content` + FTS5 —
+        // leaving vault plaintext sitting in an UNENCRYPTED database that
+        // survives locking the vault. That would silently and permanently
+        // defeat the whole feature.
+        //
+        // `path_is_in_vault` (not `is_vault`) because these are FILE paths:
+        // we must catch anything at any depth under a vault root.
+        // The cost is an ancestor walk per event, which is nothing next to the
+        // text extraction it guards.
+        if crate::vault::format::path_is_in_vault(path) {
+            continue;
+        }
+
         let path_str = path.to_string_lossy().to_string();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         let timestamp = std::time::SystemTime::now()
@@ -924,10 +952,13 @@ pub fn list_directory(
 
             if file_type.is_dir() {
                 let folder_tags = load_folder_tags(&db, &entry_path, context_id).unwrap_or_default();
+                // One `.nxsvault` probe per directory — cheap, and it saves the
+                // frontend N IPC round-trips to ask "is this one a vault?".
+                let is_vault = crate::vault::format::is_vault(&entry.path());
                 Some(ListEntry {
                     is_dir: true, name, path: entry_path,
                     size: -1, created_at, modified_at, extension: String::new(),
-                    id: None, tags: folder_tags,
+                    id: None, tags: folder_tags, is_vault,
                 })
             } else {
                 let extension = std::path::Path::new(&entry_path)
@@ -971,7 +1002,7 @@ pub fn list_directory(
                     }
                 }
 
-                Some(ListEntry { is_dir: false, name, path: entry_path, size, created_at, modified_at, extension, id, tags })
+                Some(ListEntry { is_dir: false, name, path: entry_path, size, created_at, modified_at, extension, id, tags, is_vault: false })
             }
         })
         .collect();
@@ -2004,6 +2035,19 @@ pub async fn index_directory_content(
 
         (queue, total_files, already_attempted)
     };
+
+    // Belt-and-braces vault exclusion. `scan_directory` already prunes vault
+    // subtrees so their files should never have reached the `files` table —
+    // but rows can predate the folder becoming a vault (the user encrypts a
+    // folder that was already indexed). Re-extracting those would write vault
+    // plaintext into `file_content` + FTS5. Filter the work queue, and let the
+    // stale rows be cleaned up when the vault-creation flow purges them.
+    let unindexed: Vec<UnindexedRow> = unindexed
+        .into_iter()
+        .filter(|(_, p, _, _, _)| {
+            !crate::vault::format::path_is_in_vault(std::path::Path::new(p))
+        })
+        .collect();
 
     if unindexed.is_empty() {
         return Ok(0);

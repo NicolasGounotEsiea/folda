@@ -5,6 +5,10 @@ mod commands;
 mod db;
 pub mod models;
 pub mod sharing;
+/// Encrypted vaults — password-protected folders. Phase 1: the crypto + on-disk
+/// format only. Compiled in, fully unit-tested, but NOT yet wired to any Tauri
+/// command, so it cannot affect existing behaviour. See CLAUDE.md §43.
+pub mod vault;
 
 pub struct AppState {
     pub db: Arc<Mutex<rusqlite::Connection>>,
@@ -100,6 +104,27 @@ pub fn run() {
             std::thread::spawn(|| {
                 commands::winintegration::self_heal_registration();
             });
+
+            // ── Vaults ──────────────────────────────────────────────────────
+            // Delete decrypted temp files left behind by a previous run. If nxs
+            // was killed (crash, Task Manager, power cut) while a vault was
+            // unlocked, the lock path never ran and plaintext is still sitting
+            // on disk. Without this sweep it would stay there forever — a
+            // silent, permanent leak that defeats the feature. Runs FIRST,
+            // before anything can hand out new temp files.
+            vault::state::purge_orphaned_temp_files();
+
+            // Idle auto-lock. The closure re-reads the timeout from settings on
+            // every tick, so changing it in Settings takes effect immediately
+            // without a restart.
+            {
+                let handle = app.handle().clone();
+                let state_handle = app.handle().clone();
+                vault::state::spawn_idle_locker(handle, move || {
+                    use tauri::Manager;
+                    commands::vault::idle_lock_secs(&state_handle.state::<AppState>())
+                });
+            }
 
             Ok(())
         })
@@ -246,6 +271,24 @@ pub fn run() {
             commands::telemetry::set_crash_reporting_enabled,
             commands::telemetry::submit_crash_report,
             commands::telemetry::flush_pending_crash_reports,
+            // Encrypted vaults — see CLAUDE.md §43
+            commands::vault::vault_is_vault,
+            commands::vault::vault_is_unlocked,
+            commands::vault::vault_path_is_protected,
+            commands::vault::vault_unlocked_list,
+            commands::vault::vault_create,
+            commands::vault::vault_unlock,
+            commands::vault::vault_unlock_with_recovery,
+            commands::vault::vault_lock,
+            commands::vault::vault_lock_all,
+            commands::vault::vault_change_password,
+            commands::vault::vault_reset_password,
+            commands::vault::vault_list,
+            commands::vault::vault_read_file,
+            commands::vault::vault_write_file,
+            commands::vault::vault_add_file,
+            commands::vault::vault_delete_file,
+            commands::vault::vault_encrypt_existing,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

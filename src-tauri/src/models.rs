@@ -11,6 +11,19 @@ pub struct ListEntry {
     pub extension: String,
     pub id: Option<i64>,
     pub tags: Vec<Tag>,
+    /// True when this entry is a directory that is an encrypted vault root.
+    /// Set by `list_directory`; drives the lock icon and the "unlock instead of
+    /// navigate" behaviour in the file list.
+    ///
+    /// Computed here rather than by the frontend asking per-folder: the listing
+    /// already stats every entry, so this costs one extra "does `.nxsvault`
+    /// exist and parse?" check per DIRECTORY (never per file), instead of N
+    /// round-trips over the IPC bridge.
+    ///
+    /// `#[serde(default)]` so the remote-sharing path (which builds ListEntry by
+    /// hand and never serves vaults) keeps compiling and deserializing.
+    #[serde(default)]
+    pub is_vault: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

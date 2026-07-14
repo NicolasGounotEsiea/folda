@@ -33,6 +33,8 @@ import { DiskUsageModal } from "./components/DiskUsageModal";
 import { Sidebar } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
 import { Titlebar } from "./components/Titlebar";
+import { VaultView } from "./components/VaultView";
+import { useVaultStore, refreshVaults, normVaultPath } from "./store/useVaultStore";
 import { Toolbar } from "./components/Toolbar";
 import { useStore, pathToTab } from "./store/useStore";
 import type { Context, FileEntry, ListEntry, Tag } from "./types";
@@ -94,6 +96,53 @@ export function App() {
   // Ref so async callbacks always read the current contextId without stale closures
   const activeContextIdRef = useRef(activeContextId);
   useEffect(() => { activeContextIdRef.current = activeContextId; }, [activeContextId]);
+
+  // ─── Vaults ─────────────────────────────────────────────────────────────────
+  const unlockedVaultSet = useVaultStore((s) => s.unlockedSet);
+  const currentPathIsUnlockedVault =
+    !!currentPath && unlockedVaultSet.has(normVaultPath(currentPath));
+
+  // Seed the unlocked-vault cache once at startup. Vaults never survive a
+  // process exit (the master key is RAM-only), so this normally comes back
+  // empty — but it also catches the case where a previous window in the same
+  // process left one open.
+  useEffect(() => { refreshVaults(); }, []);
+
+  // The Rust idle sweeper can lock a vault at any moment. When it does, refresh
+  // the cache and TELL the user — a vault silently disappearing from under them
+  // while they were reading a file would look like a bug, not a security feature.
+  useEffect(() => {
+    const un = listen<{ paths: string[] }>("vault://auto-locked", (e) => {
+      refreshVaults();
+      const n = e.payload.paths.length;
+      if (n > 0) {
+        addToast({ type: "info", message: t.vaultAutoLocked.replace("{n}", String(n)) });
+      }
+    });
+    return () => { un.then((f) => f()); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // If the vault the user is currently INSIDE gets locked (by the sweeper, or by
+  // "Lock all"), we must not leave them staring at a dead VaultView. Walk them
+  // out to the parent folder.
+  const wasInVaultRef = useRef(false);
+  useEffect(() => {
+    if (currentPathIsUnlockedVault) {
+      wasInVaultRef.current = true;
+      return;
+    }
+    if (wasInVaultRef.current && currentPath) {
+      wasInVaultRef.current = false;
+      const parent = currentPath.replace(/\\/g, "/").split("/").slice(0, -1).join("\\");
+      if (parent) {
+        setCurrentPath(parent);
+        invoke<ListEntry[]>("list_directory", {
+          path: parent, contextId: activeContextIdRef.current ?? 0,
+        }).then(setListEntries).catch(() => {});
+      }
+    }
+  }, [currentPathIsUnlockedVault, currentPath, setCurrentPath, setListEntries]);
 
   const addToast = useToastStore((s) => s.addToast);
   const t = useTranslation();
@@ -651,7 +700,14 @@ export function App() {
               })()}
             </Suspense>
           ) : viewMode === "explorer" ? (
-            dualPaneActive ? (
+            // Inside an UNLOCKED vault, render the dedicated VaultView instead
+            // of the file list: the folder's real contents are rows in an
+            // encrypted index, not files on disk, and FileList would show the
+            // opaque `.dat` blobs. Checked before dual-pane because a vault is
+            // a single-purpose view — splitting it across panes has no meaning.
+            currentPathIsUnlockedVault ? (
+              <VaultView vaultPath={currentPath} />
+            ) : dualPaneActive ? (
               <div className="flex flex-1 overflow-hidden">
                 <FileList paneIndex={0} />
                 <div className="w-[1px] bg-border-subtle shrink-0" />

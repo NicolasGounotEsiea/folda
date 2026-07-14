@@ -971,6 +971,15 @@ fn should_skip_dir(name: &str) -> bool {
 /// direct children are returned. With `recursive = true`, walks up to depth 8
 /// and skips heavy system / build folders. Capped at `MAX_FILES_PER_RUN`.
 fn list_target_files(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, String> {
+    // Automations never touch vault contents. A rule like "move every *.pdf to
+    // Archive" must not reach inside a vault and drag encrypted blobs out of
+    // it (which would strip them from their index and make them permanently
+    // unreadable). Rules may still act ON the vault folder itself — renaming or
+    // tagging it is harmless — but never on what's inside.
+    if crate::vault::format::path_is_in_vault(dir) {
+        return Ok(Vec::new());
+    }
+
     if !recursive {
         let read = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
         let mut out: Vec<PathBuf> = read
@@ -989,6 +998,10 @@ fn list_target_files(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, String
         .filter_entry(|e| {
             // Skip the root re-entry (it has no parent within the walk's scope)
             if e.depth() == 0 { return true; }
+            // Prune vault subtrees (see the note above).
+            if e.file_type().is_dir() && crate::vault::format::is_vault(e.path()) {
+                return false;
+            }
             let name = e.file_name().to_string_lossy();
             !should_skip_dir(&name)
         })
@@ -1304,6 +1317,13 @@ pub fn dispatch_event(
     db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
     app: &tauri::AppHandle,
 ) {
+    // Watcher-driven rules must not fire on vault contents. While a vault is
+    // unlocked, decrypted files come and go on disk; a "move every new PDF to
+    // Archive" rule would happily yank one out of the vault, stripping it from
+    // the encrypted index and making it unreadable forever.
+    if crate::vault::format::path_is_in_vault(path) {
+        return;
+    }
     let Some(trigger) = trigger_kind_from_action(action_str) else { return };
     let path_str = path.to_string_lossy().to_string();
 

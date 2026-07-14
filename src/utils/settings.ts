@@ -20,7 +20,13 @@ export interface AppSettings {
   claudeEnabled: boolean;
   aiProvider: "ollama" | "anthropic";
   claudeApiKey: string;
-  claudeModel: "claude-haiku-4-5-20251001" | "claude-sonnet-4-6" | "claude-opus-4-7";
+  /// Anthropic model id. MUST be a real, currently-served model id — a stale
+  /// value here is not a cosmetic bug: the API rejects it and the assistant is
+  /// simply broken for anyone who picked that option. (It happened: the two
+  /// non-default options used to be `claude-sonnet-4-6` and `claude-opus-4-7`,
+  /// neither of which exists, so only Haiku worked.) Cross-check against the
+  /// current model list before changing.
+  claudeModel: "claude-haiku-4-5-20251001" | "claude-sonnet-5" | "claude-opus-4-8";
   ollamaModel: string;
   ollamaUrl: string;
   contentIndexing: boolean;
@@ -48,6 +54,15 @@ export interface AppSettings {
   /// Explicit path to tesseract.exe. Empty = auto-detect (PATH, then the
   /// standard install locations). When set, it is the ONLY candidate probed.
   ocrTesseractPath: string;
+  // ── Encrypted vaults ──────────────────────────────────────────────────────
+  /// Seconds of inactivity after which an unlocked vault re-locks itself.
+  /// `0` = never auto-lock. Read by the Rust background sweeper on every tick,
+  /// so changing it takes effect without a restart.
+  vaultIdleLockSecs: number;
+  /// Lock every open vault when nxs closes. Default ON: leaving a vault
+  /// unlocked across sessions would defeat the point, and the decrypted temp
+  /// files would linger until the next launch's startup sweep.
+  vaultLockOnClose: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -83,6 +98,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ocrEnabled: false,
   ocrLanguages: "eng+fra",
   ocrTesseractPath: "",
+  vaultIdleLockSecs: 15 * 60,
+  vaultLockOnClose: true,
 };
 
 export interface AccentPreset {
@@ -155,6 +172,38 @@ export function serializeSettings(s: AppSettings): Record<string, string> {
   );
 }
 
+/**
+ * Map a persisted `claudeModel` value onto a model id that actually exists.
+ *
+ * Two earlier options (`claude-sonnet-4-6`, `claude-opus-4-7`) were never real
+ * model ids — the Anthropic API rejects them, so anyone who had picked Sonnet
+ * or Opus in Settings had a silently broken assistant. Their setting is still
+ * sitting in the `settings` table, so simply fixing the picker is not enough:
+ * we have to rewrite the stale value on load, or those users stay broken
+ * forever without ever touching the setting again.
+ *
+ * Unknown values fall back to `undefined` (→ the default) rather than being
+ * passed through, so a typo or a downgrade from a future version can never
+ * send a bogus model id to the API.
+ */
+function migrateClaudeModel(raw: string | undefined): AppSettings["claudeModel"] | undefined {
+  if (!raw) return undefined;
+  const DEAD_IDS: Record<string, AppSettings["claudeModel"]> = {
+    "claude-sonnet-4-6": "claude-sonnet-5",
+    "claude-opus-4-7": "claude-opus-4-8",
+  };
+  if (raw in DEAD_IDS) return DEAD_IDS[raw];
+
+  const LIVE_IDS: AppSettings["claudeModel"][] = [
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-5",
+    "claude-opus-4-8",
+  ];
+  return LIVE_IDS.includes(raw as AppSettings["claudeModel"])
+    ? (raw as AppSettings["claudeModel"])
+    : undefined;
+}
+
 /** Deserialize flat DB map back to AppSettings, falling back to defaults for missing keys. */
 export function deserializeSettings(raw: Record<string, string>): AppSettings {
   const d = DEFAULT_SETTINGS;
@@ -180,7 +229,7 @@ export function deserializeSettings(raw: Record<string, string>): AppSettings {
     claudeEnabled:      raw.claudeEnabled !== undefined ? raw.claudeEnabled === "true" : d.claudeEnabled,
     aiProvider:         (raw.aiProvider as AppSettings["aiProvider"]) ?? d.aiProvider,
     claudeApiKey:       raw.claudeApiKey ?? d.claudeApiKey,
-    claudeModel:        (raw.claudeModel as AppSettings["claudeModel"]) ?? d.claudeModel,
+    claudeModel:        migrateClaudeModel(raw.claudeModel) ?? d.claudeModel,
     ollamaModel:        raw.ollamaModel ?? d.ollamaModel,
     ollamaUrl:          raw.ollamaUrl ?? d.ollamaUrl,
     contentIndexing:    raw.contentIndexing !== undefined ? raw.contentIndexing === "true" : d.contentIndexing,
@@ -193,5 +242,12 @@ export function deserializeSettings(raw: Record<string, string>): AppSettings {
     ocrEnabled:         raw.ocrEnabled !== undefined ? raw.ocrEnabled === "true" : d.ocrEnabled,
     ocrLanguages:       raw.ocrLanguages ?? d.ocrLanguages,
     ocrTesseractPath:   raw.ocrTesseractPath ?? d.ocrTesseractPath,
+    // A corrupt/unparseable value must NEVER become "never auto-lock" — that
+    // would silently leave a user's vault open forever. Fall back to the
+    // 15-minute default instead. `0` typed deliberately is still honored.
+    vaultIdleLockSecs:  raw.vaultIdleLockSecs !== undefined && !Number.isNaN(Number(raw.vaultIdleLockSecs))
+      ? Math.max(0, Number(raw.vaultIdleLockSecs))
+      : d.vaultIdleLockSecs,
+    vaultLockOnClose:   raw.vaultLockOnClose !== undefined ? raw.vaultLockOnClose === "true" : d.vaultLockOnClose,
   };
 }

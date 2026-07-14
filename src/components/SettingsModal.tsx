@@ -945,6 +945,33 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                   </div>
                 )}
 
+                {/* ── Encrypted vaults ── */}
+                <div className="mt-4 pt-4 border-t border-border-subtle flex flex-col gap-2">
+                  <p className="text-[11px] uppercase tracking-wider text-text-muted">{ti.vaultSettingsTitle}</p>
+                  <p className="text-[11px] text-text-muted leading-relaxed">{ti.vaultSettingsWarning}</p>
+
+                  <Row label={ti.vaultIdleLock}>
+                    <SegmentedControl
+                      value={settings.vaultIdleLockSecs}
+                      options={[
+                        { value: 300  as const, label: "5 min"  },
+                        { value: 900  as const, label: "15 min" },
+                        { value: 1800 as const, label: "30 min" },
+                        { value: 3600 as const, label: "1 h"    },
+                        { value: 0    as const, label: ti.vaultIdleNever },
+                      ]}
+                      onChange={(v) => patch({ vaultIdleLockSecs: v })}
+                    />
+                  </Row>
+
+                  <Row label={ti.vaultLockOnClose}>
+                    <Toggle
+                      checked={settings.vaultLockOnClose}
+                      onChange={(v) => patch({ vaultLockOnClose: v })}
+                    />
+                  </Row>
+                </div>
+
                 <div className="pt-4 flex items-center justify-between">
                   <div>
                     <p className="text-[12px] text-text-primary">{t.activity.purge}</p>
@@ -1055,8 +1082,8 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                             value={settings.claudeModel}
                             options={[
                               { value: "claude-haiku-4-5-20251001" as const, label: "Haiku" },
-                              { value: "claude-sonnet-4-6" as const,         label: "Sonnet" },
-                              { value: "claude-opus-4-7" as const,           label: "Opus" },
+                              { value: "claude-sonnet-5" as const,          label: "Sonnet" },
+                              { value: "claude-opus-4-8" as const,          label: "Opus" },
                             ]}
                             onChange={(v) => patch({ claudeModel: v })}
                           />

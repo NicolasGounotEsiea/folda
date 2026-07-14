@@ -34,10 +34,20 @@ snow = "0.9"
 # SHA-256 used to derive a 32-byte PSK from the share password so Noise gets
 # the fixed-length key it expects. Tiny pure-Rust crate.
 sha2 = "0.10"
-# Cryptographically secure RNG for the share-session password. Replaces the
-# previous xorshift64 + nanos-timestamp seed which was trivially brute-forceable
-# given the session start time. OS-level entropy, no_std-compatible.
+# Cryptographically secure RNG for the share-session password and for vault
+# master keys / salts / nonces. OS-level entropy (BCryptGenRandom on Windows).
 getrandom = "0.2"
+# ── Encrypted vaults (src/vault/) ────────────────────────────────────────────
+# Argon2id: memory-hard password KDF. Turns a human password into a 32-byte
+# key-encryption key. m=64MB t=3 p=1 (OWASP 2024) makes GPU/ASIC brute force
+# of a stolen `.nxsvault` header prohibitively expensive.
+argon2 = "0.5"
+# XChaCha20-Poly1305 AEAD for vault content + index + key wrapping. Already
+# compiled in as a transitive dep of `snow` (same 0.10), so declaring it
+# directly costs ~nothing. XChaCha (24-byte nonce) over ChaCha (12-byte) so we
+# can use RANDOM nonces with negligible collision risk instead of maintaining a
+# counter across process restarts.
+chacha20poly1305 = "0.10"
 # HTTP client for downloading Tesseract language packs (commands/ocr.rs).
 # ALREADY compiled into the binary as tauri-plugin-updater's transitive dep
 # (same 0.13, same rustls flavor) — declaring it directly adds ~zero build

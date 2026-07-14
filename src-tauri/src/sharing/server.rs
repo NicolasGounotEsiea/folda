@@ -378,6 +378,17 @@ where
 }
 
 fn path_allowed(path: &str, roots: &[String]) -> bool {
+    // Vaults are NEVER shared, in V1. Every guest-facing handler (list, read,
+    // write, delete, rename, create) funnels through this one predicate, so a
+    // single check here closes all of them at once.
+    //
+    // Why not share them: the guest would receive either opaque blobs it cannot
+    // decrypt (useless) or decrypted plaintext over the wire (a second copy of
+    // the user's most sensitive data, on a peer's disk, outside the vault's
+    // protection). Neither is something to ship by accident. See CLAUDE.md §43.
+    if crate::vault::format::path_is_in_vault(std::path::Path::new(path)) {
+        return false;
+    }
     let norm = path.replace('\\', "/");
     roots.iter().any(|r| norm.starts_with(&r.replace('\\', "/")))
 }
@@ -612,7 +623,7 @@ fn list_dir_sync(path: &str) -> Result<Vec<ListEntry>, String> {
                 Some(ListEntry {
                     is_dir: true, name, path: entry_path,
                     size: 0, created_at: 0, modified_at, extension: String::new(),
-                    id: None, tags: vec![],
+                    id: None, tags: vec![], is_vault: false,
                 })
             } else {
                 let extension = std::path::Path::new(&entry_path)
@@ -623,7 +634,7 @@ fn list_dir_sync(path: &str) -> Result<Vec<ListEntry>, String> {
                 Some(ListEntry {
                     is_dir: false, name, path: entry_path,
                     size: meta.len() as i64, created_at: 0, modified_at, extension,
-                    id: None, tags: vec![],
+                    id: None, tags: vec![], is_vault: false,
                 })
             }
         })
