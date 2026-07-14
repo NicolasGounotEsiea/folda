@@ -72,7 +72,15 @@ jobs:
       - run: npm ci
 
       - name: Build Tauri app
+        # `createUpdaterArtifacts` is on, so Tauri signs the bundles and REQUIRES
+        # the private key — the same secrets the release workflow passes. Without
+        # them the build fails at the signing step ("no private key"). Only runs
+        # on direct pushes to main (see the job `if`), never on fork PRs, so the
+        # secrets are always available here.
         run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
