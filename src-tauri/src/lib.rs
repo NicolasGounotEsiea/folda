@@ -284,6 +284,7 @@ pub fn run() {
             commands::vault::vault_change_password,
             commands::vault::vault_reset_password,
             commands::vault::vault_list,
+            commands::vault::vault_extract_file,
             commands::vault::vault_read_file,
             commands::vault::vault_write_file,
             commands::vault::vault_temp_target,
@@ -291,6 +292,7 @@ pub fn run() {
             commands::vault::vault_add_file,
             commands::vault::vault_delete_file,
             commands::vault::vault_delete_folder,
+            commands::vault::vault_rename,
             commands::vault::vault_encrypt_existing,
         ])
         .run(tauri::generate_context!())

@@ -2,6 +2,17 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.22] - 2026-07-15
+
+### Added
+
+- **Vaults: rename, extract, and streaming for large files.** Inside an unlocked vault you can now **rename** files and whole sub-folders — instant, because it only re-keys the encrypted index (no file is re-encrypted, so renaming a folder holding gigabytes is immediate) — and **extract** a decrypted copy of any file back out to a folder of your choice (the original stays in the vault, and an existing file at the destination is never overwritten). Encryption now also **streams**: adding or opening a multi-gigabyte file processes it one 1 MiB chunk at a time instead of loading the whole thing into memory. A new on-disk blob format carries this — each chunk is sealed independently, with a per-chunk index and a final-flag inside the authenticated data, so re-ordering or truncation is caught rather than silently returning scrambled or short bytes. **Vaults created by v0.1.21 (whole-file blobs) are detected and still open unchanged.** See CLAUDE.md §43.
+
+### Internal
+
+- 8 new unit tests: 4 for vault rename (`rename_in_index` — file/folder re-key, collision, missing source) and 4 for the streaming blob format (chunk-boundary round-trips, reader→writer streaming, v1 backward-compatibility, and tamper/truncation detection).
+- **CI: the `build` job now passes the Tauri signing secrets** it was missing (`TAURI_SIGNING_PRIVATE_KEY{,_PASSWORD}`). The production-build smoke test on `main` was failing at the signing step because only the release workflow set them; it now signs the bundles the same way and passes.
+
 ## [0.1.21] - 2026-07-14
 
 ### Added

@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { clsx } from "clsx";
-import { ChevronRight, FilePlus, Folder, Loader2, Lock, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { ChevronRight, Download, FilePlus, Folder, Loader2, Lock, Pencil, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "./EmptyState";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { FileIcon } from "./FileList";
@@ -30,7 +30,12 @@ import { useTranslation } from "../utils/i18n";
  * the folder tree is reconstructed here from `vault_list(sub_path)` while the
  * blobs stay flat on disk. `subPath` tracks the folder currently being viewed.
  *
- * Deliberately NOT supported yet: renaming inside a vault, drag-and-drop out.
+ * Also supported: inline rename (files + whole folders, via `vault_rename` — just
+ * re-keys the index, no blob touched) and "Extract to…" (decrypt a copy OUT to a
+ * chosen folder via `vault_extract_file`, keeping the original in the vault).
+ *
+ * Deliberately NOT supported yet: native OS drag-and-drop OUT of the vault (would
+ * need the tauri-plugin-drag JS binding; "Extract to…" covers the same need).
  */
 
 interface VaultEntry {
@@ -73,6 +78,12 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
   const [busy, setBusy] = useState(false);
   const [deleteFileTarget, setDeleteFileTarget] = useState<string | null>(null);
   const [deleteFolderTarget, setDeleteFolderTarget] = useState<string | null>(null);
+  // Inline rename: which leaf is being edited (+ whether it's a folder, so a file
+  // and folder sharing a name at the same level can't collide in the UI).
+  const [renaming, setRenaming] = useState<{ name: string; isDir: boolean } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  // Guards against commit firing twice (Enter then blur).
+  const renameDoneRef = useRef(false);
 
   const folderName = vaultPath.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? vaultPath;
 
@@ -177,6 +188,63 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
     // App routes back to the normal file list once the vault is no longer
     // in the unlocked set.
   };
+
+  /** Decrypt a file OUT to a user-chosen folder (keeps it in the vault too). */
+  const handleExtract = async (leaf: string) => {
+    const dest = await openDialog({ directory: true, multiple: false });
+    if (!dest || Array.isArray(dest)) return;
+    setBusy(true);
+    try {
+      await invoke("vault_extract_file", { path: vaultPath, name: keyFor(leaf), destDir: dest });
+      addToast({ type: "success", message: t.vaultExtractedOne.replace("{name}", leaf) });
+    } catch (e) {
+      addToast({ type: "error", message: t.vaultExtractFailed, detail: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startRename = (e: VaultEntry) => {
+    setRenaming({ name: e.name, isDir: e.is_dir });
+    setRenameValue(e.name);
+    renameDoneRef.current = false;
+  };
+  const cancelRename = () => setRenaming(null);
+  const commitRename = async () => {
+    if (!renaming || renameDoneRef.current) return;
+    renameDoneRef.current = true;
+    const next = renameValue.trim();
+    const { name: oldName, isDir } = renaming;
+    setRenaming(null);
+    if (!next || next === oldName) return;
+    try {
+      await invoke("vault_rename", {
+        path: vaultPath, subPath, oldName, newName: next, isDir,
+      });
+      await load();
+    } catch (err) {
+      addToast({ type: "error", message: t.vaultRenameFailed, detail: String(err) });
+    }
+  };
+
+  const nameCell = (e: VaultEntry) =>
+    renaming?.name === e.name && renaming.isDir === e.is_dir ? (
+      <input
+        autoFocus
+        value={renameValue}
+        onChange={(ev) => setRenameValue(ev.target.value)}
+        onClick={(ev) => ev.stopPropagation()}
+        onDoubleClick={(ev) => ev.stopPropagation()}
+        onKeyDown={(ev) => {
+          if (ev.key === "Enter") { ev.preventDefault(); commitRename(); }
+          else if (ev.key === "Escape") { ev.preventDefault(); cancelRename(); }
+        }}
+        onBlur={commitRename}
+        className="text-[12px] bg-surface-3 text-text-primary px-1 py-0.5 rounded outline-none ring-1 ring-accent min-w-0 w-full"
+      />
+    ) : (
+      <span className="text-[12px] text-text-primary truncate">{e.name}</span>
+    );
 
   const segments = subPath ? subPath.split("/") : [];
 
@@ -285,40 +353,65 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
                 key={`d:${e.name}`}
                 onDoubleClick={() => setSubPath(keyFor(e.name))}
                 className="group grid items-center gap-x-3 px-4 h-9 shrink-0 cursor-pointer select-none hover:bg-surface-2 transition-colors"
-                style={{ gridTemplateColumns: "15px 1fr 80px 28px" }}
+                style={{ gridTemplateColumns: "15px 1fr 80px auto" }}
               >
                 <Folder size={14} className="text-accent" />
-                <span className="text-[12px] text-text-primary truncate">{e.name}</span>
+                {nameCell(e)}
                 <span className="text-[11px] text-text-muted text-right tabular-nums">
                   {t.vaultItems.replace("{n}", String(e.size))}
                 </span>
-                <button
-                  onClick={(ev) => { ev.stopPropagation(); setDeleteFolderTarget(e.name); }}
-                  title={t.delete}
-                  className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-red-400 hover:bg-surface-3 transition-all"
-                >
-                  <Trash2 size={11} />
-                </button>
+                <div className="flex items-center gap-0.5">
+                  <button
+                    onClick={(ev) => { ev.stopPropagation(); startRename(e); }}
+                    title={t.rename}
+                    className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-all"
+                  >
+                    <Pencil size={11} />
+                  </button>
+                  <button
+                    onClick={(ev) => { ev.stopPropagation(); setDeleteFolderTarget(e.name); }}
+                    title={t.delete}
+                    className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-red-400 hover:bg-surface-3 transition-all"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
               </div>
             ) : (
               <div
                 key={`f:${e.name}`}
                 onDoubleClick={() => handleOpen(e.name)}
                 className="group grid items-center gap-x-3 px-4 h-9 shrink-0 cursor-pointer select-none hover:bg-surface-2 transition-colors"
-                style={{ gridTemplateColumns: "15px 1fr 80px 28px" }}
+                style={{ gridTemplateColumns: "15px 1fr 80px auto" }}
               >
                 <FileIcon entry={iconEntryFor(e.name)} />
-                <span className="text-[12px] text-text-primary truncate">{e.name}</span>
+                {nameCell(e)}
                 <span className="text-[11px] text-text-muted text-right tabular-nums">
                   {formatSize(e.size)}
                 </span>
-                <button
-                  onClick={(ev) => { ev.stopPropagation(); setDeleteFileTarget(e.name); }}
-                  title={t.delete}
-                  className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-red-400 hover:bg-surface-3 transition-all"
-                >
-                  <Trash2 size={11} />
-                </button>
+                <div className="flex items-center gap-0.5">
+                  <button
+                    onClick={(ev) => { ev.stopPropagation(); handleExtract(e.name); }}
+                    title={t.vaultExtract}
+                    className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-all"
+                  >
+                    <Download size={11} />
+                  </button>
+                  <button
+                    onClick={(ev) => { ev.stopPropagation(); startRename(e); }}
+                    title={t.rename}
+                    className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-all"
+                  >
+                    <Pencil size={11} />
+                  </button>
+                  <button
+                    onClick={(ev) => { ev.stopPropagation(); setDeleteFileTarget(e.name); }}
+                    title={t.delete}
+                    className="opacity-0 group-hover:opacity-100 w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-red-400 hover:bg-surface-3 transition-all"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
               </div>
             ),
           )

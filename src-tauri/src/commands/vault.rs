@@ -314,6 +314,64 @@ pub fn vault_list(path: String, sub_path: Option<String>) -> Result<Vec<VaultEnt
     })
 }
 
+/// A destination path under `dir` for `leaf` that does not overwrite an existing
+/// file — appends " (1)", " (2)", … like the file manager does. Extraction must
+/// never clobber a file the user already has outside the vault.
+fn unique_extract_path(dir: &Path, leaf: &str) -> PathBuf {
+    let candidate = dir.join(leaf);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let p = Path::new(leaf);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(leaf);
+    let ext = p.extension().and_then(|e| e.to_str());
+    let mut i = 1u32;
+    loop {
+        let name = match ext {
+            Some(e) => format!("{} ({}).{}", stem, i, e),
+            None => format!("{} ({})", stem, i),
+        };
+        let c = dir.join(name);
+        if !c.exists() {
+            return c;
+        }
+        i += 1;
+    }
+}
+
+/// Extract (copy OUT) a vault file to a plaintext file in `dest_dir`. The file
+/// stays in the vault — this is a decrypt-and-copy, the user's deliberate way to
+/// get a copy out. Returns the path written. Never overwrites an existing file.
+#[tauri::command]
+pub fn vault_extract_file(path: String, name: String, dest_dir: String) -> Result<String, String> {
+    let dir = PathBuf::from(&path);
+    let blob_id = require_unlocked(&dir, |_key, index| {
+        index
+            .files
+            .get(&name)
+            .cloned()
+            .ok_or_else(|| format!("'{}' is not in this vault", name))
+    })?;
+
+    let leaf = name.rsplit('/').next().unwrap_or(&name);
+    let dest = unique_extract_path(&PathBuf::from(&dest_dir), leaf);
+
+    // Stream-decrypt straight into the destination (key never leaves the lock),
+    // so extracting a large file doesn't buffer it whole in RAM. On failure,
+    // remove the partial file so we never leave half-plaintext behind.
+    let mut out = std::fs::File::create(&dest)
+        .map_err(|e| format!("Cannot write to the destination: {}", e))?;
+    let decrypt = require_unlocked(&dir, |key, _index| {
+        vault::read_blob_to_writer(&dir, key, &blob_id, &mut out).map_err(ui_err)
+    });
+    if let Err(e) = decrypt {
+        drop(out);
+        let _ = std::fs::remove_file(&dest);
+        return Err(e);
+    }
+    Ok(dest.to_string_lossy().to_string())
+}
+
 /// Decrypt a file to a temp path so an existing viewer can open it.
 ///
 /// The temp file is tracked and deleted when the vault locks; a startup sweep
@@ -329,11 +387,6 @@ pub fn vault_read_file(path: String, name: String) -> Result<String, String> {
             .get(&name)
             .cloned()
             .ok_or_else(|| format!("'{}' is not in this vault", name))
-    })?;
-
-    // Decrypt inside the registry lock so the key never escapes it.
-    let plaintext = require_unlocked(&dir, |key, _index| {
-        vault::read_blob(&dir, key, &blob_id).map_err(ui_err)
     })?;
 
     let tmp_dir = state::temp_dir().ok_or("Cannot resolve the temp folder")?;
@@ -354,8 +407,21 @@ pub fn vault_read_file(path: String, name: String) -> Result<String, String> {
         format!("{}.{}", format::generate_blob_id(), ext)
     };
     let tmp_path = tmp_dir.join(tmp_name);
-    std::fs::write(&tmp_path, &plaintext)
+
+    // Stream-decrypt straight into the temp file inside the lock (key never
+    // escapes it), so a multi-GB vault file isn't buffered whole in RAM. If the
+    // decrypt fails, drop the half-written temp so no partial plaintext lingers.
+    let mut tmp_file = std::fs::File::create(&tmp_path)
         .map_err(|e| format!("Cannot write the decrypted file: {}", e))?;
+    let decrypt = require_unlocked(&dir, |key, _index| {
+        vault::read_blob_to_writer(&dir, key, &blob_id, &mut tmp_file).map_err(ui_err)
+    });
+    if let Err(e) = decrypt {
+        drop(tmp_file);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
     // Track the temp WITH its vault entry name — that mapping is what lets a
     // later save be re-encrypted back into the vault instead of being written
     // to the temp copy and then deleted on lock (silently losing the user's work).
@@ -413,51 +479,52 @@ pub fn vault_write_back(temp_path: String, content: Vec<u8>) -> Result<(), Strin
         .map_err(|e| format!("Saved to the vault, but the working copy could not be refreshed: {}", e))
 }
 
-/// Encrypt bytes into the vault under `name`, replacing any existing entry.
+/// Point `name` at `new_blob` in the index and persist. On a failed save, roll the
+/// in-memory index back and delete the orphaned new blob (so RAM and disk stay in
+/// agreement and nothing dangles); on success, delete the blob the name used to
+/// point at. Shared by every "write a file into the vault" path.
+fn commit_blob(dir: &Path, name: &str, new_blob: String) -> Result<(), String> {
+    // Swap the index entry only AFTER the new blob is safely on disk.
+    let old_blob =
+        require_unlocked(dir, |_key, index| Ok(index.files.insert(name.to_string(), new_blob.clone())))?;
+
+    let save = require_unlocked(dir, |key, index| vault::save_index(dir, key, index).map_err(ui_err));
+    if let Err(e) = save {
+        let _ = require_unlocked(dir, |_key, index| {
+            match &old_blob {
+                Some(prev) => index.files.insert(name.to_string(), prev.clone()),
+                None => index.files.remove(name),
+            };
+            Ok(())
+        });
+        let _ = vault::delete_blob(dir, &new_blob);
+        return Err(e);
+    }
+
+    if let Some(prev) = old_blob {
+        let _ = vault::delete_blob(dir, &prev);
+    }
+    Ok(())
+}
+
+/// Encrypt in-memory bytes into the vault under `name`, replacing any existing
+/// entry. Used for content already in RAM — chiefly an edited text file coming
+/// back through write-back.
 #[tauri::command]
 pub fn vault_write_file(path: String, name: String, content: Vec<u8>) -> Result<(), String> {
     let dir = PathBuf::from(&path);
     if name.trim().is_empty() {
         return Err("File name cannot be empty".to_string());
     }
-
-    let (new_blob, old_blob) = require_unlocked(&dir, |key, index| {
-        let new_blob = vault::write_blob(&dir, key, &content).map_err(ui_err)?;
-        // Swap the index entry only AFTER the new blob is safely on disk, so a
-        // failed write can never orphan the previous version.
-        let old_blob = index.files.insert(name.clone(), new_blob.clone());
-        Ok((new_blob, old_blob))
-    })?;
-
-    // Persist the index. If this fails, roll the in-memory index back and delete
-    // the orphan blob — otherwise the vault would hold a blob nothing points to
-    // and, worse, the in-RAM index would disagree with the disk.
-    let save = require_unlocked(&dir, |key, index| {
-        vault::save_index(&dir, key, index).map_err(ui_err)
-    });
-    if let Err(e) = save {
-        let _ = require_unlocked(&dir, |_key, index| {
-            match &old_blob {
-                Some(prev) => index.files.insert(name.clone(), prev.clone()),
-                None => index.files.remove(&name),
-            };
-            Ok(())
-        });
-        let _ = vault::delete_blob(&dir, &new_blob);
-        return Err(e);
-    }
-
-    // The old version is unreachable now — delete its blob.
-    if let Some(prev) = old_blob {
-        let _ = vault::delete_blob(&dir, &prev);
-    }
-    Ok(())
+    let new_blob =
+        require_unlocked(&dir, |key, _index| vault::write_blob(&dir, key, &content).map_err(ui_err))?;
+    commit_blob(&dir, &name, new_blob)
 }
 
-/// Move a plaintext file from disk INTO the vault: encrypt it, then delete the
-/// original. The original is removed only after the encrypted copy is committed.
-/// `dest_dir` is the sub-folder (inside the vault) to place it in — `None`/empty
-/// for the vault root.
+/// Move a plaintext file from disk INTO the vault: STREAM-encrypt it (chunked, so
+/// a multi-GB file never lands wholly in RAM), then delete the original — but only
+/// after the encrypted copy is committed, so a failure anywhere leaves the source
+/// untouched. `dest_dir` is the sub-folder to place it in (`None`/empty = root).
 #[tauri::command]
 pub fn vault_add_file(path: String, src: String, dest_dir: Option<String>) -> Result<(), String> {
     let src_path = PathBuf::from(&src);
@@ -468,9 +535,13 @@ pub fn vault_add_file(path: String, src: String, dest_dir: Option<String>) -> Re
         .to_string();
     let dest = norm_sub(&dest_dir.unwrap_or_default());
     let name = if dest.is_empty() { base.clone() } else { format!("{}/{}", dest, base) };
-    let content = std::fs::read(&src_path).map_err(|e| format!("Cannot read '{}': {}", base, e))?;
 
-    vault_write_file(path, name, content)?;
+    let dir = PathBuf::from(&path);
+    let new_blob = require_unlocked(&dir, |key, _index| {
+        let f = std::fs::File::open(&src_path).map_err(|e| format!("Cannot read '{}': {}", base, e))?;
+        vault::write_blob_from_reader(&dir, key, f).map_err(ui_err)
+    })?;
+    commit_blob(&dir, &name, new_blob)?;
 
     // Only now is it safe to remove the plaintext original.
     std::fs::remove_file(&src_path)
@@ -533,6 +604,102 @@ pub fn vault_delete_folder(path: String, sub_path: String) -> Result<(), String>
         let _ = vault::delete_blob(&dir, &b);
     }
     Ok(())
+}
+
+/// Re-key the index for a rename — pure (no IO), so it's unit-testable. Validates
+/// EVERYTHING before mutating, so on an `Err` the map is untouched. Renaming a
+/// file moves one key→blob mapping; renaming a folder re-prefixes every key under
+/// it. No blob is ever read, written or moved: the folder tree is virtual.
+fn rename_in_index(
+    files: &mut std::collections::BTreeMap<String, String>,
+    old_key: &str,
+    new_key: &str,
+    new_leaf: &str,
+    is_dir: bool,
+) -> Result<(), String> {
+    if is_dir {
+        let old_prefix = format!("{}/", old_key);
+        let new_prefix = format!("{}/", new_key);
+        // Collision: a file OR folder already occupies the destination name.
+        if files.keys().any(|k| k == new_key || k.starts_with(&new_prefix)) {
+            return Err(format!("\"{}\" already exists", new_leaf));
+        }
+        let to_move: Vec<(String, String)> = files
+            .iter()
+            .filter(|(k, _)| k.starts_with(&old_prefix))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if to_move.is_empty() {
+            return Err("Folder not found".to_string());
+        }
+        // All checks passed — now mutate.
+        for (k, _) in &to_move {
+            files.remove(k);
+        }
+        for (k, v) in to_move {
+            let suffix = &k[old_prefix.len()..];
+            files.insert(format!("{}{}", new_prefix, suffix), v);
+        }
+    } else {
+        // Collision with a file of that name OR a folder of that name.
+        let folder_prefix = format!("{}/", new_key);
+        if files.contains_key(new_key) || files.keys().any(|k| k.starts_with(&folder_prefix)) {
+            return Err(format!("\"{}\" already exists", new_leaf));
+        }
+        if !files.contains_key(old_key) {
+            return Err("File not found".to_string());
+        }
+        let blob = files.remove(old_key).unwrap();
+        files.insert(new_key.to_string(), blob);
+    }
+    Ok(())
+}
+
+/// Rename a file or a whole sub-folder inside an unlocked vault. `old_name` /
+/// `new_name` are the LEAF names at `sub_path`; the full keys are built here so
+/// the frontend can't hand us a traversal. No blob is touched — only the
+/// encrypted index is re-keyed and re-saved (with in-memory rollback on a failed
+/// save, so RAM never diverges from disk).
+#[tauri::command]
+pub fn vault_rename(
+    path: String,
+    sub_path: Option<String>,
+    old_name: String,
+    new_name: String,
+    is_dir: bool,
+) -> Result<(), String> {
+    let dir = PathBuf::from(&path);
+    let new_leaf = new_name.trim();
+    if new_leaf.is_empty() {
+        return Err("Name cannot be empty".to_string());
+    }
+    if new_leaf.contains('/') || new_leaf.contains('\\') || new_leaf == "." || new_leaf == ".." {
+        return Err("Name cannot contain a path separator".to_string());
+    }
+    if new_leaf == old_name {
+        return Ok(()); // no-op
+    }
+
+    let sub = norm_sub(&sub_path.unwrap_or_default());
+    let keyed = |leaf: &str| {
+        if sub.is_empty() {
+            leaf.to_string()
+        } else {
+            format!("{}/{}", sub, leaf)
+        }
+    };
+    let old_key = keyed(&old_name);
+    let new_key = keyed(new_leaf);
+
+    require_unlocked(&dir, |key, index| {
+        let snapshot = index.files.clone();
+        rename_in_index(&mut index.files, &old_key, &new_key, new_leaf, is_dir)?;
+        if let Err(e) = vault::save_index(&dir, key, index) {
+            index.files = snapshot; // keep RAM consistent with disk on failure
+            return Err(ui_err(e));
+        }
+        Ok(())
+    })
 }
 
 /// Recursively collect every plaintext file under `cur`, paired with its
@@ -674,9 +841,58 @@ pub fn idle_lock_secs(state: &AppState) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_plaintext_files, immediate_children, like_escape, norm_sub};
-    use std::collections::HashSet;
+    use super::{collect_plaintext_files, immediate_children, like_escape, norm_sub, rename_in_index};
+    use std::collections::{BTreeMap, HashSet};
     use std::path::PathBuf;
+
+    fn index_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn rename_file_moves_the_key_and_keeps_the_blob() {
+        let mut files = index_of(&[("a.txt", "blob1"), ("photos/x.jpg", "blob2")]);
+        rename_in_index(&mut files, "a.txt", "b.txt", "b.txt", false).unwrap();
+        assert_eq!(files.get("b.txt"), Some(&"blob1".to_string()));
+        assert!(!files.contains_key("a.txt"));
+        // Same blob id — no re-encryption happened.
+        assert_eq!(files.get("photos/x.jpg"), Some(&"blob2".to_string()));
+    }
+
+    #[test]
+    fn rename_file_rejects_a_name_collision() {
+        let mut files = index_of(&[("a.txt", "b1"), ("b.txt", "b2")]);
+        let err = rename_in_index(&mut files, "a.txt", "b.txt", "b.txt", false).unwrap_err();
+        assert!(err.contains("already exists"));
+        // Untouched on error.
+        assert_eq!(files.get("a.txt"), Some(&"b1".to_string()));
+        assert_eq!(files.get("b.txt"), Some(&"b2".to_string()));
+    }
+
+    #[test]
+    fn rename_folder_reprefixes_every_descendant() {
+        let mut files = index_of(&[
+            ("photos/a.jpg", "b1"),
+            ("photos/2024/x.jpg", "b2"),
+            ("docs/cv.pdf", "b3"),
+        ]);
+        rename_in_index(&mut files, "photos", "pics", "pics", true).unwrap();
+        assert_eq!(files.get("pics/a.jpg"), Some(&"b1".to_string()));
+        assert_eq!(files.get("pics/2024/x.jpg"), Some(&"b2".to_string()));
+        assert!(files.keys().all(|k| !k.starts_with("photos/")));
+        // A sibling folder is untouched (prefix match is separator-terminated).
+        assert_eq!(files.get("docs/cv.pdf"), Some(&"b3".to_string()));
+    }
+
+    #[test]
+    fn rename_folder_rejects_collision_and_missing() {
+        // Destination folder already exists.
+        let mut files = index_of(&[("photos/a.jpg", "b1"), ("pics/b.jpg", "b2")]);
+        assert!(rename_in_index(&mut files, "photos", "pics", "pics", true).is_err());
+        // Source folder doesn't exist.
+        let mut files2 = index_of(&[("photos/a.jpg", "b1")]);
+        assert!(rename_in_index(&mut files2, "nope", "x", "x", true).is_err());
+    }
 
     #[test]
     fn like_escape_neutralizes_wildcards_and_escape_char() {

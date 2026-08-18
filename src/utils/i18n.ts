@@ -95,6 +95,10 @@ type AppStrings = {
   vaultAddFailed: string;
   vaultOpenFailed: string;
   vaultDeleteFailed: string;
+  vaultRenameFailed: string;
+  vaultExtractFailed: string;            // extracting a file out of the vault
+  vaultExtractedOne: string;             // {name} extracted
+  vaultExtract: string;                  // context action / button label
   vaultDeleteConfirm: string;            // {name}
   vaultDeleteConfirmDetail: string;
   vaultDeleteFolderConfirm: string;      // {name} — deleting a whole sub-folder
@@ -516,6 +520,10 @@ const translations: Record<string, AppStrings> = {
     vaultAddFailed: "Could not add this file",
     vaultOpenFailed: "Could not open this file",
     vaultDeleteFailed: "Could not delete this file",
+    vaultRenameFailed: "Could not rename",
+    vaultExtractFailed: "Could not extract this file",
+    vaultExtractedOne: "Extracted \"{name}\"",
+    vaultExtract: "Extract to…",
     vaultDeleteConfirm: "Permanently delete \"{name}\" from the vault?",
     vaultDeleteConfirmDetail: "This cannot be undone — vault files don't go to the trash.",
     vaultDeleteFolderConfirm: "Permanently delete the folder \"{name}\" and everything inside it?",
@@ -921,6 +929,10 @@ const translations: Record<string, AppStrings> = {
     vaultAddFailed: "Impossible d'ajouter ce fichier",
     vaultOpenFailed: "Impossible d'ouvrir ce fichier",
     vaultDeleteFailed: "Impossible de supprimer ce fichier",
+    vaultRenameFailed: "Impossible de renommer",
+    vaultExtractFailed: "Impossible d'extraire ce fichier",
+    vaultExtractedOne: "« {name} » extrait",
+    vaultExtract: "Extraire vers…",
     vaultDeleteConfirm: "Supprimer définitivement « {name} » du coffre ?",
     vaultDeleteConfirmDetail: "Irréversible — les fichiers d'un coffre ne passent pas par la corbeille.",
     vaultDeleteFolderConfirm: "Supprimer définitivement le dossier « {name} » et tout son contenu ?",

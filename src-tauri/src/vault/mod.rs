@@ -33,11 +33,13 @@ pub mod crypto;
 pub mod format;
 pub mod state;
 
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use crypto::{
     aead_open, aead_seal, generate_master_key, generate_salt, unwrap_master_key, wrap_master_key,
-    KdfParams, KEY_LEN,
+    CryptoError, KdfParams, KEY_LEN,
 };
 use format::{
     hex_decode, hex_encode, is_vault, KeySlot, VaultError, VaultHeader, VaultIndex, FORMAT_VERSION,
@@ -293,25 +295,191 @@ pub fn reset_password_with_recovery(
     header.save(dir)
 }
 
-/// Encrypt `plaintext` and store it as a new blob. Returns the blob id, which
-/// the caller records in the index against the real file name.
-pub fn write_blob(dir: &Path, key: &VaultKey, plaintext: &[u8]) -> Result<String, VaultError> {
+// ── Blob format ──────────────────────────────────────────────────────────────
+//
+// A blob holds one file's encrypted bytes. Two formats coexist:
+//
+//   v1 (legacy): the WHOLE file as a single `aead_seal` = `nonce||ct||tag`. No
+//     header. This is what the first vault release wrote. Reading it needs the
+//     whole ciphertext in memory — fine for the small files that exist in v1
+//     vaults; those get rewritten as v2 on the next edit.
+//
+//   v2 (streaming): a `MAGIC` header, then a sequence of length-prefixed
+//     records, each an independent `aead_seal` of `[u32 chunk_index][u8 is_final]
+//     [<=CHUNK plaintext]`. Encrypting and decrypting touch only one chunk at a
+//     time, so a multi-GB file costs a couple of MB of RAM instead of 2× its
+//     size. The per-chunk index defends against re-ordering/duplication and the
+//     `is_final` flag against truncation — both caught as `Tampered`/`Corrupt`
+//     rather than silently returning short or scrambled data.
+//
+// Reads auto-detect: a leading `MAGIC` ⇒ v2, anything else ⇒ v1. `MAGIC` is 6
+// bytes; a v1 blob starts with a random 24-byte nonce, so a false "looks like
+// v2" is 2^-48 and, even then, fails closed (a parse/AEAD error, never garbage).
+
+/// Marks a v2 (streaming) blob. Chosen to be unlikely in a random nonce prefix.
+const BLOB_MAGIC: &[u8; 6] = b"NXSV2\n";
+/// Plaintext bytes per chunk. 1 MiB balances per-chunk overhead (~45 bytes)
+/// against memory use.
+const BLOB_CHUNK: usize = 1024 * 1024;
+/// Reject a record whose length prefix exceeds this — a corrupt or hostile blob
+/// must not make us allocate an arbitrary buffer. A full chunk record is at most
+/// `CHUNK + nonce(24) + header(5) + tag(16)`; leave generous slack.
+const BLOB_MAX_RECORD: usize = BLOB_CHUNK + 1024;
+
+/// Read into `buf` until it's full or EOF; returns the number of bytes read.
+/// (`Read::read` may return short reads even when not at EOF, e.g. on a pipe.)
+fn fill(reader: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut total = 0;
+    while total < buf.len() {
+        match reader.read(&mut buf[total..])? {
+            0 => break,
+            n => total += n,
+        }
+    }
+    Ok(total)
+}
+
+fn write_record(
+    f: &mut impl Write,
+    key: &VaultKey,
+    idx: u32,
+    is_final: bool,
+    data: &[u8],
+) -> Result<(), VaultError> {
+    let mut pt = Vec::with_capacity(5 + data.len());
+    pt.extend_from_slice(&idx.to_be_bytes());
+    pt.push(u8::from(is_final));
+    pt.extend_from_slice(data);
+    let sealed = aead_seal(key.as_bytes(), &pt);
+    let len = u32::try_from(sealed.len())
+        .map_err(|_| VaultError::Corrupt("blob record too large".into()))?;
+    f.write_all(&len.to_be_bytes()).map_err(io_err)?;
+    f.write_all(&sealed).map_err(io_err)?;
+    Ok(())
+}
+
+fn io_err(e: std::io::Error) -> VaultError {
+    VaultError::Io(e.to_string())
+}
+
+/// Stream-encrypt everything `reader` yields into a NEW v2 blob. Returns the
+/// blob id. Never holds more than ~2 chunks in memory regardless of file size.
+pub fn write_blob_from_reader<R: Read>(
+    dir: &Path,
+    key: &VaultKey,
+    mut reader: R,
+) -> Result<String, VaultError> {
     let blob_id = format::generate_blob_id();
-    let sealed = aead_seal(key.as_bytes(), plaintext);
     let path = format::blob_path(dir, &blob_id);
-    std::fs::write(&path, &sealed)
-        .map_err(|e| VaultError::Io(format!("cannot write vault blob: {}", e)))?;
+    let mut f = File::create(&path).map_err(io_err)?;
+    f.write_all(BLOB_MAGIC).map_err(io_err)?;
+
+    let mut idx: u32 = 0;
+    let mut buf = vec![0u8; BLOB_CHUNK];
+    // Holds a full chunk read but not yet written, because we don't yet know if
+    // it's the last one (needed to set `is_final` correctly on exact multiples).
+    let mut pending: Option<Vec<u8>> = None;
+    loop {
+        let n = fill(&mut reader, &mut buf).map_err(io_err)?;
+        if n == 0 {
+            // EOF. Flush the pending chunk as final, or (empty file) an empty one.
+            let data = pending.take().unwrap_or_default();
+            write_record(&mut f, key, idx, true, &data)?;
+            break;
+        }
+        if let Some(prev) = pending.take() {
+            write_record(&mut f, key, idx, false, &prev)?;
+            idx = idx.checked_add(1).ok_or_else(|| VaultError::Corrupt("file too large".into()))?;
+        }
+        if n < BLOB_CHUNK {
+            // A short read means EOF was reached — this is the last chunk.
+            write_record(&mut f, key, idx, true, &buf[..n])?;
+            break;
+        }
+        pending = Some(buf[..n].to_vec());
+    }
+    f.flush().map_err(io_err)?;
     Ok(blob_id)
 }
 
-/// Read and decrypt a blob. A failed authentication tag here means the blob was
-/// corrupted or tampered with — never a wrong password (the key already opened
-/// the header).
-pub fn read_blob(dir: &Path, key: &VaultKey, blob_id: &str) -> Result<Vec<u8>, VaultError> {
+/// Decrypt a blob (v1 or v2) straight into `writer`, chunk by chunk for v2.
+pub fn read_blob_to_writer<W: Write>(
+    dir: &Path,
+    key: &VaultKey,
+    blob_id: &str,
+    writer: &mut W,
+) -> Result<(), VaultError> {
     let path = format::blob_path(dir, blob_id);
-    let sealed = std::fs::read(&path)
-        .map_err(|e| VaultError::Io(format!("cannot read vault blob: {}", e)))?;
-    aead_open(key.as_bytes(), &sealed).map_err(VaultError::Crypto)
+    let mut f = File::open(&path).map_err(io_err)?;
+
+    let mut magic = [0u8; BLOB_MAGIC.len()];
+    let got = fill(&mut f, &mut magic).map_err(io_err)?;
+
+    if got == BLOB_MAGIC.len() && &magic == BLOB_MAGIC {
+        // v2 streaming.
+        let mut expected: u32 = 0;
+        loop {
+            let mut lenbuf = [0u8; 4];
+            let ln = fill(&mut f, &mut lenbuf).map_err(io_err)?;
+            if ln == 0 {
+                // Clean EOF without ever seeing is_final = the tail was cut off.
+                return Err(VaultError::Corrupt("blob truncated (missing final chunk)".into()));
+            }
+            if ln < 4 {
+                return Err(VaultError::Corrupt("blob truncated in record length".into()));
+            }
+            let rec_len = u32::from_be_bytes(lenbuf) as usize;
+            if rec_len > BLOB_MAX_RECORD {
+                return Err(VaultError::Corrupt("blob record length out of range".into()));
+            }
+            let mut rec = vec![0u8; rec_len];
+            let rn = fill(&mut f, &mut rec).map_err(io_err)?;
+            if rn < rec_len {
+                return Err(VaultError::Corrupt("blob truncated inside a record".into()));
+            }
+            let pt = aead_open(key.as_bytes(), &rec).map_err(VaultError::Crypto)?;
+            if pt.len() < 5 {
+                return Err(VaultError::Corrupt("blob chunk header too short".into()));
+            }
+            let idx = u32::from_be_bytes([pt[0], pt[1], pt[2], pt[3]]);
+            let is_final = pt[4] != 0;
+            // A mismatch means chunks were re-ordered, dropped or duplicated.
+            if idx != expected {
+                return Err(VaultError::Crypto(CryptoError::Tampered));
+            }
+            writer.write_all(&pt[5..]).map_err(io_err)?;
+            expected = expected
+                .checked_add(1)
+                .ok_or_else(|| VaultError::Corrupt("too many chunks".into()))?;
+            if is_final {
+                break;
+            }
+        }
+        Ok(())
+    } else {
+        // v1 legacy: the whole file is one seal. We've already read `got` bytes.
+        let mut whole = magic[..got].to_vec();
+        f.read_to_end(&mut whole).map_err(io_err)?;
+        let plaintext = aead_open(key.as_bytes(), &whole).map_err(VaultError::Crypto)?;
+        writer.write_all(&plaintext).map_err(io_err)?;
+        Ok(())
+    }
+}
+
+/// Encrypt in-memory `plaintext` into a new blob. Thin wrapper over the streaming
+/// writer — used for small content already in RAM (e.g. an edited text file).
+pub fn write_blob(dir: &Path, key: &VaultKey, plaintext: &[u8]) -> Result<String, VaultError> {
+    write_blob_from_reader(dir, key, std::io::Cursor::new(plaintext))
+}
+
+/// Read and decrypt a whole blob into memory (v1 or v2). Prefer
+/// [`read_blob_to_writer`] for large files; this is for callers that genuinely
+/// need the bytes in RAM. A failed tag means corruption/tampering, never a wrong
+/// password (the key already opened the header).
+pub fn read_blob(dir: &Path, key: &VaultKey, blob_id: &str) -> Result<Vec<u8>, VaultError> {
+    let mut out = Vec::new();
+    read_blob_to_writer(dir, key, blob_id, &mut out)?;
+    Ok(out)
 }
 
 /// Delete a blob from disk. The caller removes the index entry.
@@ -336,6 +504,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// A fixed key for blob-format tests — we're exercising the on-disk chunk
+    /// format, not the KDF, so skip the ~100 ms Argon2 unlock.
+    fn test_key() -> VaultKey {
+        VaultKey([0x42u8; KEY_LEN])
+    }
+
+    #[test]
+    fn blob_v2_round_trips_across_chunk_boundaries() {
+        let dir = tmp_dir("blobv2");
+        let key = test_key();
+        // Exercise every boundary the pending/final chunk logic can hit: empty,
+        // tiny, one-below/at/above a chunk, an exact 2-chunk multiple, and a
+        // multi-chunk file with a partial tail.
+        for size in [
+            0usize,
+            10,
+            BLOB_CHUNK - 1,
+            BLOB_CHUNK,
+            BLOB_CHUNK + 1,
+            2 * BLOB_CHUNK,
+            2 * BLOB_CHUNK + 12345,
+        ] {
+            let data: Vec<u8> = (0..size).map(|i| (i.wrapping_mul(7).wrapping_add(3)) as u8).collect();
+            let id = write_blob(&dir, &key, &data).unwrap();
+            // It must be a v2 blob (MAGIC prefix).
+            let raw = std::fs::read(format::blob_path(&dir, &id)).unwrap();
+            assert_eq!(&raw[..BLOB_MAGIC.len()], BLOB_MAGIC, "size {} not v2", size);
+            let out = read_blob(&dir, &key, &id).unwrap();
+            assert_eq!(out, data, "round-trip failed at size {}", size);
+        }
+    }
+
+    #[test]
+    fn blob_reader_writer_streams_match() {
+        let dir = tmp_dir("blobstream");
+        let key = test_key();
+        let data: Vec<u8> = (0..(BLOB_CHUNK + 500)).map(|i| (i % 251) as u8).collect();
+        let id = write_blob_from_reader(&dir, &key, std::io::Cursor::new(&data)).unwrap();
+        let mut out = Vec::new();
+        read_blob_to_writer(&dir, &key, &id, &mut out).unwrap();
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn blob_reads_legacy_v1_format() {
+        // A v1 blob = the whole content as ONE aead_seal, written with no MAGIC.
+        // Vaults from the first release hold these; they must still open after
+        // the streaming change, or shipping this update would brick real data.
+        let dir = tmp_dir("blobv1");
+        let key = test_key();
+        let content = b"legacy whole-file blob from before streaming".to_vec();
+        let sealed = aead_seal(key.as_bytes(), &content);
+        let id = format::generate_blob_id();
+        std::fs::write(format::blob_path(&dir, &id), &sealed).unwrap();
+        assert_eq!(read_blob(&dir, &key, &id).unwrap(), content);
+    }
+
+    #[test]
+    fn blob_v2_detects_tampering_and_truncation() {
+        let dir = tmp_dir("blobtamper");
+        let key = test_key();
+        let data: Vec<u8> = (0..(BLOB_CHUNK + 100)).map(|i| (i % 255) as u8).collect();
+
+        // Flip a byte inside the first record → the AEAD tag fails.
+        let id = write_blob(&dir, &key, &data).unwrap();
+        let path = format::blob_path(&dir, &id);
+        let mut raw = std::fs::read(&path).unwrap();
+        raw[BLOB_MAGIC.len() + 20] ^= 0x01; // inside the first sealed record
+        std::fs::write(&path, &raw).unwrap();
+        assert!(read_blob(&dir, &key, &id).is_err(), "tampering must be caught");
+
+        // Truncate the blob (lose the final chunk) → refused, never a short read.
+        let good = write_blob(&dir, &key, &data).unwrap();
+        let gpath = format::blob_path(&dir, &good);
+        let raw2 = std::fs::read(&gpath).unwrap();
+        std::fs::write(&gpath, &raw2[..raw2.len() / 2]).unwrap();
+        assert!(read_blob(&dir, &key, &good).is_err(), "truncation must be caught");
     }
 
     #[test]
