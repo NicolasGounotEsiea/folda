@@ -980,4 +980,107 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    /// End-to-end smoke test of the DATA-CRITICAL vault paths, through the real
+    /// Tauri command functions (not the library shortcuts): create → recursively
+    /// encrypt a folder TREE → list → read a nested file → rename a file AND a
+    /// folder → extract a copy out → add + read back a >1 MiB file (streaming) →
+    /// lock/unlock → and finally a v1 (v0.1.21 whole-file) blob still opens.
+    ///
+    /// A green run here means "a real vault survives every operation without
+    /// losing or scrambling a byte, and upgrading from v0.1.21 doesn't brick it".
+    /// Run with: `cargo test --lib -- e2e_vault_full_lifecycle --nocapture`.
+    #[test]
+    fn e2e_vault_full_lifecycle() {
+        use crate::vault::{self, state, Secret};
+
+        // The command layer decrypts to %LOCALAPPDATA%\com.nxs.app\.vault-tmp\.
+        // On a machine without LOCALAPPDATA (non-Windows CI) there's nowhere to
+        // put temp files, and this is a Windows-only app anyway — skip cleanly.
+        if std::env::var_os("LOCALAPPDATA").is_none() {
+            eprintln!("skipping e2e_vault_full_lifecycle: LOCALAPPDATA unset (non-Windows)");
+            return;
+        }
+
+        let uniq = format!("{}-{:?}", std::process::id(), std::thread::current().id());
+        let dir = std::env::temp_dir().join(format!("nxs-vault-e2e-{}", uniq));
+        let out = std::env::temp_dir().join(format!("nxs-vault-e2e-out-{}", uniq));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(dir.join("photos/2024")).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(dir.join("readme.txt"), b"top level file").unwrap();
+        std::fs::write(dir.join("photos/a.jpg"), b"photo a bytes").unwrap();
+        std::fs::write(dir.join("photos/2024/b.jpg"), b"nested photo b bytes").unwrap();
+
+        // Create + unlock, register in the in-memory registry the commands use.
+        vault::create_vault(&dir, "pw").unwrap();
+        let (key, index) = vault::unlock_vault(&dir, Secret::Password("pw")).unwrap();
+        state::insert(&dir, key, index);
+        let d = dir.to_string_lossy().to_string();
+
+        // 1. Recursive encryption: every file at every depth, plaintext removed,
+        //    emptied sub-dirs dropped.
+        let n = super::vault_encrypt_existing(d.clone()).unwrap();
+        assert_eq!(n, 3, "all three files (incl. nested) must be encrypted");
+        assert!(!dir.join("readme.txt").exists(), "root plaintext must be gone");
+        assert!(!dir.join("photos").exists(), "emptied sub-folders must be gone");
+
+        // 2. List root: folder `photos` (recursive count 2) + file `readme.txt`.
+        let root = super::vault_list(d.clone(), None).unwrap();
+        assert!(root.iter().any(|e| e.is_dir && e.name == "photos" && e.size == 2));
+        assert!(root.iter().any(|e| !e.is_dir && e.name == "readme.txt"));
+
+        // 3. Read a NESTED file → exact bytes.
+        let tmp = super::vault_read_file(d.clone(), "photos/2024/b.jpg".into()).unwrap();
+        assert_eq!(std::fs::read(&tmp).unwrap(), b"nested photo b bytes");
+
+        // 4. Rename a file and a whole folder; the nested file follows the folder.
+        super::vault_rename(d.clone(), None, "readme.txt".into(), "notes.txt".into(), false).unwrap();
+        super::vault_rename(d.clone(), None, "photos".into(), "pics".into(), true).unwrap();
+        let root2 = super::vault_list(d.clone(), None).unwrap();
+        assert!(root2.iter().any(|e| e.name == "notes.txt"));
+        assert!(root2.iter().any(|e| e.is_dir && e.name == "pics"));
+        let tmp2 = super::vault_read_file(d.clone(), "pics/2024/b.jpg".into()).unwrap();
+        assert_eq!(std::fs::read(&tmp2).unwrap(), b"nested photo b bytes", "nested file survives folder rename");
+
+        // 5. Extract a copy OUT; original stays in the vault.
+        let extracted = super::vault_extract_file(d.clone(), "notes.txt".into(), out.to_string_lossy().into()).unwrap();
+        assert_eq!(std::fs::read(&extracted).unwrap(), b"top level file");
+        assert!(super::vault_list(d.clone(), None).unwrap().iter().any(|e| e.name == "notes.txt"), "extract keeps the original in the vault");
+
+        // 6. Streaming: add a >1 MiB file and read it back byte-exact.
+        let big: Vec<u8> = (0..(3 * 1024 * 1024 + 777)).map(|i| (i % 253) as u8).collect();
+        let big_src = out.join("big.bin");
+        std::fs::write(&big_src, &big).unwrap();
+        super::vault_add_file(d.clone(), big_src.to_string_lossy().into(), None).unwrap();
+        assert!(!big_src.exists(), "add must remove the plaintext source");
+        let big_tmp = super::vault_read_file(d.clone(), "big.bin".into()).unwrap();
+        assert_eq!(std::fs::read(&big_tmp).unwrap(), big, "streamed multi-chunk file must round-trip exactly");
+
+        // 7. Lock then unlock → everything still there and readable.
+        state::lock(&dir);
+        assert!(state::with_vault(&dir, |_, _| ()).is_none(), "vault must be locked");
+        let (key2, index2) = vault::unlock_vault(&dir, Secret::Password("pw")).unwrap();
+        state::insert(&dir, key2, index2);
+        let big_tmp2 = super::vault_read_file(d.clone(), "big.bin".into()).unwrap();
+        assert_eq!(std::fs::read(&big_tmp2).unwrap().len(), big.len(), "big file readable after re-unlock");
+
+        // 8. v0.1.21 COMPAT: hand-write a legacy v1 whole-file blob + index entry,
+        //    then open it through the same command. This is the #1 upgrade
+        //    regression risk — a v0.1.21 vault must still read in v0.1.22.
+        state::with_vault(&dir, |k, idx| {
+            let v1 = crate::vault::crypto::aead_seal(k.as_bytes(), b"a v0.1.21-era file");
+            let blob_id = crate::vault::format::generate_blob_id();
+            std::fs::write(crate::vault::format::blob_path(&dir, &blob_id), &v1).unwrap();
+            idx.files.insert("legacy.txt".to_string(), blob_id);
+        }).unwrap();
+        let legacy_tmp = super::vault_read_file(d.clone(), "legacy.txt".into()).unwrap();
+        assert_eq!(std::fs::read(&legacy_tmp).unwrap(), b"a v0.1.21-era file", "a legacy v1 blob must still open");
+
+        // Cleanup: lock (purges the decrypted temp copies) + drop the temp trees.
+        state::lock(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&out);
+    }
 }
