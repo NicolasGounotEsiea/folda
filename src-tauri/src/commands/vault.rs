@@ -372,6 +372,69 @@ pub fn vault_extract_file(path: String, name: String, dest_dir: String) -> Resul
     Ok(dest.to_string_lossy().to_string())
 }
 
+/// What the frontend needs to start a native OS drag of a vault file OUT to
+/// Explorer: the decrypted file on disk + a preview icon (the plugin requires
+/// one on Windows).
+#[derive(Serialize)]
+pub struct DragPrep {
+    pub file: String,
+    pub icon: String,
+}
+
+/// Write the app icon to the temp folder once, to serve as the drag preview.
+/// Bundled via `include_bytes!` so it's always available regardless of how the
+/// app was installed.
+fn write_drag_icon(tmp_dir: &Path) -> Result<String, String> {
+    const ICON: &[u8] = include_bytes!("../../icons/32x32.png");
+    let path = tmp_dir.join("nxs-drag-icon.png");
+    if !path.exists() {
+        std::fs::write(&path, ICON).map_err(|e| format!("Cannot write the drag icon: {}", e))?;
+    }
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Prepare a native drag-OUT of a vault file: decrypt it to a temp file that
+/// keeps its REAL name (so Explorer receives the right filename on drop) and hand
+/// back that path + a preview icon. The frontend then calls the drag plugin. The
+/// original stays in the vault — dragging out is a copy.
+///
+/// Keeping the real name in the temp path is safe HERE (unlike `vault_read_file`,
+/// which hides it): a drag temp is never opened as a viewer tab, so its path is
+/// never persisted anywhere. It IS tracked for cleanup on lock, and lives under
+/// `.vault-tmp` so `path_is_in_vault` keeps it out of the index/watcher.
+#[tauri::command]
+pub fn vault_drag_prepare(path: String, name: String) -> Result<DragPrep, String> {
+    let dir = PathBuf::from(&path);
+    let blob_id = require_unlocked(&dir, |_key, index| {
+        index
+            .files
+            .get(&name)
+            .cloned()
+            .ok_or_else(|| format!("'{}' is not in this vault", name))
+    })?;
+
+    let tmp_dir = state::temp_dir().ok_or("Cannot resolve the temp folder")?;
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("Cannot create temp folder: {}", e))?;
+
+    let leaf = name.rsplit('/').next().unwrap_or(&name);
+    let dest = unique_extract_path(&tmp_dir, leaf);
+
+    let mut f = std::fs::File::create(&dest)
+        .map_err(|e| format!("Cannot write the decrypted file: {}", e))?;
+    let decrypt = require_unlocked(&dir, |key, _index| {
+        vault::read_blob_to_writer(&dir, key, &blob_id, &mut f).map_err(ui_err)
+    });
+    if let Err(e) = decrypt {
+        drop(f);
+        let _ = std::fs::remove_file(&dest);
+        return Err(e);
+    }
+    state::track_temp_file(&dir, dest.clone(), name.clone());
+
+    let icon = write_drag_icon(&tmp_dir)?;
+    Ok(DragPrep { file: dest.to_string_lossy().to_string(), icon })
+}
+
 /// Decrypt a file to a temp path so an existing viewer can open it.
 ///
 /// The temp file is tracked and deleted when the vault locks; a startup sweep

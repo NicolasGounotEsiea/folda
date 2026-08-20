@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { clsx } from "clsx";
 import { ChevronRight, Download, FilePlus, Folder, Loader2, Lock, Pencil, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -31,11 +32,11 @@ import { useTranslation } from "../utils/i18n";
  * blobs stay flat on disk. `subPath` tracks the folder currently being viewed.
  *
  * Also supported: inline rename (files + whole folders, via `vault_rename` — just
- * re-keys the index, no blob touched) and "Extract to…" (decrypt a copy OUT to a
- * chosen folder via `vault_extract_file`, keeping the original in the vault).
- *
- * Deliberately NOT supported yet: native OS drag-and-drop OUT of the vault (would
- * need the tauri-plugin-drag JS binding; "Extract to…" covers the same need).
+ * re-keys the index, no blob touched), "Extract to…" (decrypt a copy OUT to a
+ * chosen folder via `vault_extract_file`), and native OS **drag-out** of a file to
+ * Explorer/desktop (pointer-gesture → `vault_drag_prepare` decrypts to a
+ * real-named temp → tauri-plugin-drag `startDrag` in copy mode). Both leave the
+ * original in the vault.
  */
 
 interface VaultEntry {
@@ -204,6 +205,47 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
     }
   };
 
+  // ── Native drag-OUT (file → Explorer/desktop) ────────────────────────────
+  // WebView2 is unreliable with HTML5 dragstart (CLAUDE.md §19), so we detect the
+  // gesture with pointer events (like FileList) and hand off to the OS drag via
+  // tauri-plugin-drag once the pointer has moved past a threshold.
+  const dragPendingRef = useRef<{ leaf: string; x: number; y: number } | null>(null);
+  const dragStartedRef = useRef(false);
+
+  const beginDragCandidate = (leaf: string, ev: React.PointerEvent) => {
+    if (ev.button !== 0 || renaming) return; // left button only, not while renaming
+    if ((ev.target as HTMLElement).closest("button, input")) return; // let buttons/inputs work
+    dragPendingRef.current = { leaf, x: ev.clientX, y: ev.clientY };
+    dragStartedRef.current = false;
+  };
+
+  const maybeStartDrag = (ev: React.PointerEvent) => {
+    const p = dragPendingRef.current;
+    if (!p || dragStartedRef.current) return;
+    if (Math.abs(ev.clientX - p.x) + Math.abs(ev.clientY - p.y) < 6) return;
+    dragStartedRef.current = true;
+    dragPendingRef.current = null;
+    void dragOut(p.leaf);
+  };
+
+  const clearDragCandidate = () => { dragPendingRef.current = null; };
+
+  /** Decrypt the file to a real-named temp copy and start the OS drag. Copy mode:
+   *  the original stays in the vault. */
+  const dragOut = async (leaf: string) => {
+    try {
+      const prep = await invoke<{ file: string; icon: string }>("vault_drag_prepare", {
+        path: vaultPath, name: keyFor(leaf),
+      });
+      await startDrag({ item: [prep.file], icon: prep.icon, mode: "copy" });
+    } catch (e) {
+      const msg = String(e);
+      if (!msg.includes("Cancelled")) {
+        addToast({ type: "error", message: t.vaultExtractFailed, detail: msg });
+      }
+    }
+  };
+
   const startRename = (e: VaultEntry) => {
     setRenaming({ name: e.name, isDir: e.is_dir });
     setRenameValue(e.name);
@@ -328,7 +370,12 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
       </div>
 
       {/* Contents */}
-      <div className="flex-1 overflow-y-auto flex flex-col">
+      <div
+        className="flex-1 overflow-y-auto flex flex-col"
+        onPointerMove={maybeStartDrag}
+        onPointerUp={clearDragCandidate}
+        onPointerLeave={clearDragCandidate}
+      >
         {entries === null ? (
           <div className="flex-1 flex items-center justify-center">
             <Loader2 size={16} className="animate-spin text-text-muted" />
@@ -380,7 +427,9 @@ export function VaultView({ vaultPath }: { vaultPath: string }) {
             ) : (
               <div
                 key={`f:${e.name}`}
+                onPointerDown={(ev) => beginDragCandidate(e.name, ev)}
                 onDoubleClick={() => handleOpen(e.name)}
+                title={t.vaultDragHint}
                 className="group grid items-center gap-x-3 px-4 h-9 shrink-0 cursor-pointer select-none hover:bg-surface-2 transition-colors"
                 style={{ gridTemplateColumns: "15px 1fr 80px auto" }}
               >

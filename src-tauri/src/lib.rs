@@ -285,6 +285,7 @@ pub fn run() {
             commands::vault::vault_reset_password,
             commands::vault::vault_list,
             commands::vault::vault_extract_file,
+            commands::vault::vault_drag_prepare,
             commands::vault::vault_read_file,
             commands::vault::vault_write_file,
             commands::vault::vault_temp_target,
