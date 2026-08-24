@@ -175,6 +175,8 @@ pub fn run() {
             commands::search::search_files,
             commands::search::search_folders,
             commands::search::search_live,
+            commands::search::search_semantic,
+            commands::search::find_similar_files,
             commands::fs_ops::rename_path,
             commands::fs_ops::delete_path,
             commands::fs_ops::copy_path,

@@ -187,9 +187,13 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
 
   // ── File search results (DB FTS + live filesystem fallback) ──────────────
   const [searchResults, setSearchResults] = useState<Command[]>([]);
-  const { currentPath } = useStore();
+  const { currentPath, settings: paletteSettings } = useStore();
   useEffect(() => {
     if (query.length < 2) { setSearchResults([]); return; }
+    // Guards the semantic pass below: it resolves after the keyword results are
+    // already on screen, so without this a slow response for an old query could
+    // append results the user has since typed past.
+    let cancelled = false;
     const timer = setTimeout(async () => {
       const q = query;
       // `badge` is set when the result came from a content match — explains
@@ -241,9 +245,35 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           )),
           ...liveOnly.slice(0, 5).map((f) => toCmd(f, "Here")),
         ]);
+
+        // Semantic pass — fired AFTER the keyword results are rendered, never
+        // awaited alongside them. It needs an embedding round-trip to Ollama
+        // (hundreds of ms on a cold model), and making the instant FTS results
+        // wait for that would be a visible regression in how fast search feels.
+        //
+        // Results are APPENDED in their own group: an exact keyword match must
+        // never be pushed below a merely-similar one.
+        if (paletteSettings.semanticSearch) {
+          invoke<SearchHit[]>("search_semantic", {
+            query: q, contextId: activeContextId ?? 0, limit: 5,
+          })
+            .then((sem) => {
+              if (cancelled || !sem.length) return;
+              const already = new Set([...dbPaths, ...liveOnly.map((f) => f.path)]);
+              const fresh = sem.filter((f) => !already.has(f.path));
+              if (!fresh.length) return;
+              setSearchResults((prev) => [
+                ...prev,
+                ...fresh.map((f) => toCmd(f, "Similar", t.commandPaletteSemanticBadge)),
+              ]);
+            })
+            // Silent: semantic search is a bonus lane. If Ollama is down the
+            // keyword results the user already sees are still perfectly good.
+            .catch(() => {});
+        }
       } catch { setSearchResults([]); }
     }, 150);
-    return () => clearTimeout(timer);
+    return () => { cancelled = true; clearTimeout(timer); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, currentPath]);
 

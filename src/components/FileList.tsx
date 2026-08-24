@@ -448,6 +448,9 @@ const EntryRow = memo(function EntryRow({
   /// Two booleans (not one enum) so memo's shallow compare stays cheap.
   vaultUnlocked?: boolean;
 }) {
+  // Narrow selector (language only), so this does NOT re-subscribe the memoized
+  // row to general store churn — it only re-renders if the user switches language.
+  const t = useTranslation();
   const [renameVal, setRenameVal] = useState(entry.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -564,9 +567,22 @@ const EntryRow = memo(function EntryRow({
             {entry.matched_content && (
               <span
                 className="text-[9px] uppercase tracking-wide text-accent bg-accent/10 border border-accent/20 px-1.5 py-0.5 rounded shrink-0"
-                title="Match in indexed file content"
+                title={t.commandPaletteContentBadgeTitle}
               >
-                contenu
+                {t.commandPaletteContentBadge}
+              </span>
+            )}
+            {/* Semantic match — the query words are NOT in this file; it was
+                surfaced because its content MEANS something close. Deliberately
+                a different colour from the content badge: the user must be able
+                to tell "contains your words" from "is about your words" at a
+                glance, because only the first is a guaranteed match. */}
+            {entry.matched_semantic && (
+              <span
+                className="text-[9px] uppercase tracking-wide text-violet-300 bg-violet-500/10 border border-violet-500/20 px-1.5 py-0.5 rounded shrink-0"
+                title={t.searchSemanticBadgeTitle}
+              >
+                {t.commandPaletteSemanticBadge}
               </span>
             )}
             {/* Inline snippet from FTS5 — first 24 tokens around the matched
@@ -2519,7 +2535,7 @@ export function FileList({ paneIndex }: { paneIndex?: 0 | 1 }) {
 
       {extractTarget && panePath && (
         <FolderPickerModal
-          title="Extraire vers…"
+          title={t.archiveExtractTo}
           initialPath={panePath}
           onSelect={async (dest) => {
             setExtractTarget(null);

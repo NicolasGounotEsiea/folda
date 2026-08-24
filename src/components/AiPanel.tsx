@@ -640,7 +640,7 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: "search_files",
-    description: "Search for files by name OR by content across the workspace. Works on PDFs, Word docs, spreadsheets, text files, and code. Use a distinctive keyword (e.g. 'Focus', 'budget', 'kakemono').",
+    description: "Search for files by name OR by content across the workspace. Works on PDFs, Word docs, spreadsheets, text files, and code. Use a distinctive keyword (e.g. 'Focus', 'budget', 'kakemono'). If the user describes a document rather than naming it, describe it here too — this also matches by meaning when nothing matches literally.",
     schema: { type: "object", properties: { query: { type: "string", description: "Keyword to search in file names and content" } }, required: ["query"] },
   },
   {
@@ -1160,11 +1160,37 @@ async function executeTool(
         const files = await invoke<{ name: string; path: string; tags: { name: string }[] }[]>(
           "search_files", { query: input.query, contextId }
         );
-        if (files.length) {
-          return files.slice(0, 20).map((f) => {
+
+        // Semantic pass. Deliberately NOT a separate tool: giving the model two
+        // search tools re-creates exactly the "which one do I pick?" ambiguity
+        // we removed when consolidating the task tools. It also isn't run on
+        // every search — when the keyword hit plenty of files the user's words
+        // worked, and an embedding round-trip would only add latency (this runs
+        // inside the agent loop, up to MAX_AGENT_STEPS times per question).
+        const FTS_ENOUGH = 5;
+        let semanticLines = "";
+        if (files.length < FTS_ENOUGH && useStore.getState().settings.semanticSearch) {
+          const known = new Set(files.map((f) => f.path));
+          const sem = await invoke<{ name: string; path: string; tags: { name: string }[] }[]>(
+            "search_semantic", { query: input.query, contextId, limit: 10 }
+          ).catch(() => []);
+          const fresh = sem.filter((f) => !known.has(f.path));
+          if (fresh.length) {
+            // Labelled so the model knows these matched by MEANING, not by the
+            // literal words — it should treat them as candidates to verify
+            // (preview_file) rather than as confirmed keyword matches.
+            semanticLines =
+              `\n\nRelated by meaning (the query words do NOT appear in these — verify before asserting):\n` +
+              fresh.slice(0, 10).map((f) => `${f.name} — ${f.path}`).join("\n");
+          }
+        }
+
+        if (files.length || semanticLines) {
+          const ftsLines = files.slice(0, 20).map((f) => {
             const tagStr = f.tags?.length ? ` [${f.tags.map((t) => t.name).join(", ")}]` : "";
             return `${f.name}${tagStr} — ${f.path}`;
           }).join("\n");
+          return (ftsLines + semanticLines).trim();
         }
         // DB returned nothing — the file may not be indexed yet.
         // Fall back to a live filesystem search on the home folder.

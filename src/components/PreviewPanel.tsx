@@ -21,7 +21,8 @@ import remarkGfm from "remark-gfm";
 import { useStore } from "../store/useStore";
 import { useGitStore, statusForAbsolutePath, type CommitInfo, type FileStatus } from "../store/useGitStore";
 import { DiffView, FileDiff, formatRelativeDate, statusColor, statusLetter } from "./GitPanel";
-import type { FolderStats, ListEntry, Tag as TagType } from "../types";
+import type { FolderStats, ListEntry, SearchHit, Tag as TagType } from "../types";
+import { FileIcon } from "./FileList";
 import { useTranslation } from "../utils/i18n";
 import { getCachedFolderStats, cacheFolderStats } from "../utils/folderSizeCache";
 
@@ -552,7 +553,8 @@ function CodePreview({ code, ext }: { code: string; ext: string }) {
 
 // ─── Main PreviewPanel ────────────────────────────────────────────────────────
 export function PreviewPanel({ onClose }: { onClose: () => void }) {
-  const { selectedFile, selectedEntry, tags, updateFileTags, activeContextId, settings } = useStore();
+  const { selectedFile, selectedEntry, tags, updateFileTags, activeContextId, settings,
+          setCurrentPath, setListEntries, pushNav } = useStore();
   const t = useTranslation();
   const ctxId = activeContextId ?? 0;
   const [tagInput, setTagInput] = useState("");
@@ -564,12 +566,17 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
   /// real text files, while this one consults the DB cache populated during
   /// content indexing. Always null for formats we don't index.
   const [indexedContent, setIndexedContent] = useState<string | null>(null);
+  /// Files whose CONTENT means something close to this one's, from the semantic
+  /// index. Empty when the feature is off, the file isn't indexed, or nothing
+  /// clears the similarity floor — all three render nothing.
+  const [similarFiles, setSimilarFiles] = useState<SearchHit[]>([]);
   const [activeTab, setActiveTab] = useState<"info" | "history" | "git">("info");
   const { width, containerRef, onDragStart } = useResizable({ defaultWidth: 280, side: "right" });
 
   useEffect(() => {
     setTextPreview(null);
     setIndexedContent(null);
+    setSimilarFiles([]);
     setShowTagInput(false);
     setTagInput("");
     setActiveTab("info");
@@ -589,6 +596,18 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
     const INDEXED_EXTS = new Set([
       "pdf", "docx", "odt", "xlsx", "ods", "pptx", "odp",
     ]);
+    // Similar files. Pure local computation on vectors already stored at index
+    // time — no network call, no generation, so it costs a few ms and cannot
+    // invent anything. Fire-and-forget like the extraction lookup below: the
+    // panel never blocks on it, and an empty result just renders nothing.
+    if (settings.semanticSearch) {
+      invoke<SearchHit[]>("find_similar_files", {
+        path: selectedFile.path, contextId: activeContextId ?? 0, limit: 5,
+      })
+        .then((hits) => { if (!cancelled) setSimilarFiles(hits); })
+        .catch(() => { if (!cancelled) setSimilarFiles([]); });
+    }
+
     const ext = selectedFile.extension.toLowerCase();
     if (INDEXED_EXTS.has(ext)) {
       invoke<string>("preview_file", { path: selectedFile.path })
@@ -605,7 +624,10 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
     }
 
     return () => { cancelled = true; };
-  }, [selectedFile?.id]);
+  // settings.semanticSearch is in deps so toggling it in Settings refreshes the
+  // panel immediately instead of on the next file selection.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFile?.id, settings.semanticSearch, activeContextId]);
 
   if (selectedEntry?.kind === "folder") return (
     <FolderPreview folder={selectedEntry.entry} onClose={onClose} width={width} onDragStart={onDragStart} containerRef={containerRef} />
@@ -793,6 +815,53 @@ export function PreviewPanel({ onClose }: { onClose: () => void }) {
               spreadsheets etc. that have content in the cache. Doesn't replace
               the hero preview at the top; sits as a discrete info row so the
               user can scan the doc's gist while still seeing the format icon. */}
+          {/* Similar files — content-based neighbours from the semantic index.
+              Answers "where are the other documents like this one?", which
+              neither the folder tree nor a keyword search can. Rendered only
+              when there is something to show, so the panel is unchanged for
+              users who never enable semantic search. */}
+          {similarFiles.length > 0 && (
+            <div>
+              <div className="flex items-center gap-1 mb-2">
+                <span className="text-[10px] text-text-muted uppercase tracking-widest font-semibold">
+                  {t.previewSimilarFiles}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {similarFiles.map((hit) => (
+                  <button
+                    key={hit.path}
+                    title={hit.path}
+                    onClick={async () => {
+                      // Navigate to the containing folder, same as the command
+                      // palette does — the preview panel has no viewer of its own.
+                      const parent = hit.path.replace(/\\/g, "/").split("/").slice(0, -1).join("\\");
+                      if (!parent) return;
+                      setCurrentPath(parent);
+                      pushNav(parent);
+                      try {
+                        const entries = await invoke<ListEntry[]>("list_directory", {
+                          path: parent, contextId: activeContextId ?? 0,
+                        });
+                        setListEntries(entries);
+                      } catch { /* folder may have moved */ }
+                    }}
+                    className="flex items-center gap-1.5 px-1.5 py-1 rounded text-left hover:bg-surface-2 transition-colors group"
+                  >
+                    <FileIcon entry={{
+                      is_dir: false, name: hit.name, path: hit.path, size: 0,
+                      created_at: 0, modified_at: 0, extension: hit.extension,
+                      id: null, tags: [],
+                    }} />
+                    <span className="text-[11px] text-text-secondary group-hover:text-text-primary truncate min-w-0">
+                      {hit.name}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {indexedContent !== null && (
             <div>
               <div className="flex items-center gap-1 mb-2">

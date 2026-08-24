@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Check, ChevronDown, ChevronRight, Copy, Plus, Share2, Shield, Trash2, Users, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
+import { useTranslation } from "../utils/i18n";
 
 interface SharePermission {
   id: number;
@@ -174,6 +175,7 @@ function PermissionsPanel({ contextId }: { contextId: number }) {
 }
 
 export function ShareModal({ onClose }: { onClose: () => void }) {
+  const t = useTranslation();
   const {
     contexts, activeContextId,
     sharingMode, sharingCode, sharingPassword, sharingClients,
@@ -306,7 +308,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
                 <button
                   onClick={() => copy(sharingCode!, "code")}
                   className="text-text-muted hover:text-text-primary transition-colors"
-                  title="Copier"
+                  title={t.copy}
                 >
                   {codeCopied ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
                 </button>
@@ -321,7 +323,7 @@ export function ShareModal({ onClose }: { onClose: () => void }) {
                 <button
                   onClick={() => copy(sharingPassword!, "pw")}
                   className="text-text-muted hover:text-text-primary transition-colors"
-                  title="Copier"
+                  title={t.copy}
                 >
                   {pwCopied ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
                 </button>

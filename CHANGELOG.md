@@ -2,6 +2,38 @@
 
 All notable changes to nxs are documented here.
 
+## [0.1.23] - 2026-08-24
+
+### Added
+
+- **Semantic search — find files by what they mean, not just by the words they contain.** Searching `facture plombier` now also surfaces a document that only ever says *intervention plomberie*. It runs alongside the existing keyword search rather than replacing it: exact matches appear first and instantly, and files matched by meaning are **appended below** with a violet `similar` badge and a tooltip explaining why they're there — an exact hit is never pushed down by a merely-similar one, and the list never re-shuffles under you. Available in the toolbar search, the command palette (Ctrl+K), and to the AI assistant (which falls back to it automatically when a keyword search comes up short, and is told to verify those results before asserting anything). The preview panel also gains a **Similar content** section listing files whose content is about the same thing as the one you've selected. **Opt-in** (Settings → AI), runs entirely on your machine through Ollama, and needs an embedding model — the settings screen detects whether it's installed and offers to download it in one click. Off by default, and when off the indexer behaves exactly as before. See CLAUDE.md §45.
+- **The AI panel now shows what a conversation costs.** A running token count and an estimated price sit in the panel header, with a breakdown on hover (input, output, and cache reads/writes billed separately, because they cost 1×, 1×, 0.1× and 1.25× respectively). Ollama shows tokens only — it runs locally and costs nothing. An unrecognised model shows tokens and no price rather than a number that might be wrong.
+
+### Security
+
+- **The Anthropic API key is no longer stored in cleartext.** It sat as plain text in the settings table of `contextual.db` — the same unencrypted database the vault feature exists to keep secrets out of — where anything that could read the file could bill your Anthropic account. It now lives in the **Windows Credential Manager**, and the database keeps only a flag saying whether one is configured. **Existing keys are migrated automatically on first launch**, in the safe order: the key is written to the credential store *first* and the cleartext row is only blanked once that succeeded, so a failure leaves you with a working key and retries next launch rather than losing it. A stored key can be replaced or removed but is never displayed again. See CLAUDE.md §44.
+
+### Fixed
+
+- **Ollama models were being sent a truncated prompt — silently.** Ollama's own default context window is 4096 tokens, but nxs's tool definitions and system prompt come to roughly 6000, so on a default install the prompt **did not fit before you typed anything**, and Ollama quietly dropped the overflow — which was precisely the system prompt and the tool schemas. The model then looked unreliable when it had simply never received its instructions. nxs now requests a 16K window by default (selectable 8K/16K/32K in Settings → AI, the practical limit being your VRAM). If small local models have disappointed you with nxs before, this is the reason to try them again.
+- **The AI agent loop could run without limit.** It only stopped when the model said it was done or you pressed Stop, so a model caught in a tool-calling cycle kept billing every step until someone noticed. It now stops after 25 steps and tells you it stopped, instead of returning a truncated answer that looks complete.
+- **Transient Anthropic API failures are retried** (twice, with backoff) instead of surfacing immediately as an error, and the honoured `retry-after` header is respected on rate limits. The Stop button interrupts a pending retry rather than waiting it out.
+- **Error messages from both providers are now readable.** A raw HTTP status has been replaced by what actually went wrong and what to do about it — an invalid key, an exhausted credit balance, a rate limit, a model name that doesn't exist, or Ollama simply not running.
+- **Content indexing runs no longer overlap.** Adding several folders to a workspace — or reindexing a few — started one indexing run each, silently multiplying the deliberate 2-worker limit (chosen to leave your CPU free for the interface) and, with semantic search on, opening a separate stream of GPU work per run. Runs are now queued and processed one at a time. They are queued, never dropped, so no folder is left unindexed.
+- **Three viewer toolbars had untranslated French labels** hardcoded — the document viewer, the text editor, and the share dialog now honour the language setting like the rest of the app.
+
+### Improved
+
+- **The AI's nine to-do-list tools became two.** Managing tasks used to take up more than a quarter of the assistant's entire tool budget — inside a file manager — competing for the model's attention with the tools that make it worth having, like search and folder reorganisation. `manage_tasks` and `workspace_notes` now cover everything the nine did, including bulk actions, with no loss of capability.
+- **Anthropic prompt caching** is now used, with the system prompt built once per message so it stays byte-identical across every step of an agentic exchange. Repeated steps in a long conversation re-read the cached prefix at a tenth of the price instead of paying full rate each time.
+
+### Internal
+
+- New `commands/embeddings.rs` (Ollama `/api/embed`, unit-normalised vectors stored in a new `file_embeddings` table, manual cosine — deliberately not `sqlite-vec`, which would mean shipping a platform DLL for a gain unnecessary at this scale) and `commands/apikey.rs` (`keyring` crate, Windows Credential Manager). Both fail soft: an embedding failure writes **no** row, unlike the text-extraction sentinel, because it almost always means Ollama was down and a sentinel would permanently skip the file after one transient outage.
+- Embeddings are excluded from vaults by inheritance — only text already in `file_content` is ever embedded, and vault content never reaches that table. Any future path that embeds text from elsewhere must re-check `path_is_in_vault` first.
+- 6 new unit tests covering vector packing, normalisation, and the cosine edge cases (corrupt blob, dimension mismatch after a model change, zero vector).
+- **Semantic search has not yet been exercised against a live Ollama server** — its types, ranking and failure paths are unit-tested, but no request has been made to a real `/api/embed`. The two similarity thresholds are hand-estimates and are the first thing to tune if results feel loose or the "Similar content" section stays empty.
+
 ## [0.1.22] - 2026-07-15
 
 ### Added

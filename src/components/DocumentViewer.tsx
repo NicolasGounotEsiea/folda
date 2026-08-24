@@ -3,6 +3,7 @@ import { renderAsync } from "docx-preview";
 import { Ban, ExternalLink, FileText, History, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
+import { useTranslation } from "../utils/i18n";
 import { PdfViewer } from "./PdfViewer";
 import { SnapshotPanel } from "./SnapshotPanel";
 import { SpreadsheetViewer } from "./SpreadsheetViewer";
@@ -75,6 +76,7 @@ function UnsupportedView({ label }: { label: string }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function DocumentViewer() {
+  const t = useTranslation();
   const { openedFile, closeFile } = useStore();
   const [reloadKey, setReloadKey] = useState(0);
   const [snapshotOpen, setSnapshotOpen] = useState(false);
@@ -113,7 +115,7 @@ export function DocumentViewer() {
         {/* Open with system app */}
         <button
           onClick={openWithDefault}
-          title="Ouvrir avec l'application par défaut"
+          title={t.openWithSystem}
           className="flex items-center gap-1 px-2 h-6 text-[11px] rounded border border-border text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors shrink-0"
         >
           <ExternalLink size={11} />
@@ -124,7 +126,7 @@ export function DocumentViewer() {
         {!isSpreadsheet && (
           <button
             onClick={() => setSnapshotOpen((v) => !v)}
-            title="Snapshots"
+            title={t.snapshots}
             className={`w-7 h-7 flex items-center justify-center rounded transition-colors shrink-0 ${snapshotOpen ? "text-accent bg-accent/10" : "text-text-muted hover:text-text-secondary hover:bg-surface-3"}`}
           >
             <History size={13} />
@@ -134,7 +136,7 @@ export function DocumentViewer() {
         <button
           onClick={closeFile}
           className="w-6 h-6 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors shrink-0"
-          title="Fermer (Échap)"
+          title={t.close}
         >
           <X size={13} />
         </button>

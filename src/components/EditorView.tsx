@@ -14,6 +14,7 @@ import CodeMirror, { type Statistics } from "@uiw/react-codemirror";
 import { Ban, FileCode, History, Lock, Save, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
+import { useTranslation } from "../utils/i18n";
 import { useViewerFindStore } from "../store/useViewerFindStore";
 import { SnapshotPanel } from "./SnapshotPanel";
 import { isVaultWorkingCopy, saveTextFile } from "../utils/vaultSave";
@@ -60,6 +61,7 @@ function getLangExtension(ext: string): Extension | null {
 }
 
 export function EditorView() {
+  const t = useTranslation();
   const { openedFile, closeFile, activeTabId, updateTabCache, sharingMode, settings } = useStore();
   const isRemote = sharingMode === "joined";
   const readFile = (path: string) =>
@@ -253,7 +255,7 @@ export function EditorView() {
         {!isRemote && !isVaultFile && (
           <button
             onClick={() => setSnapshotOpen((v) => !v)}
-            title="Snapshots"
+            title={t.snapshots}
             className={`w-7 h-7 flex items-center justify-center rounded transition-colors shrink-0 ${snapshotOpen ? "text-accent bg-accent/10" : "text-text-muted hover:text-text-secondary hover:bg-surface-3"}`}
           >
             <History size={13} />
@@ -262,7 +264,7 @@ export function EditorView() {
         <button
           onClick={() => isDirty ? setConfirmClose(true) : closeFile()}
           className="w-6 h-6 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-surface-3 transition-colors shrink-0"
-          title="Close editor"
+          title={t.close}
         >
           <X size={13} />
         </button>

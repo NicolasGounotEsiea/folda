@@ -20,6 +20,7 @@ type AppStrings = {
   back: string;
   done: string;
   close: string;
+  snapshots: string;                        // viewer toolbar: snapshot history panel
   refresh: string;
   save: string;
   create: string;
@@ -415,9 +416,12 @@ type AppStrings = {
 
   // ── search: match-origin badges ───────────────────────────────────────────
   commandPaletteContentBadge: string;       // "content" / "contenu" chip label
+  commandPaletteSemanticBadge: string;      // chip on results matched by meaning, not by word
+  searchSemanticBadgeTitle: string;         // tooltip explaining the semantic badge
   commandPaletteContentBadgeTitle: string;  // hover tooltip explaining the badge
 
   previewExtractedText: string;             // "Extracted text" header in PreviewPanel
+  previewSimilarFiles: string;              // heading above content-similar files
 
   // ── Compare files (Notepad++ Compare-style) ───────────────────────────────
   diffCompareFiles: string;                 // context menu entry
@@ -450,6 +454,7 @@ const translations: Record<string, AppStrings> = {
     back: "Back",
     done: "Done",
     close: "Close",
+    snapshots: "Snapshots",
     refresh: "Refresh",
     save: "Save",
     create: "Create",
@@ -827,9 +832,12 @@ const translations: Record<string, AppStrings> = {
     gitCheckoutFailed: "Could not switch branch",
 
     commandPaletteContentBadge: "content",
+    commandPaletteSemanticBadge: "similar",
+    searchSemanticBadgeTitle: "Your search words are not in this file — it was found because its content is about the same thing.",
     commandPaletteContentBadgeTitle: "This result matched on indexed file content, not its name",
 
     previewExtractedText: "Extracted text",
+    previewSimilarFiles: "Similar content",
 
     diffCompareFiles: "Compare files",
     diffCompareWithOtherPane: "Compare with other pane",
@@ -860,6 +868,7 @@ const translations: Record<string, AppStrings> = {
     back: "Retour",
     done: "Terminé",
     close: "Fermer",
+    snapshots: "Instantanés",
     refresh: "Rafraîchir",
     save: "Enregistrer",
     create: "Créer",
@@ -1237,9 +1246,12 @@ const translations: Record<string, AppStrings> = {
     gitCheckoutFailed: "Impossible de changer de branche",
 
     commandPaletteContentBadge: "contenu",
+    commandPaletteSemanticBadge: "similaire",
+    searchSemanticBadgeTitle: "Les mots recherchés ne figurent pas dans ce fichier — il ressort parce que son contenu parle de la même chose.",
     commandPaletteContentBadgeTitle: "Ce résultat correspond au contenu indexé du fichier, pas à son nom",
 
     previewExtractedText: "Texte extrait",
+    previewSimilarFiles: "Contenu similaire",
 
     diffCompareFiles: "Comparer les fichiers",
     diffCompareWithOtherPane: "Comparer avec l'autre pane",

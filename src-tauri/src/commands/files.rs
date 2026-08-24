@@ -1951,6 +1951,79 @@ type UnindexedRow = (i64, String, String, i64, bool);
 /// Extracts text from PDFs, DOCX, XLSX, etc. that were skipped during the initial scan.
 /// Stores a sentinel empty row for files where extraction failed or returned nothing,
 /// so they are not retried on every relaunch.
+/// Persist one batch of extracted text, and — only when semantic search is on —
+/// its embeddings.
+///
+/// Split out so both flush sites share it. The text write is exactly what it was
+/// before semantic search existed: one transaction per batch, inside
+/// spawn_blocking so the std::sync::Mutex never pins a runtime worker. When
+/// `embed` is None the function does nothing else at all.
+///
+/// Embedding failures are deliberately NOT recorded as attempted. Unlike text
+/// extraction — where a failure usually means an unparseable file and a sentinel
+/// row rightly stops the retry — an embedding failure usually means Ollama is
+/// not running. Writing a sentinel there would permanently skip the file after
+/// one transient outage, so we leave it unembedded and pick it up next run.
+async fn flush_indexed_batch(
+    state: &tauri::State<'_, AppState>,
+    batch: Vec<(i64, String)>,
+    embed: Option<&crate::commands::embeddings::EmbedConfig>,
+) {
+    // 1. Text content — unchanged behaviour.
+    {
+        let db_arc = state.db.clone();
+        let to_write = batch.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Ok(db) = db_arc.lock() {
+                let _ = db.execute_batch("BEGIN");
+                for (id, text) in &to_write {
+                    store_text_content(&db, *id, text);
+                }
+                let _ = db.execute_batch("COMMIT");
+            }
+        })
+        .await
+        .ok();
+    }
+
+    // 2. Embeddings — opt-in, best-effort, never fatal.
+    let Some(cfg) = embed else { return };
+
+    // Only files that actually produced text are worth embedding; an empty
+    // sentinel has nothing to represent and would never match a query.
+    let (ids, texts): (Vec<i64>, Vec<String>) = batch
+        .into_iter()
+        .filter(|(_, t)| !t.trim().is_empty())
+        .unzip();
+    if ids.is_empty() {
+        return;
+    }
+
+    let vectors = match crate::commands::embeddings::embed_batch(cfg, &texts).await {
+        Ok(v) => v,
+        Err(e) => {
+            // One line per failed batch, not per file — a stopped Ollama would
+            // otherwise flood the console during a large indexing run.
+            eprintln!("[embeddings] batch skipped: {}", e);
+            return;
+        }
+    };
+
+    let db_arc = state.db.clone();
+    let model = cfg.model.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Ok(db) = db_arc.lock() {
+            let _ = db.execute_batch("BEGIN");
+            for (id, vec) in ids.iter().zip(&vectors) {
+                let _ = crate::commands::embeddings::store(&db, *id, vec, &model);
+            }
+            let _ = db.execute_batch("COMMIT");
+        }
+    })
+    .await
+    .ok();
+}
+
 /// Emits "content-indexed" events so the frontend can show progress.
 #[tauri::command]
 pub async fn index_directory_content(
@@ -1961,6 +2034,24 @@ pub async fn index_directory_content(
 ) -> Result<usize, String> {
     use tauri::Emitter;
     let force = force.unwrap_or(false);
+
+    // One indexing run at a time, process-wide.
+    //
+    // Nothing used to stop N runs overlapping — adding several folders to a
+    // workspace, or reindexing a few, started one each. The deliberate limits
+    // inside a run (PARALLEL_EXTRACTIONS = 2 workers at below-normal priority,
+    // chosen to leave CPU for the UI) then silently became 2xN, and with
+    // semantic search on, N concurrent streams of GPU inference on top.
+    //
+    // This costs almost nothing in throughput: Ollama serializes requests to a
+    // loaded model anyway, and every DB write already contends on the single
+    // connection mutex. What it removes is accidental parallelism that
+    // contradicted the tuning.
+    //
+    // It QUEUES rather than skipping. Dropping a second run would leave that
+    // folder silently unindexed, which is a far worse bug than waiting.
+    static INDEX_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _run_guard = INDEX_LOCK.lock().await;
 
     // Selection rule:
     // - automatic mode (force=false): only files never attempted (no row in file_content)
@@ -2066,6 +2157,15 @@ pub async fn index_directory_content(
         std::sync::Arc::new(cfg)
     };
 
+    // Resolve semantic-search config once per run, same as OCR above. None =
+    // feature off or unconfigured, in which case NOTHING below changes: the
+    // indexing path stays byte-for-byte what it was before this feature.
+    let embed_cfg = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| crate::commands::embeddings::load_config(&db));
+
     // Event payloads use the GLOBAL (folder-wide) numbers so they line up with
     // get_indexing_stats. `indexed` here starts at the existing attempted count
     // and grows as we process files. `total` stays constant = files in folder.
@@ -2149,17 +2249,8 @@ pub async fn index_directory_content(
 
             write_buffer.push((file_id, text));
             if write_buffer.len() >= FLUSH_AT_N {
-                let db_arc = state.db.clone();
                 let to_write = std::mem::take(&mut write_buffer);
-                tokio::task::spawn_blocking(move || {
-                    if let Ok(db) = db_arc.lock() {
-                        let _ = db.execute_batch("BEGIN");
-                        for (id, text) in &to_write {
-                            store_text_content(&db, *id, text);
-                        }
-                        let _ = db.execute_batch("COMMIT");
-                    }
-                }).await.ok();
+                flush_indexed_batch(&state, to_write, embed_cfg.as_ref()).await;
             }
 
             // Only count this file as a NEW attempt if it wasn't already attempted before.
@@ -2183,17 +2274,8 @@ pub async fn index_directory_content(
 
     // Final flush of any remaining buffered writes.
     if !write_buffer.is_empty() {
-        let db_arc = state.db.clone();
         let to_write = std::mem::take(&mut write_buffer);
-        tokio::task::spawn_blocking(move || {
-            if let Ok(db) = db_arc.lock() {
-                let _ = db.execute_batch("BEGIN");
-                for (id, text) in &to_write {
-                    store_text_content(&db, *id, text);
-                }
-                let _ = db.execute_batch("COMMIT");
-            }
-        }).await.ok();
+        flush_indexed_batch(&state, to_write, embed_cfg.as_ref()).await;
     }
 
     let _ = app.emit("content-indexed", serde_json::json!({

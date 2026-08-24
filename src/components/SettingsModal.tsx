@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { clsx } from "clsx";
 import { Activity, BookOpen, Bot, CheckCircle2, ChevronDown, Eye, FileText, FolderOpen, GitBranch, Info, LayoutList, Loader2, Palette, RefreshCw, Trash2, X, XCircle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { clearLog, getLogPath } from "../utils/errorLog";
 import { telemetrySetEnabled } from "../utils/telemetry";
 import { useStore } from "../store/useStore";
@@ -35,6 +35,16 @@ const T = {
       ollamaContextDefault: "recommended",
       ollamaContextHigh: "long tasks",
       ollamaContextHint: "The assistant's tools and instructions take ~6K tokens. Below 8K they get cut and the model stops working properly. Larger uses more memory.",
+      semantic: "Semantic search",
+      semanticHint: "Find files by meaning, not just by keyword — \"plumber invoice\" can match a document that says \"plumbing work\". Uses Ollama locally; nothing is sent anywhere.",
+      semanticModel: "Embedding model",
+      semanticReindex: "Changing the model invalidates existing vectors. Use Reindex on a workspace folder to rebuild them.",
+      semanticChecking: "Checking Ollama…",
+      semanticOffline: "Ollama is not reachable — semantic search will stay idle until it is running.",
+      semanticInstalled: (m: string) => `${m} is installed`,
+      semanticMissing: (m: string) => `${m} is not installed in Ollama — nothing will be indexed until it is.`,
+      semanticPull: (m: string) => `Download ${m}`,
+      semanticPulling: "Downloading…",
     },
     appearance: {
       theme: "Theme", dark: "Dark", light: "Light",
@@ -127,6 +137,16 @@ const T = {
       ollamaContextDefault: "recommandé",
       ollamaContextHigh: "tâches longues",
       ollamaContextHint: "Les outils et instructions de l'assistant occupent ~6K tokens. En dessous de 8K ils sont tronqués et le modèle cesse de fonctionner correctement. Plus grand = plus de mémoire.",
+      semantic: "Recherche sémantique",
+      semanticHint: "Trouver des fichiers par le sens, pas seulement par mot-clé — « facture plombier » peut trouver un document qui dit « travaux de plomberie ». Utilise Ollama en local ; rien n'est envoyé ailleurs.",
+      semanticModel: "Modèle d'embedding",
+      semanticReindex: "Changer de modèle invalide les vecteurs existants. Utilisez Réindexer sur un dossier du workspace pour les reconstruire.",
+      semanticChecking: "Vérification d'Ollama…",
+      semanticOffline: "Ollama est injoignable — la recherche sémantique restera inactive tant qu'il ne tourne pas.",
+      semanticInstalled: (m: string) => `${m} est installé`,
+      semanticMissing: (m: string) => `${m} n'est pas installé dans Ollama — rien ne sera indexé tant qu'il manque.`,
+      semanticPull: (m: string) => `Télécharger ${m}`,
+      semanticPulling: "Téléchargement…",
     },
     appearance: {
       theme: "Thème", dark: "Sombre", light: "Clair",
@@ -300,6 +320,122 @@ function ApiKeyField({
       </div>
       {error && <p className="text-[10px] text-red-400 mt-1">{error}</p>}
       <p className="text-[10px] text-text-muted mt-1">{labels.apiKeyHint}</p>
+    </div>
+  );
+}
+
+/**
+ * Status probe for the semantic-search embedding model.
+ *
+ * Exists because the failure it catches is otherwise SILENT: with the model not
+ * pulled, indexing runs, embeds nothing, and the only trace is a line in the
+ * console. The user turns the feature on, nothing ever happens, and there is no
+ * way to find out why from the UI. Same reasoning as the OCR language-pack
+ * probe (CLAUDE.md §42) — a background feature that can be misconfigured needs a
+ * surface that says so.
+ */
+function EmbeddingModelStatus({
+  ollamaUrl, model, labels,
+}: {
+  ollamaUrl: string;
+  model: string;
+  labels: {
+    semanticChecking: string; semanticOffline: string;
+    semanticInstalled: (m: string) => string; semanticMissing: (m: string) => string;
+    semanticPull: (m: string) => string; semanticPulling: string;
+  };
+}) {
+  const [state, setState] = useState<"checking" | "offline" | "installed" | "missing">("checking");
+  const [pulling, setPulling] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
+
+  const check = useCallback(async () => {
+    setState("checking");
+    try {
+      const res = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      if (!res.ok) { setState("offline"); return; }
+      const data = await res.json() as { models?: { name: string }[] };
+      const names = (data.models ?? []).map((m) => m.name);
+      // Ollama reports "nomic-embed-text:latest" for a bare "nomic-embed-text",
+      // so compare on the name before the tag rather than requiring an exact hit.
+      const base = (n: string) => n.split(":")[0];
+      setState(names.some((n) => base(n) === base(model)) ? "installed" : "missing");
+    } catch {
+      setState("offline");
+    }
+  }, [ollamaUrl, model]);
+
+  useEffect(() => { check(); }, [check]);
+
+  const pull = async () => {
+    setPulling(true);
+    setProgress(null);
+    try {
+      const res = await fetch(`${ollamaUrl}/api/pull`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: model, stream: true }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body!.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const obj = JSON.parse(line) as { status: string; completed?: number; total?: number };
+            const pct = obj.total && obj.completed
+              ? ` ${Math.round((obj.completed / obj.total) * 100)}%` : "";
+            setProgress(`${obj.status}${pct}`);
+          } catch { /* ignore a partial line */ }
+        }
+      }
+      await check();
+    } catch (e) {
+      setProgress(String(e));
+    } finally {
+      setPulling(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      {state === "checking" && (
+        <p className="flex items-center gap-1.5 text-[10px] text-text-muted">
+          <Loader2 size={10} className="animate-spin" /> {labels.semanticChecking}
+        </p>
+      )}
+      {state === "installed" && (
+        <p className="flex items-center gap-1.5 text-[10px] text-emerald-400">
+          <CheckCircle2 size={10} /> {labels.semanticInstalled(model)}
+        </p>
+      )}
+      {state === "offline" && (
+        <p className="flex items-center gap-1.5 text-[10px] text-amber-400">
+          <XCircle size={10} /> {labels.semanticOffline}
+        </p>
+      )}
+      {state === "missing" && (
+        <div className="flex flex-col gap-1.5">
+          <p className="flex items-center gap-1.5 text-[10px] text-amber-400">
+            <XCircle size={10} /> {labels.semanticMissing(model)}
+          </p>
+          <button
+            onClick={pull}
+            disabled={pulling}
+            className="self-start h-6 px-2 rounded text-[10px] bg-accent text-white hover:bg-accent/80 disabled:opacity-40 transition-colors"
+          >
+            {pulling ? labels.semanticPulling : labels.semanticPull(model)}
+          </button>
+        </div>
+      )}
+      {progress && <p className="text-[10px] text-text-muted mt-1 font-mono">{progress}</p>}
     </div>
   );
 }
@@ -1173,6 +1309,38 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                         </div>
                       </div>
                     )}
+
+                    {/* Semantic search. Independent of the AI provider: it only
+                        needs Ollama for embeddings, so it is offered even when
+                        the assistant itself runs on Anthropic. */}
+                    <div className="border-t border-border-subtle pt-3">
+                      <Row label={t.ai.semantic}>
+                        <Toggle
+                          checked={settings.semanticSearch}
+                          onChange={(v) => patch({ semanticSearch: v })}
+                        />
+                      </Row>
+                      <p className="text-[10px] text-text-muted mt-1 leading-relaxed">{t.ai.semanticHint}</p>
+                      {settings.semanticSearch && (
+                        <div className="mt-2">
+                          <p className="text-[11px] text-text-muted mb-1">{t.ai.semanticModel}</p>
+                          <input
+                            type="text"
+                            value={settings.embeddingModel}
+                            onChange={(e) => patch({ embeddingModel: e.target.value })}
+                            placeholder="nomic-embed-text"
+                            className="w-full h-7 px-2.5 rounded bg-surface-3 border border-border text-[11px] text-text-primary outline-none focus:border-accent transition-colors font-mono"
+                            spellCheck={false}
+                          />
+                          <EmbeddingModelStatus
+                            ollamaUrl={settings.ollamaUrl}
+                            model={settings.embeddingModel}
+                            labels={t.ai}
+                          />
+                          <p className="text-[10px] text-text-muted mt-1 leading-relaxed">{t.ai.semanticReindex}</p>
+                        </div>
+                      )}
+                    </div>
 
                     {/* Custom instructions — appended to every system prompt */}
                     <div className="border-t border-border-subtle pt-3">

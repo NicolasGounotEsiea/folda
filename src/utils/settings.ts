@@ -53,6 +53,16 @@ export interface AppSettings {
   /// 16384 leaves ~10k of working room above the prefix (enough for a real
   /// multi-step task with tool results) while staying modest for a 3B model.
   ollamaContextTokens: number;
+  /// Semantic search — match files by MEANING, not just by keyword.
+  ///
+  /// Off by default: it needs Ollama running with an embedding model pulled, so
+  /// turning it on is a deliberate step (same pattern as OCR). When off, nothing
+  /// in the indexing path changes and `search_semantic` returns an empty list.
+  semanticSearch: boolean;
+  /// Ollama model used to embed file content and queries. Changing it
+  /// invalidates every stored vector — rows carry the model they were made with
+  /// and mismatched ones are ignored rather than compared across models.
+  embeddingModel: string;
   contentIndexing: boolean;
   aiInstructions: string;
   // ── Git integration (opt-in, read-only) ──────────────────────────────────
@@ -115,6 +125,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ollamaModel: "llama3.2:3b",
   ollamaUrl: "http://localhost:11434",
   ollamaContextTokens: 16384,
+  semanticSearch: false,
+  embeddingModel: "nomic-embed-text",
   contentIndexing: true,
   aiInstructions: "",
   gitEnabled: false,
@@ -259,6 +271,8 @@ export function deserializeSettings(raw: Record<string, string>): AppSettings {
     ollamaUrl:          raw.ollamaUrl ?? d.ollamaUrl,
     // Clamped: below ~8k the prompt prefix alone doesn't fit (see the field's
     // doc comment), and a garbage value must not silently break the assistant.
+    semanticSearch:     raw.semanticSearch !== undefined ? raw.semanticSearch === "true" : d.semanticSearch,
+    embeddingModel:     raw.embeddingModel ?? d.embeddingModel,
     ollamaContextTokens: raw.ollamaContextTokens !== undefined
       ? Math.max(8192, Math.min(131072, Number(raw.ollamaContextTokens) || d.ollamaContextTokens))
       : d.ollamaContextTokens,

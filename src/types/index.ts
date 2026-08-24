@@ -81,6 +81,11 @@ export interface ListEntry {
   /// Undefined / false for regular list_directory results. Drives the small
   /// "contenu" badge that explains why a non-name-matching file is in the list.
   matched_content?: boolean;
+  /// Matched by MEANING rather than by any literal word (semantic search).
+  /// Rendered with its own badge: the toolbar search REPLACES the file list, so
+  /// an "approximately related" file sitting unlabelled among exact matches
+  /// would read as a bug rather than as a feature.
+  matched_semantic?: boolean;
   /// FTS5-generated excerpt of the matched content, with the matched terms
   /// wrapped in `<b>` / `</b>` markers. Only present when matched_content is
   /// true. The frontend renders the markers as React `<mark>` elements —

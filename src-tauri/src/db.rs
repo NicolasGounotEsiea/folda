@@ -226,6 +226,20 @@ fn create_tables(conn: &Connection) -> Result<()> {
             indexed_at   INTEGER NOT NULL DEFAULT (unixepoch())
         );
 
+        -- Semantic search vectors. One row per file whose text_content was
+        -- embedded. Mirrors the file_content rule that a ROW MEANS ATTEMPTED: an
+        -- embedding that failed still gets a row (zero vec) so the indexer
+        -- doesn't retry it forever. `model`+`dim` are stored so switching the
+        -- embedding model invalidates cleanly instead of silently comparing
+        -- vectors from two different models. See CLAUDE.md section 45.
+        CREATE TABLE IF NOT EXISTS file_embeddings (
+            file_id    INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+            vec        BLOB    NOT NULL,
+            model      TEXT    NOT NULL,
+            dim        INTEGER NOT NULL,
+            indexed_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
         CREATE VIRTUAL TABLE IF NOT EXISTS file_content_fts USING fts5(
             text_content,
             content='file_content',

@@ -24,3 +24,4 @@ pub mod ocr;
 pub mod telemetry;
 pub mod vault;
 pub mod apikey;
+pub mod embeddings;

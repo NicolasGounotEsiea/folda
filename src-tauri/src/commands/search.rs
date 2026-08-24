@@ -17,6 +17,10 @@ pub struct SearchHit {
     pub file: FileEntry,
     pub matched_name: bool,    // file name OR extension matched the FTS query
     pub matched_content: bool, // extracted text content matched
+    /// Matched by MEANING rather than by any literal word (see `search_semantic`).
+    /// Lets the UI label why a file surfaced, and lets it rank exact matches first.
+    #[serde(default)]
+    pub matched_semantic: bool,
     pub snippet: Option<String>,
 }
 
@@ -243,6 +247,7 @@ pub fn search_files(
             Some(SearchHit {
                 matched_name: name_scores.contains_key(&id),
                 matched_content: content_results.contains_key(&id),
+                matched_semantic: false,
                 snippet: content_results.get(&id).map(|(s, _)| s.clone()),
                 file,
             })
@@ -452,4 +457,223 @@ mod tests {
         assert!(path_in_roots(r"C:\b\deep\file", &roots));
         assert!(!path_in_roots(r"C:\c\file", &roots));
     }
+}
+
+// ── Semantic search ──────────────────────────────────────────────────────────
+
+/// Minimum cosine similarity for a result to be shown.
+///
+/// Every vector scores *something* against every query, so without a floor the
+/// top-k is always full — of noise when nothing actually matches. An empty
+/// result set is far better for trust than three confidently-wrong files.
+/// Tuned by hand against real queries; raise it if results feel loose.
+const SIMILARITY_FLOOR: f32 = 0.35;
+
+/// Find files whose CONTENT MEANS something close to `query`, as opposed to
+/// `search_files`, which finds files containing the literal words.
+///
+/// Returns an empty list (never an error) when the feature is off or nothing is
+/// indexed yet — callers treat "no semantic results" and "semantic disabled"
+/// identically, so a disabled feature degrades to plain FTS with no branching.
+#[tauri::command]
+pub async fn search_semantic(
+    query: String,
+    context_id: Option<i64>,
+    limit: Option<usize>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SearchHit>, String> {
+    let context_id = context_id.unwrap_or(0);
+    let limit = limit.unwrap_or(20).min(200);
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Read config under a short lock — never held across the await below.
+    let cfg = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        crate::commands::embeddings::load_config(&db)
+    };
+    let Some(cfg) = cfg else { return Ok(Vec::new()) };
+
+    // Embed the query. A failure here is worth surfacing: the user explicitly
+    // asked for this search, unlike background indexing which stays silent.
+    let mut vecs = crate::commands::embeddings::embed_batch(&cfg, std::slice::from_ref(&query)).await?;
+    let query_vec = match vecs.pop() {
+        Some(v) if !v.is_empty() => v,
+        _ => return Ok(Vec::new()),
+    };
+
+    // Scoring + hydration is pure DB/CPU work — keep it off the async runtime.
+    let db_arc = state.db.clone();
+    let model = cfg.model.clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<SearchHit>, String> {
+        let db = db_arc.lock().map_err(|e| e.to_string())?;
+        rank_by_vector(&db, &query_vec, &model, context_id, limit, SIMILARITY_FLOOR, None)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Score every stored vector against `probe`, then hydrate the best ones.
+///
+/// Shared by `search_semantic` (probe = the embedded query) and
+/// `find_similar_files` (probe = another file's own vector), so the ranking,
+/// workspace scoping and hydration behave identically in both.
+///
+/// `exclude` drops one file id from the results — a file is always its own
+/// nearest neighbour, and listing it under "similar files" is noise.
+fn rank_by_vector(
+    db: &rusqlite::Connection,
+    probe: &[f32],
+    model: &str,
+    context_id: i64,
+    limit: usize,
+    floor: f32,
+    exclude: Option<i64>,
+) -> Result<Vec<SearchHit>, String> {
+    let roots = workspace_roots(db, context_id);
+
+    // Only vectors from the CURRENT model are comparable. Rows written by a
+    // previously-configured model are silently ignored rather than compared —
+    // cross-model cosine is meaningless, not merely inaccurate.
+    let mut stmt = db
+        .prepare("SELECT file_id, vec FROM file_embeddings WHERE model = ?1")
+        .map_err(|e| e.to_string())?;
+    let mut scored: Vec<(i64, f32)> = stmt
+        .query_map(rusqlite::params![model], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .filter(|(id, _)| Some(*id) != exclude)
+        .filter_map(|(id, blob)| {
+            let v = crate::commands::embeddings::unpack(&blob);
+            let score = crate::commands::embeddings::dot(probe, &v);
+            (score >= floor).then_some((id, score))
+        })
+        .collect();
+
+    // Highest similarity first.
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
+    if scored.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids: Vec<i64> = scored.iter().map(|(id, _)| *id).collect();
+    let placeholders = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT f.id, f.path, f.name, f.extension, f.size,
+                f.created_at, f.modified_at, f.accessed_at
+         FROM files f
+         WHERE f.id IN ({})",
+        placeholders,
+    );
+    let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+    let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut by_id: HashMap<i64, FileEntry> = HashMap::with_capacity(ids.len());
+    stmt.query_map(rusqlite::params_from_iter(params), |row| {
+        Ok(FileEntry {
+            id: row.get::<_, i64>(0)?,
+            path: row.get::<_, String>(1)?,
+            name: row.get::<_, String>(2)?,
+            extension: row.get::<_, String>(3)?,
+            size: row.get::<_, i64>(4)?,
+            created_at: row.get::<_, i64>(5)?,
+            modified_at: row.get::<_, i64>(6)?,
+            accessed_at: row.get::<_, i64>(7)?,
+            tags: Vec::new(),
+        })
+    })
+    .map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok())
+    .for_each(|f| {
+        by_id.insert(f.id, f);
+    });
+
+    // Rebuild in score order; SQL IN(..) returns rows arbitrarily ordered.
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| {
+            let mut file = by_id.remove(&id)?;
+            // Same workspace scoping as search_files: a global index must not
+            // leak files from another workspace into these results.
+            if let Some(roots) = &roots {
+                if !path_in_roots(&file.path, roots) {
+                    return None;
+                }
+            }
+            file.tags = load_file_tags(db, id, context_id);
+            Some(SearchHit {
+                matched_name: false,
+                matched_content: false,
+                matched_semantic: true,
+                snippet: None,
+                file,
+            })
+        })
+        .collect())
+}
+
+/// Minimum similarity for the "similar files" panel.
+///
+/// Higher than `SIMILARITY_FLOOR` on purpose: that one compares a SHORT query
+/// against a document, this compares two full documents, and document-to-
+/// document cosine sits much higher across the board. Reusing the search floor
+/// here would mark almost every pair of files as related, which is worse than
+/// showing nothing. Tune against a real corpus.
+const SIMILAR_FLOOR: f32 = 0.5;
+
+/// Files whose content means something close to the given file's.
+///
+/// Powers the "Similar files" section of the preview panel. Costs no network
+/// call at all: the file's own vector is already stored, so this is one pass of
+/// dot products over vectors we computed at indexing time.
+///
+/// Returns an empty list — never an error — when semantic search is off, the
+/// file was never indexed, or nothing clears the floor. All three mean the same
+/// thing to the UI: don't render the section.
+#[tauri::command]
+pub async fn find_similar_files(
+    path: String,
+    context_id: Option<i64>,
+    limit: Option<usize>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SearchHit>, String> {
+    let context_id = context_id.unwrap_or(0);
+    let limit = limit.unwrap_or(5).min(50);
+
+    let db_arc = state.db.clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<SearchHit>, String> {
+        let db = db_arc.lock().map_err(|e| e.to_string())?;
+
+        let Some(cfg) = crate::commands::embeddings::load_config(&db) else {
+            return Ok(Vec::new());
+        };
+
+        // The file's own vector is the probe. Joining through `files` keeps the
+        // lookup on the indexed `path` column instead of scanning embeddings.
+        let probe: Option<(i64, Vec<u8>)> = db
+            .query_row(
+                "SELECT e.file_id, e.vec
+                 FROM file_embeddings e
+                 JOIN files f ON f.id = e.file_id
+                 WHERE f.path = ?1 AND e.model = ?2",
+                rusqlite::params![path, cfg.model],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .ok();
+
+        // Not indexed yet (or indexed under a different model) — nothing to
+        // compare against, and nothing worth telling the user about.
+        let Some((self_id, blob)) = probe else { return Ok(Vec::new()) };
+        let vec = crate::commands::embeddings::unpack(&blob);
+        if vec.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        rank_by_vector(&db, &vec, &cfg.model, context_id, limit, SIMILAR_FLOOR, Some(self_id))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

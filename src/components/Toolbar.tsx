@@ -123,6 +123,37 @@ export function Toolbar({
           : Promise.resolve([] as ListEntry[]),
       ]);
       startTransition(() => setListEntries([...folderEntries, ...fileEntries]));
+
+      // Semantic pass, appended AFTER the exact results are already on screen.
+      // Never awaited alongside them: it needs an embedding round-trip (hundreds
+      // of ms on a cold model) and this box replaces the whole file list, so
+      // blocking on it would make the main search visibly slower.
+      //
+      // Appending (rather than re-sorting) keeps every exact match exactly where
+      // the user already saw it.
+      if (type !== "folders" && useStore.getState().settings.semanticSearch) {
+        const known = new Set([...folderEntries, ...fileEntries].map((f) => f.path));
+        invoke<SearchHit[]>("search_semantic", {
+          query: q, contextId: activeContextId ?? 0, limit: 10,
+        })
+          .then((hits) => {
+            // The user may have typed on, or cleared the box, while we waited.
+            if (useStore.getState().searchQuery !== q) return;
+            const fresh = hits
+              .filter((f) => !known.has(f.path))
+              .map((f): ListEntry => ({
+                is_dir: false, name: f.name, path: f.path, size: f.size,
+                created_at: f.created_at, modified_at: f.modified_at,
+                extension: f.extension, id: f.id, tags: f.tags,
+                matched_semantic: true,
+              }));
+            if (!fresh.length) return;
+            startTransition(() => setListEntries([...folderEntries, ...fileEntries, ...fresh]));
+          })
+          // Silent: semantic is a bonus lane. If Ollama is down, the exact
+          // results the user is already looking at remain perfectly good.
+          .catch(() => {});
+      }
     } catch (e) {
       console.error(e);
     }
