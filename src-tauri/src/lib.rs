@@ -91,6 +91,12 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir)?;
             let db_path = data_dir.join("contextual.db");
             let conn = db::init(&db_path).expect("Failed to initialize database");
+
+            // Move any pre-existing cleartext Anthropic key out of the DB and
+            // into the OS credential store. Safe to run on every launch: it's a
+            // no-op once migrated, and it never drops the cleartext copy unless
+            // the credential store accepted the key first. See commands/apikey.rs.
+            commands::apikey::migrate_cleartext_key(&conn);
             app.manage(AppState {
                 db: Arc::new(Mutex::new(conn)),
                 sharing: tokio::sync::Mutex::new(sharing::SharingState::Idle),
@@ -203,6 +209,10 @@ pub fn run() {
             commands::stats::get_folder_sizes,
             commands::settings::get_all_settings,
             commands::settings::set_setting,
+            // Anthropic API key — stored in the OS credential store, never the DB
+            commands::apikey::set_api_key,
+            commands::apikey::get_api_key,
+            commands::apikey::clear_api_key,
             commands::settings::purge_old_activity,
             commands::archive::list_archive,
             commands::archive::extract_archive,

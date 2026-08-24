@@ -22,10 +22,19 @@ const T = {
       providerOllamaSub: "Free · Local · No data sent",
       providerAnthropicSub: "Paid API · Best quality",
       apiKey: "API Key",
-      apiKeyHint: "Get your key at console.anthropic.com · Stored locally, never synced",
+      apiKeyHint: "Get your key at console.anthropic.com · Kept in Windows Credential Manager, not in nxs's database",
+      apiKeyStored: "Key stored securely",
+      apiKeySave: "Save",
+      apiKeySaving: "Saving…",
+      apiKeyRemove: "Remove",
       model: "Model",
       modelHint: "Haiku is fast and cheap · Sonnet is balanced · Opus is most capable",
       ollamaUrl: "Ollama URL (advanced)",
+      ollamaContext: "Context window",
+      ollamaContextLow: "low memory",
+      ollamaContextDefault: "recommended",
+      ollamaContextHigh: "long tasks",
+      ollamaContextHint: "The assistant's tools and instructions take ~6K tokens. Below 8K they get cut and the model stops working properly. Larger uses more memory.",
     },
     appearance: {
       theme: "Theme", dark: "Dark", light: "Light",
@@ -105,10 +114,19 @@ const T = {
       providerOllamaSub: "Gratuit · Local · Aucune donnée envoyée",
       providerAnthropicSub: "API payante · Meilleure qualité",
       apiKey: "Clé API",
-      apiKeyHint: "Obtenez votre clé sur console.anthropic.com · Stockée localement, jamais synchronisée",
+      apiKeyHint: "Obtenez votre clé sur console.anthropic.com · Conservée dans le Gestionnaire d'identifiants Windows, pas dans la base de nxs",
+      apiKeyStored: "Clé stockée en sécurité",
+      apiKeySave: "Enregistrer",
+      apiKeySaving: "Enregistrement…",
+      apiKeyRemove: "Retirer",
       model: "Modèle",
       modelHint: "Haiku est rapide et économique · Sonnet est équilibré · Opus est le plus puissant",
       ollamaUrl: "URL d'Ollama (avancé)",
+      ollamaContext: "Fenêtre de contexte",
+      ollamaContextLow: "peu de mémoire",
+      ollamaContextDefault: "recommandé",
+      ollamaContextHigh: "tâches longues",
+      ollamaContextHint: "Les outils et instructions de l'assistant occupent ~6K tokens. En dessous de 8K ils sont tronqués et le modèle cesse de fonctionner correctement. Plus grand = plus de mémoire.",
     },
     appearance: {
       theme: "Thème", dark: "Sombre", light: "Clair",
@@ -194,6 +212,98 @@ const SECTIONS: { id: Section; icon: React.ReactNode }[] = [
 ];
 
 // ── Small reusable sub-components ─────────────────────────────────────────────
+/**
+ * Anthropic API key field.
+ *
+ * The key is NOT in `settings` — it lives in the Windows credential store, and
+ * `settings.claudeApiKey` is only a presence flag (see `commands/apikey.rs`).
+ * So this can't be a controlled input bound to settings: it holds what the user
+ * is typing locally, hands it to `set_api_key`, and then forgets it.
+ *
+ * A stored key is never displayed. It cannot be read back for editing — that is
+ * the point of moving it out of the DB — so the affordances are "replace" and
+ * "remove", not "edit".
+ */
+function ApiKeyField({
+  stored, labels, onFlagChange,
+}: {
+  stored: boolean;
+  labels: { apiKey: string; apiKeyHint: string; apiKeyStored: string; apiKeySave: string; apiKeyRemove: string; apiKeySaving: string };
+  onFlagChange: (stored: boolean) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    const key = draft.trim();
+    if (!key) return;
+    setBusy(true); setError(null);
+    try {
+      await invoke("set_api_key", { key });
+      setDraft("");           // never keep the secret in component state
+      onFlagChange(true);
+    } catch (e) {
+      setError(String(e));
+    } finally { setBusy(false); }
+  };
+
+  const remove = async () => {
+    setBusy(true); setError(null);
+    try {
+      await invoke("clear_api_key");
+      setDraft("");
+      onFlagChange(false);
+    } catch (e) {
+      setError(String(e));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="py-1">
+      <p className="text-[12px] text-text-primary mb-1.5">{labels.apiKey}</p>
+      {stored && !draft && (
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="flex items-center gap-1.5 text-[11px] text-emerald-400">
+            <CheckCircle2 size={12} /> {labels.apiKeyStored}
+          </span>
+          <div className="flex-1" />
+          <button
+            onClick={remove}
+            disabled={busy}
+            className="text-[11px] text-text-muted hover:text-red-400 disabled:opacity-40 transition-colors"
+          >
+            {labels.apiKeyRemove}
+          </button>
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <input
+          type="password"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); save(); } }}
+          placeholder={stored ? "sk-ant-…  (replace)" : "sk-ant-…"}
+          className="flex-1 h-7 px-2.5 rounded bg-surface-3 border border-border text-[12px] text-text-primary placeholder-text-muted outline-none focus:border-accent transition-colors font-mono min-w-0"
+          spellCheck={false}
+          autoComplete="off"
+        />
+        {draft.trim() && (
+          <button
+            onClick={save}
+            disabled={busy}
+            className="shrink-0 h-7 px-2.5 rounded text-[11px] bg-accent text-white hover:bg-accent/80 disabled:opacity-40 transition-colors"
+          >
+            {busy ? labels.apiKeySaving : labels.apiKeySave}
+          </button>
+        )}
+      </div>
+      {error && <p className="text-[10px] text-red-400 mt-1">{error}</p>}
+      <p className="text-[10px] text-text-muted mt-1">{labels.apiKeyHint}</p>
+    </div>
+  );
+}
+
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between py-2.5 border-b border-border-subtle last:border-0">
@@ -1044,6 +1154,23 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                             className="w-full h-7 px-2.5 rounded bg-surface-3 border border-border text-[11px] text-text-primary outline-none focus:border-accent transition-colors font-mono"
                           />
                         </div>
+                        {/* Context window. Not cosmetic: below ~8k the tool
+                            definitions + system prompt don't fit and Ollama
+                            silently truncates them, which reads as the model
+                            being stupid rather than as a settings problem. */}
+                        <div className="mt-3">
+                          <p className="text-[11px] text-text-muted mb-1">{t.ai.ollamaContext}</p>
+                          <select
+                            value={settings.ollamaContextTokens}
+                            onChange={(e) => patch({ ollamaContextTokens: Number(e.target.value) })}
+                            className="w-full h-7 px-2 rounded bg-surface-3 border border-border text-[11px] text-text-primary outline-none focus:border-accent transition-colors"
+                          >
+                            <option value={8192}>8K — {t.ai.ollamaContextLow}</option>
+                            <option value={16384}>16K — {t.ai.ollamaContextDefault}</option>
+                            <option value={32768}>32K — {t.ai.ollamaContextHigh}</option>
+                          </select>
+                          <p className="text-[10px] text-text-muted mt-1 leading-relaxed">{t.ai.ollamaContextHint}</p>
+                        </div>
                       </div>
                     )}
 
@@ -1065,18 +1192,13 @@ export function SettingsModal({ onClose, onShowGuide }: { onClose: () => void; o
                     {/* Anthropic section */}
                     {settings.aiProvider === "anthropic" && (
                       <div className="border-t border-border-subtle pt-3 flex flex-col gap-1">
-                        <div className="py-1">
-                          <p className="text-[12px] text-text-primary mb-1.5">{t.ai.apiKey}</p>
-                          <input
-                            type="password"
-                            value={settings.claudeApiKey}
-                            onChange={(e) => patch({ claudeApiKey: e.target.value })}
-                            placeholder="sk-ant-…"
-                            className="w-full h-7 px-2.5 rounded bg-surface-3 border border-border text-[12px] text-text-primary placeholder-text-muted outline-none focus:border-accent transition-colors font-mono"
-                            spellCheck={false}
-                          />
-                          <p className="text-[10px] text-text-muted mt-1">{t.ai.apiKeyHint}</p>
-                        </div>
+                        <ApiKeyField
+                          stored={settings.claudeApiKey === "stored"}
+                          labels={t.ai}
+                          // The backend owns the flag in the DB; mirror it into
+                          // the store so the UI updates without a reload.
+                          onFlagChange={(s) => patch({ claudeApiKey: s ? "stored" : "" })}
+                        />
                         <Row label={t.ai.model}>
                           <SegmentedControl
                             value={settings.claudeModel}

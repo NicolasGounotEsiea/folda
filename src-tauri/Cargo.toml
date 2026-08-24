@@ -75,6 +75,7 @@ git2 = { version = "0.19", default-features = false, features = ["vendored-libgi
 # Pure-Rust diff algorithm. Used by the Notepad++-style "Compare files" feature.
 # Tiny footprint (~50 KB), no transitive deps that pull anything heavy.
 similar = "2"
+keyring = { version = "3", features = ["windows-native"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = ["Win32_System_Threading", "Win32_UI_Shell"] }

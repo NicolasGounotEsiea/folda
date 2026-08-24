@@ -19,6 +19,16 @@ export interface AppSettings {
   hasSeenOnboarding: boolean;
   claudeEnabled: boolean;
   aiProvider: "ollama" | "anthropic";
+  /// PRESENCE FLAG ONLY — never the key itself.
+  ///
+  /// `""` = no key configured, `"stored"` = the key lives in the Windows
+  /// credential store (see `commands/apikey.rs`). The secret deliberately never
+  /// enters this object: `AppSettings` is mirrored into the Zustand store, which
+  /// is a plain JS object any DevTools console can read, and it used to be
+  /// persisted in cleartext in `contextual.db`.
+  ///
+  /// To read the real key, call the `get_api_key` command at the point of use.
+  /// To change it, call `set_api_key` — do NOT `patch({ claudeApiKey })`.
   claudeApiKey: string;
   /// Anthropic model id. MUST be a real, currently-served model id — a stale
   /// value here is not a cosmetic bug: the API rejects it and the assistant is
@@ -29,6 +39,20 @@ export interface AppSettings {
   claudeModel: "claude-haiku-4-5-20251001" | "claude-sonnet-5" | "claude-opus-4-8";
   ollamaModel: string;
   ollamaUrl: string;
+  /// Context window (`num_ctx`) sent to Ollama on every request.
+  ///
+  /// This MUST be set explicitly. Ollama's own default is 4096 tokens, and our
+  /// tool definitions plus the system prompt are ~6000 — so on the default the
+  /// prompt doesn't fit before the user has typed anything, and Ollama silently
+  /// truncates it. What gets dropped is exactly the part the assistant needs:
+  /// the system prompt and the tool schemas. The model then looks "unreliable"
+  /// when in fact it never received its instructions.
+  ///
+  /// The cost of raising it is memory: the KV cache grows with the context, so
+  /// a large value on a small GPU pushes work to the CPU or fails to allocate.
+  /// 16384 leaves ~10k of working room above the prefix (enough for a real
+  /// multi-step task with tool results) while staying modest for a 3B model.
+  ollamaContextTokens: number;
   contentIndexing: boolean;
   aiInstructions: string;
   // ── Git integration (opt-in, read-only) ──────────────────────────────────
@@ -90,6 +114,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   claudeModel: "claude-haiku-4-5-20251001",
   ollamaModel: "llama3.2:3b",
   ollamaUrl: "http://localhost:11434",
+  ollamaContextTokens: 16384,
   contentIndexing: true,
   aiInstructions: "",
   gitEnabled: false,
@@ -232,6 +257,11 @@ export function deserializeSettings(raw: Record<string, string>): AppSettings {
     claudeModel:        migrateClaudeModel(raw.claudeModel) ?? d.claudeModel,
     ollamaModel:        raw.ollamaModel ?? d.ollamaModel,
     ollamaUrl:          raw.ollamaUrl ?? d.ollamaUrl,
+    // Clamped: below ~8k the prompt prefix alone doesn't fit (see the field's
+    // doc comment), and a garbage value must not silently break the assistant.
+    ollamaContextTokens: raw.ollamaContextTokens !== undefined
+      ? Math.max(8192, Math.min(131072, Number(raw.ollamaContextTokens) || d.ollamaContextTokens))
+      : d.ollamaContextTokens,
     contentIndexing:    raw.contentIndexing !== undefined ? raw.contentIndexing === "true" : d.contentIndexing,
     aiInstructions:     raw.aiInstructions ?? d.aiInstructions,
     gitEnabled:         raw.gitEnabled !== undefined ? raw.gitEnabled === "true" : d.gitEnabled,

@@ -25,19 +25,189 @@ interface PlanMove {
 
 const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
 
+/** A cache breakpoint. Any content block may carry one — see the prompt-caching
+ *  section below for where we place them and why. */
+interface CacheControl { cache_control?: { type: "ephemeral" } }
+
 type AnthropicBlock =
-  | { type: "text"; text: string }
-  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
-  | { type: "tool_result"; tool_use_id: string; content: string };
+  | ({ type: "text"; text: string } & CacheControl)
+  | ({ type: "tool_use"; id: string; name: string; input: Record<string, unknown> } & CacheControl)
+  | ({ type: "tool_result"; tool_use_id: string; content: string } & CacheControl);
 
 interface AnthropicMsg {
   role: "user" | "assistant";
   content: string | AnthropicBlock[];
 }
 
+/**
+ * Token counts for one API call, accumulated across an agent loop to show the
+ * running cost of a conversation (see `addUsage`).
+ *
+ * Input is split three ways because the three are billed at very different
+ * rates: fresh input at 1×, a cache write at 1.25×, a cache read at ~0.1×.
+ * Keeping them apart is also the only way to tell whether prompt caching is
+ * actually working — `cacheRead` staying at 0 across a multi-step run means
+ * something is invalidating the prefix.
+ */
+export interface TokenUsage {
+  /** Uncached input tokens, billed at the full rate. */
+  input: number;
+  output: number;
+  /** `cache_creation_input_tokens` — writing the prefix, billed at 1.25×. */
+  cacheWrite: number;
+  /** `cache_read_input_tokens` — reading it back, billed at ~0.1×. */
+  cacheRead: number;
+}
+
+/** A zeroed usage accumulator. */
+function emptyUsage(): TokenUsage {
+  return { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+}
+
 interface AnthropicResp {
   content: AnthropicBlock[];
   stop_reason: string;
+  usage?: TokenUsage;
+}
+
+/**
+ * Turn a failed Anthropic response into a sentence the user can act on.
+ *
+ * The raw body is a JSON error envelope; dumping it in the UI (which is what we
+ * used to do) shows the user `Anthropic 429: {"type":"error",...}` and tells
+ * them nothing about what to do next. Status codes map to fixed advice; the
+ * API's own message is appended only when it adds something.
+ */
+function anthropicErrorMessage(status: number, body: string): string {
+  let apiMsg = "";
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: string } };
+    apiMsg = parsed.error?.message ?? "";
+  } catch { /* not JSON — ignore, the status advice is enough */ }
+
+  const advice: Record<number, string> = {
+    400: "The request was rejected. If this keeps happening, try a shorter conversation or a different model.",
+    401: "Your Anthropic API key was rejected. Check it in Settings → AI.",
+    403: "Your API key doesn't have access to this model. Check your Anthropic plan, or pick another model in Settings → AI.",
+    404: "That model doesn't exist. Pick another one in Settings → AI.",
+    413: "The conversation is too large to send. Start a new conversation.",
+    429: "Anthropic is rate-limiting your API key. Wait a moment and try again.",
+    500: "Anthropic had a server error. Try again in a moment.",
+    529: "Anthropic is overloaded right now. Try again in a moment.",
+  };
+  const base = advice[status] ?? `Anthropic returned an error (HTTP ${status}).`;
+  return apiMsg ? `${base}\n\n${apiMsg}` : base;
+}
+
+/** 429 (rate limited) and 5xx (server error / overloaded) are the retryable
+ *  ones — everything else is a request problem that retrying can't fix. */
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+const MAX_RETRIES = 2;
+
+// ── Prompt caching ───────────────────────────────────────────────────────────
+//
+// Caching is a PREFIX match: the request renders as tools → system → messages,
+// and a breakpoint caches everything before it. Any byte change earlier in that
+// prefix invalidates the entry.
+//
+// We place two breakpoints:
+//
+//  1. End of the system prompt — covers the tool definitions (~3.4k tokens) AND
+//     the system prompt (~2.6k). This is the big one: an agent loop makes up to
+//     MAX_AGENT_STEPS calls for ONE user message, and the system prompt is
+//     byte-identical across all of them (it's built once, before the loop). So
+//     step 1 writes the cache and steps 2..N read it at ~0.1× instead of 1×.
+//
+//  2. Last message block — the conversation history grows on every step (each
+//     appends an assistant tool_use and a user tool_result), so this lets each
+//     step reuse the previous step's history instead of re-billing it.
+//
+// Caveat on (2): a breakpoint only walks back ~20 content blocks to find a prior
+// entry. A long agentic run adds more blocks than that, so the history cache can
+// miss late in a run. Breakpoint (1) is unaffected — it sits ahead of all
+// messages — which is why it carries the guaranteed win.
+//
+// Minimum cacheable prefix is 4096 tokens on Haiku 4.5 and 1024 on Sonnet 5 /
+// Opus 4.8; measured at ~6k, we clear both. Below the minimum the API silently
+// declines to cache (no error), which is why `cacheRead` is surfaced in the UI.
+const CACHE_CONTROL = { type: "ephemeral" as const };
+
+/** System prompt in block form, carrying the breakpoint that caches tools+system. */
+function cachedSystem(system: string) {
+  return [{ type: "text" as const, text: system, cache_control: CACHE_CONTROL }];
+}
+
+/**
+ * Copy `messages` with a cache breakpoint on the final content block.
+ *
+ * Returns a shallow copy — mutating the caller's history would leave
+ * `cache_control` markers on the stored conversation, so every later turn would
+ * carry stale breakpoints from previous turns (max 4 per request; they'd also
+ * sit at the wrong positions).
+ */
+function withHistoryCacheBreakpoint(messages: AnthropicMsg[]): AnthropicMsg[] {
+  if (!messages.length) return messages;
+  const out = [...messages];
+  const last = out[out.length - 1];
+
+  // A string content has no block to mark — promote it to a single text block.
+  const blocks: AnthropicBlock[] = typeof last.content === "string"
+    ? [{ type: "text", text: last.content }]
+    : [...last.content];
+  if (!blocks.length) return messages;
+
+  blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: CACHE_CONTROL };
+  out[out.length - 1] = { ...last, content: blocks };
+  return out;
+}
+
+/**
+ * POST to Anthropic, retrying the retryable failures with backoff.
+ *
+ * Honors the `retry-after` header when the API sends one (it says exactly how
+ * long to wait), otherwise backs off exponentially. Non-retryable statuses and
+ * the final attempt throw a user-facing message.
+ */
+async function anthropicFetch(body: unknown, apiKey: string, signal?: AbortSignal): Promise<Response> {
+  let lastStatus = 0;
+  let lastBody = "";
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const res = await fetch(ANTHROPIC_API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (res.ok) return res;
+
+    lastStatus = res.status;
+    lastBody = await res.text().catch(() => "");
+    if (!isRetryableStatus(res.status) || attempt === MAX_RETRIES) break;
+
+    // `retry-after` is in seconds; cap it so a long value can't appear to hang.
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter * 1000, 15000)
+      : 1000 * 2 ** attempt;
+
+    // Wait, but stay responsive to Stop: without this the user's click would do
+    // nothing until the backoff elapsed (up to 15s of apparently frozen UI).
+    await new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
+      const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, waitMs);
+      function onAbort() { clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); }
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+  throw new Error(anthropicErrorMessage(lastStatus, lastBody));
 }
 
 async function callAnthropic(
@@ -46,18 +216,31 @@ async function callAnthropic(
   const tools = TOOLS.map((t) => ({
     name: t.name, description: t.description, input_schema: t.schema,
   }));
-  const res = await fetch(ANTHROPIC_API, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
+  const res = await anthropicFetch(
+    {
+      model, max_tokens: 4096,
+      system: cachedSystem(system),
+      tools,
+      messages: withHistoryCacheBreakpoint(messages),
     },
-    body: JSON.stringify({ model, max_tokens: 4096, system, tools, messages }),
-  });
-  if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
-  return res.json() as Promise<AnthropicResp>;
+    apiKey,
+  );
+  const json = await res.json() as AnthropicResp & {
+    usage?: {
+      input_tokens?: number; output_tokens?: number;
+      cache_creation_input_tokens?: number; cache_read_input_tokens?: number;
+    };
+  };
+  return {
+    content: json.content,
+    stop_reason: json.stop_reason,
+    usage: {
+      input: json.usage?.input_tokens ?? 0,
+      output: json.usage?.output_tokens ?? 0,
+      cacheWrite: json.usage?.cache_creation_input_tokens ?? 0,
+      cacheRead: json.usage?.cache_read_input_tokens ?? 0,
+    },
+  };
 }
 
 /// Streaming variant for Anthropic. Reassembles the same AnthropicResp at the end,
@@ -72,23 +255,25 @@ async function callAnthropicStream(
   const tools = TOOLS.map((t) => ({
     name: t.name, description: t.description, input_schema: t.schema,
   }));
-  const res = await fetch(ANTHROPIC_API, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
+  const res = await anthropicFetch(
+    {
+      model, max_tokens: 4096,
+      system: cachedSystem(system),
+      tools,
+      messages: withHistoryCacheBreakpoint(messages),
+      stream: true,
     },
-    body: JSON.stringify({ model, max_tokens: 4096, system, tools, messages, stream: true }),
-    signal: abortSignal,
-  });
-  if (!res.ok || !res.body) throw new Error(`Anthropic ${res.status}: ${await res.text().catch(() => "")}`);
+    apiKey, abortSignal,
+  );
+  if (!res.body) throw new Error(anthropicErrorMessage(res.status, ""));
 
   // Per-block accumulators. The stream interleaves multiple content_block_* events;
   // each block has an index and a final shape we assemble in `blocks`.
   const blocks: Map<number, AnthropicBlock & { _jsonAcc?: string }> = new Map();
   let stopReason = "end_turn";
+  // Usage arrives split across two events: input + cache counts on
+  // `message_start`, output tokens on `message_delta` (cumulative — last wins).
+  const usage: TokenUsage = emptyUsage();
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -106,7 +291,18 @@ async function callAnthropicStream(
     try { payload = JSON.parse(dataLine); } catch { return; }
     const type = payload.type as string;
 
-    if (type === "content_block_start") {
+    if (type === "message_start") {
+      const msg = payload.message as {
+        usage?: {
+          input_tokens?: number; output_tokens?: number;
+          cache_creation_input_tokens?: number; cache_read_input_tokens?: number;
+        };
+      } | undefined;
+      usage.input = msg?.usage?.input_tokens ?? 0;
+      usage.output = msg?.usage?.output_tokens ?? 0;
+      usage.cacheWrite = msg?.usage?.cache_creation_input_tokens ?? 0;
+      usage.cacheRead = msg?.usage?.cache_read_input_tokens ?? 0;
+    } else if (type === "content_block_start") {
       const idx = payload.index as number;
       const block = payload.content_block as Record<string, unknown>;
       if (block.type === "text") {
@@ -145,6 +341,8 @@ async function callAnthropicStream(
     } else if (type === "message_delta") {
       const delta = payload.delta as Record<string, unknown>;
       if (typeof delta.stop_reason === "string") stopReason = delta.stop_reason;
+      const u = payload.usage as { output_tokens?: number } | undefined;
+      if (typeof u?.output_tokens === "number") usage.output = u.output_tokens;
     }
   };
 
@@ -170,7 +368,7 @@ async function callAnthropicStream(
       delete clone._jsonAcc;
       return clone;
     });
-  return { content, stop_reason: stopReason };
+  return { content, stop_reason: stopReason, usage };
 }
 
 // ── Ollama types & helpers ────────────────────────────────────────────────────
@@ -187,6 +385,45 @@ interface OllamaToolCall {
 interface OllamaResp {
   message: { role: "assistant"; content: string; tool_calls?: OllamaToolCall[] };
   done: boolean;
+  /// Ollama reports token counts as `prompt_eval_count` / `eval_count`; we
+  /// normalize to the same shape as Anthropic so the loop can accumulate either.
+  usage?: TokenUsage;
+}
+
+/**
+ * Ollama runs locally, so its failures are different from a cloud API's: the
+ * server isn't running, the model was never pulled, or — the one that used to
+ * be a silent mystery — the model has no tool support at all.
+ */
+function ollamaErrorMessage(status: number, body: string): string {
+  // Ollama phrases this as "<model> does not support tools". Without a clear
+  // message the user just sees the assistant fail to do anything, with no hint
+  // that the MODEL is the problem rather than the app.
+  if (/does not support tools/i.test(body)) {
+    return "This Ollama model can't use tools, so the assistant can't act on your files. Pick a tool-capable model in Settings → AI (Llama 3.2 and Mistral work; Gemma does not).";
+  }
+  if (status === 404) {
+    return "Ollama doesn't have that model. Pull it first (`ollama pull <model>`), or pick another one in Settings → AI.";
+  }
+  const base = `Ollama returned an error (HTTP ${status}).`;
+  return body.trim() ? `${base}\n\n${body.trim().slice(0, 300)}` : base;
+}
+
+/**
+ * Options sent with every Ollama request.
+ *
+ * `num_ctx` is the load-bearing one — see `AppSettings.ollamaContextTokens`.
+ * Ollama defaults it to 4096, which is smaller than our tool definitions plus
+ * system prompt (~6000 tokens), so without this the prompt is truncated and the
+ * model never sees its instructions or its tools.
+ */
+function ollamaOptions(contextTokens: number) {
+  return { num_ctx: contextTokens };
+}
+
+/** A failed fetch to a local server almost always means it isn't running. */
+function ollamaUnreachableMessage(baseUrl: string): string {
+  return `Cannot reach Ollama at ${baseUrl}. Make sure it's running (\`ollama serve\`), or check the address in Settings → AI.`;
 }
 
 /// Streaming variant for Ollama. Emits text deltas via `onTextDelta`. Tool calls
@@ -253,6 +490,7 @@ function extractTextToolCalls(text: string): { cleanText: string; toolCalls: Oll
 
 async function callOllamaStream(
   baseUrl: string, model: string, system: string, messages: OllamaMsg[],
+  contextTokens: number,
   onTextDelta: (chunk: string) => void,
   abortSignal: AbortSignal,
 ): Promise<OllamaResp> {
@@ -267,11 +505,19 @@ async function callOllamaStream(
       model,
       messages: [{ role: "system", content: system }, ...messages],
       tools,
+      options: ollamaOptions(contextTokens),
       stream: true,
     }),
     signal: abortSignal,
+  }).catch((e: unknown) => {
+    // Don't mask a user-initiated Stop as "server unreachable".
+    if (e instanceof Error && e.name === "AbortError") throw e;
+    throw new Error(ollamaUnreachableMessage(baseUrl));
   });
-  if (!res.ok || !res.body) throw new Error(`Ollama ${res.status}: ${await res.text().catch(() => "")}`);
+  if (!res.ok || !res.body) {
+    const body = await res.text().catch(() => "");
+    throw new Error(ollamaErrorMessage(res.status, body));
+  }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -279,6 +525,8 @@ async function callOllamaStream(
   let accumulatedText = "";
   let toolCalls: OllamaToolCall[] | undefined;
   let doneFlag = false;
+  // Ollama sends the token counts once, on the final (`done: true`) frame.
+  const usage: TokenUsage = emptyUsage();
 
   while (true) {
     const { value, done } = await reader.read();
@@ -289,7 +537,10 @@ async function callOllamaStream(
       const line = buffer.slice(0, nl).trim();
       buffer = buffer.slice(nl + 1);
       if (!line) continue;
-      let payload: { message?: { content?: string; tool_calls?: OllamaToolCall[] }; done?: boolean };
+      let payload: {
+        message?: { content?: string; tool_calls?: OllamaToolCall[] };
+        done?: boolean; prompt_eval_count?: number; eval_count?: number;
+      };
       try { payload = JSON.parse(line); } catch { continue; }
       if (payload.message?.content) {
         accumulatedText += payload.message.content;
@@ -298,6 +549,8 @@ async function callOllamaStream(
       if (payload.message?.tool_calls?.length) {
         toolCalls = payload.message.tool_calls;
       }
+      if (typeof payload.prompt_eval_count === "number") usage.input = payload.prompt_eval_count;
+      if (typeof payload.eval_count === "number") usage.output = payload.eval_count;
       if (payload.done) doneFlag = true;
     }
   }
@@ -315,6 +568,7 @@ async function callOllamaStream(
           tool_calls: extracted.toolCalls,
         },
         done: doneFlag,
+        usage,
       };
     }
   }
@@ -322,11 +576,13 @@ async function callOllamaStream(
   return {
     message: { role: "assistant", content: accumulatedText, tool_calls: toolCalls },
     done: doneFlag,
+    usage,
   };
 }
 
 async function callOllama(
   baseUrl: string, model: string, system: string, messages: OllamaMsg[],
+  contextTokens: number,
 ): Promise<OllamaResp> {
   const tools = TOOLS.map((t) => ({
     type: "function",
@@ -339,11 +595,20 @@ async function callOllama(
       model,
       messages: [{ role: "system", content: system }, ...messages],
       tools,
+      options: ollamaOptions(contextTokens),
       stream: false,
     }),
-  });
-  if (!res.ok) throw new Error(`Ollama ${res.status}: ${await res.text()}`);
-  const resp = await res.json() as OllamaResp;
+  }).catch(() => { throw new Error(ollamaUnreachableMessage(baseUrl)); });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(ollamaErrorMessage(res.status, body));
+  }
+  const raw = await res.json() as OllamaResp & { prompt_eval_count?: number; eval_count?: number };
+  const resp: OllamaResp = {
+    ...raw,
+    // Ollama has no prompt cache, so the cache counters stay zero.
+    usage: { ...emptyUsage(), input: raw.prompt_eval_count ?? 0, output: raw.eval_count ?? 0 },
+  };
   // Same fallback as the streaming path: parse text-based tool calls if structured ones are absent.
   if (!resp.message?.tool_calls?.length && resp.message?.content) {
     const extracted = extractTextToolCalls(resp.message.content);
@@ -628,77 +893,57 @@ const TOOLS: ToolDef[] = [
     },
   },
 
-  // ── Workspace notes (terse descriptions — full rules live in system prompt) ─
+  // ── Workspace tasks & notes ────────────────────────────────────────────────
+  //
+  // These were once nine separate tools (add_task, toggle_task, delete_task,
+  // set_task_due, edit_task_text, bulk_task_action, get/set/append notes) —
+  // more than a quarter of the entire tool budget, for a to-do list, inside a
+  // FILE MANAGER. That surface competed for the model's attention with the
+  // tools that actually make this feature worth using (search, plan_moves,
+  // tag_files_matching). They're consolidated here into one tool per resource,
+  // with every previous capability preserved:
+  //   • single-task actions        → `match` with a task id or text substring
+  //   • bulk actions               → `match` with a scope keyword, or all_matching
+  //   • the multilingual keywords  → still honored (tous / les deux / both / …)
   {
-    name: "add_task",
-    description: "Add a task. due_date YYYY-MM-DD, due_time HH:MM.",
+    name: "manage_tasks",
+    description:
+      "Create or change workspace tasks. " +
+      "action=add needs `text` (plus optional due_date YYYY-MM-DD / due_time HH:MM). " +
+      "All other actions need `match`: a task id, a text substring, or a scope keyword " +
+      "('all'/'tous'/'les deux' = every task, 'undone'/'todo', 'done'). " +
+      "action=rename also needs `text` (the new title). " +
+      "action=set_due sets due_date/due_time — pass due_date=\"\" to clear the due date. " +
+      "A text substring acts on the single best-matching task unless all_matching=true.",
     schema: {
       type: "object",
       properties: {
-        text:     { type: "string" },
-        due_date: { type: "string" },
-        due_time: { type: "string" },
+        action: {
+          type: "string",
+          enum: ["add", "done", "undone", "toggle", "delete", "set_due", "rename"],
+        },
+        match:    { type: "string", description: "Task id, text substring, or scope keyword. Not used by action=add." },
+        text:     { type: "string", description: "Task title — required for action=add and action=rename." },
+        due_date: { type: "string", description: "YYYY-MM-DD. Empty string clears the due date." },
+        due_time: { type: "string", description: "HH:MM" },
+        all_matching: { type: "boolean", description: "Act on every task matching `match`, not just the best one." },
       },
-      required: ["text"],
+      required: ["action"],
     },
   },
   {
-    name: "toggle_task",
-    description: "Mark task done/undone. match = id or text substring.",
-    schema: { type: "object", properties: { match: { type: "string" } }, required: ["match"] },
-  },
-  {
-    name: "delete_task",
-    description: "Delete a task. match = id or text substring.",
-    schema: { type: "object", properties: { match: { type: "string" } }, required: ["match"] },
-  },
-  {
-    name: "set_task_due",
-    description: "Change/clear a task's due date+time. Empty due_date clears all.",
+    name: "workspace_notes",
+    description:
+      "Read or write the workspace's free-form notes. action=get returns the tasks AND the notes " +
+      "(only needed if you suspect the inline CURRENT TASKS section is stale). " +
+      "action=set replaces the notes, action=append adds to them — both need `content`. Tasks are untouched.",
     schema: {
       type: "object",
       properties: {
-        match:    { type: "string" },
-        due_date: { type: "string" },
-        due_time: { type: "string" },
+        action:  { type: "string", enum: ["get", "set", "append"] },
+        content: { type: "string" },
       },
-      required: ["match"],
-    },
-  },
-  {
-    name: "edit_task_text",
-    description: "Rename a task.",
-    schema: {
-      type: "object",
-      properties: { match: { type: "string" }, new_text: { type: "string" } },
-      required: ["match", "new_text"],
-    },
-  },
-  {
-    name: "set_workspace_notes_text",
-    description: "Replace the free-form notes section (tasks untouched).",
-    schema: { type: "object", properties: { content: { type: "string" } }, required: ["content"] },
-  },
-  {
-    name: "append_to_workspace_notes",
-    description: "Append text to the free-form notes section.",
-    schema: { type: "object", properties: { content: { type: "string" } }, required: ["content"] },
-  },
-  {
-    name: "get_workspace_notes",
-    description: "Re-read notes from DB (only if you suspect the inline CURRENT TASKS section is stale).",
-    schema: { type: "object", properties: {}, required: [] },
-  },
-  {
-    name: "bulk_task_action",
-    description: "Act on MULTIPLE tasks at once. Use for 'les deux/both/all/tous/tous les non finis'. action ∈ {done, undone, toggle, delete}. scope ∈ {all, undone, done, <text substring>}.",
-    schema: {
-      type: "object",
-      properties: {
-        action: { type: "string", description: "done | undone | toggle | delete" },
-        scope:  { type: "string", description: "'all', 'undone', 'done', or a text substring matching the tasks to act on" },
-      },
-      required: ["action", "scope"],
+      required: ["action"],
     },
   },
 ];
@@ -783,6 +1028,62 @@ function notesFindTask(state: NotesState, match: string): NoteTask | null {
     return ad.localeCompare(bd);
   });
   return matches[0];
+}
+
+/// Scope keywords that select a SET of tasks rather than one.
+/// The French/English pairs are deliberate: users say "coche les deux" and
+/// "mark both done" in the same breath as the model's own English reasoning,
+/// and losing them would silently break the bulk cases these were tuned for.
+const TASK_SCOPE_ALL = ["all", "tous", "tout", "toutes", "both", "les deux", "everything"];
+const TASK_SCOPE_UNDONE = ["undone", "todo", "pending", "not done", "à faire", "a faire"];
+const TASK_SCOPE_DONE = ["done", "completed", "finished", "faites", "terminées", "terminees"];
+
+/**
+ * Which task(s) an action applies to.
+ *
+ * A scope keyword ("all", "undone", …) selects a set. A plain substring selects
+ * the single most-urgent match — because "mark the invoice task done" means one
+ * task even when several contain "invoice" — unless `allMatching` is set, which
+ * restores the old `bulk_task_action(scope: <substring>)` behaviour.
+ */
+function resolveTaskTargets(state: NotesState, match: string, allMatching: boolean): NoteTask[] {
+  const q = match.trim().toLowerCase();
+  if (TASK_SCOPE_ALL.includes(q)) return [...state.tasks];
+  if (TASK_SCOPE_UNDONE.includes(q)) return state.tasks.filter((t) => !t.done);
+  if (TASK_SCOPE_DONE.includes(q)) return state.tasks.filter((t) => t.done);
+
+  if (allMatching) {
+    return state.tasks.filter((t) => t.text.toLowerCase().includes(q));
+  }
+  const one = notesFindTask(state, match);
+  return one ? [one] : [];
+}
+
+/// Combine a `YYYY-MM-DD` + optional `HH:MM` into the stored due string.
+/// Anything malformed yields undefined rather than a corrupt date.
+function buildDue(date: string, time: string): string | undefined {
+  const d = date.trim();
+  const t = time.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return undefined;
+  return /^\d{2}:\d{2}$/.test(t) ? `${d}T${t}` : d;
+}
+
+/// Apply a due-date change to an existing task. An explicitly empty `due_date`
+/// clears it; a lone `due_time` edits the time of the date already set.
+function applyDue(task: NoteTask, dueDate: unknown, dueTime: unknown): void {
+  const date = dueDate === "" ? "" : String(dueDate ?? "").trim();
+  const time = dueTime === "" ? "" : String(dueTime ?? "").trim();
+
+  if (date === "") {
+    task.due = undefined;
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    task.due = buildDue(date, time);
+  }
+  // Only a time given, and a date already exists → keep the date, set the time.
+  if (!dueDate && time && task.due) {
+    const d = task.due.slice(0, 10);
+    task.due = /^\d{2}:\d{2}$/.test(time) ? `${d}T${time}` : d;
+  }
 }
 
 function notesFormatTask(t: NoteTask): string {
@@ -1193,143 +1494,95 @@ async function executeTool(
         return `Memory [${input.id}] deleted.`;
       }
 
-      // ── Workspace notes ─────────────────────────────────────────────────
-      case "get_workspace_notes": {
-        const s = await notesLoad(contextId);
-        const taskLines = s.tasks.length
-          ? s.tasks.map(notesFormatTask).join("\n")
-          : "(no tasks)";
-        const notesBlock = s.notes.trim() ? `\n\n## Free-form notes\n${s.notes}` : "";
-        return `## Tasks (${s.tasks.length})\n${taskLines}${notesBlock}`;
-      }
-      case "add_task": {
-        const s = await notesLoad(contextId);
-        const date = String(input.due_date ?? "").trim();
-        const time = String(input.due_time ?? "").trim();
-        let due: string | undefined;
-        if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
-          due = time && /^\d{2}:\d{2}$/.test(time) ? `${date}T${time}` : date;
-        }
-        const id = Math.random().toString(36).slice(2, 10);
-        const task: NoteTask = { id, done: false, text: String(input.text), due };
-        s.tasks.push(task);
-        await notesSave(contextId, s);
-        const dueStr = due ? ` with due date ${due}` : "";
-        return `SUCCESS: Task "${task.text}"${dueStr} was added to the workspace tasks. The task id is ${task.id}. Tell the user the task is created. Do NOT ask for confirmation.`;
-      }
-      case "toggle_task": {
-        const s = await notesLoad(contextId);
-        const t = notesFindTask(s, String(input.match));
-        if (!t) {
-          const hint = s.tasks.length
-            ? ` Available tasks (look for the one the user meant): ${s.tasks.map((x) => `"${x.text}"`).join(", ")}.`
-            : "";
-          return `FAILURE: No task matched "${input.match}".${hint} Pick the right task by its actual text and retry.`;
-        }
-        t.done = !t.done;
-        await notesSave(contextId, s);
-        return `SUCCESS: Task "${t.text}" is now ${t.done ? "DONE" : "todo"}. Tell the user.`;
-      }
-      case "delete_task": {
-        const s = await notesLoad(contextId);
-        const t = notesFindTask(s, String(input.match));
-        if (!t) {
-          const hint = s.tasks.length
-            ? ` Available tasks: ${s.tasks.map((x) => `"${x.text}"`).join(", ")}.`
-            : "";
-          return `FAILURE: No task matched "${input.match}".${hint} Pick the right one and retry.`;
-        }
-        s.tasks = s.tasks.filter((x) => x.id !== t.id);
-        await notesSave(contextId, s);
-        return `SUCCESS: Task "${t.text}" was deleted. Tell the user.`;
-      }
-      case "set_task_due": {
-        const s = await notesLoad(contextId);
-        const t = notesFindTask(s, String(input.match));
-        if (!t) {
-          const hint = s.tasks.length
-            ? ` Available tasks: ${s.tasks.map((x) => `"${x.text}"`).join(", ")}.`
-            : "";
-          return `FAILURE: No task matched "${input.match}".${hint} Pick the right task and retry — do NOT call add_task.`;
-        }
-        const date = input.due_date === "" ? "" : String(input.due_date ?? "").trim();
-        const time = input.due_time === "" ? "" : String(input.due_time ?? "").trim();
-        if (date === "") {
-          t.due = undefined;
-        } else if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-          t.due = time && /^\d{2}:\d{2}$/.test(time) ? `${date}T${time}` : date;
-        }
-        // If only due_time provided and there's already a date, update time.
-        if (!input.due_date && time && t.due) {
-          const d = t.due.slice(0, 10);
-          t.due = /^\d{2}:\d{2}$/.test(time) ? `${d}T${time}` : d;
-        }
-        await notesSave(contextId, s);
-        return `SUCCESS: Task "${t.text}" due date is now ${t.due ?? "(cleared)"}. Tell the user.`;
-      }
-      case "edit_task_text": {
-        const s = await notesLoad(contextId);
-        const t = notesFindTask(s, String(input.match));
-        if (!t) {
-          const hint = s.tasks.length
-            ? ` Available tasks: ${s.tasks.map((x) => `"${x.text}"`).join(", ")}.`
-            : "";
-          return `FAILURE: No task matched "${input.match}".${hint}`;
-        }
-        const old = t.text;
-        t.text = String(input.new_text);
-        await notesSave(contextId, s);
-        return `SUCCESS: Task "${old}" renamed to "${t.text}". Tell the user.`;
-      }
-      case "set_workspace_notes_text": {
-        const s = await notesLoad(contextId);
-        s.notes = String(input.content ?? "");
-        await notesSave(contextId, s);
-        return `✓ Notes section replaced (${s.notes.length} chars).`;
-      }
-      case "append_to_workspace_notes": {
-        const s = await notesLoad(contextId);
-        const appended = String(input.content ?? "");
-        s.notes = s.notes.trim() ? `${s.notes}\n\n${appended}` : appended;
-        await notesSave(contextId, s);
-        return `✓ Appended to notes (${s.notes.length} chars total).`;
-      }
-      case "bulk_task_action": {
+      // ── Workspace tasks & notes ─────────────────────────────────────────
+      case "manage_tasks": {
         const s = await notesLoad(contextId);
         const action = String(input.action ?? "").toLowerCase().trim();
-        const scopeRaw = String(input.scope ?? "").toLowerCase().trim();
-        if (!s.tasks.length) return `FAILURE: No tasks exist in this workspace.`;
-        if (!["done", "undone", "toggle", "delete"].includes(action))
-          return `FAILURE: Unknown action "${action}". Use done | undone | toggle | delete.`;
 
-        // Resolve which tasks to act on
-        let targets: NoteTask[];
-        if (scopeRaw === "all" || scopeRaw === "tous" || scopeRaw === "tout" || scopeRaw === "both" || scopeRaw === "les deux") {
-          targets = [...s.tasks];
-        } else if (scopeRaw === "undone" || scopeRaw === "todo" || scopeRaw === "pending") {
-          targets = s.tasks.filter((t) => !t.done);
-        } else if (scopeRaw === "done" || scopeRaw === "completed") {
-          targets = s.tasks.filter((t) => t.done);
-        } else {
-          targets = s.tasks.filter((t) => t.text.toLowerCase().includes(scopeRaw));
+        // add is the one action that doesn't resolve an existing task.
+        if (action === "add") {
+          const text = String(input.text ?? "").trim();
+          if (!text) return `FAILURE: action=add needs a "text" (the task title). Retry with it.`;
+          const due = buildDue(String(input.due_date ?? ""), String(input.due_time ?? ""));
+          const task: NoteTask = { id: Math.random().toString(36).slice(2, 10), done: false, text, due };
+          s.tasks.push(task);
+          await notesSave(contextId, s);
+          const dueStr = due ? ` with due date ${due}` : "";
+          return `SUCCESS: Task "${task.text}"${dueStr} was added to the workspace tasks. The task id is ${task.id}. Tell the user the task is created. Do NOT ask for confirmation.`;
         }
-        if (!targets.length) return `FAILURE: Scope "${input.scope}" matched no task. Tasks available: ${s.tasks.map((t) => `"${t.text}"`).join(", ")}.`;
 
-        // Apply
+        if (!["done", "undone", "toggle", "delete", "set_due", "rename"].includes(action)) {
+          return `FAILURE: Unknown action "${action}". Use add | done | undone | toggle | delete | set_due | rename.`;
+        }
+        if (!s.tasks.length) return `FAILURE: No tasks exist in this workspace.`;
+
+        const match = String(input.match ?? "").trim();
+        if (!match) return `FAILURE: action=${action} needs "match" (a task id, text substring, or 'all'/'undone'/'done'). Retry with it.`;
+
+        // Resolve targets. A scope keyword (or all_matching) selects a set; a
+        // plain substring selects the single most urgent match, which is what
+        // the user means by "mark the invoice task done" when several match.
+        const targets = resolveTaskTargets(s, match, input.all_matching === true);
+        if (!targets.length) {
+          const available = s.tasks.map((x) => `"${x.text}"`).join(", ");
+          return `FAILURE: No task matched "${match}". Available tasks (pick the one the user meant): ${available}. Retry with the right task — do NOT add a new one.`;
+        }
+
+        // set_due and rename only make sense on a single task.
+        if ((action === "set_due" || action === "rename") && targets.length > 1) {
+          return `FAILURE: "${match}" matched ${targets.length} tasks and action=${action} needs exactly one. Retry with a more specific match.`;
+        }
+
+        let summary: string;
         if (action === "delete") {
           const ids = new Set(targets.map((t) => t.id));
           s.tasks = s.tasks.filter((t) => !ids.has(t.id));
+          summary = `${targets.length} task(s) deleted: ${targets.map((t) => `"${t.text}"`).join(", ")}`;
+        } else if (action === "set_due") {
+          const t = targets[0];
+          applyDue(t, input.due_date, input.due_time);
+          summary = `Task "${t.text}" due date is now ${t.due ?? "(cleared)"}`;
+        } else if (action === "rename") {
+          const t = targets[0];
+          const next = String(input.text ?? "").trim();
+          if (!next) return `FAILURE: action=rename needs "text" (the new title). Retry with it.`;
+          const old = t.text;
+          t.text = next;
+          summary = `Task "${old}" renamed to "${t.text}"`;
         } else {
           for (const t of targets) {
-            if (action === "done")        t.done = true;
+            if (action === "done") t.done = true;
             else if (action === "undone") t.done = false;
-            else                          t.done = !t.done; // toggle
+            else t.done = !t.done; // toggle
           }
+          const verb = action === "done" ? "marked done" : action === "undone" ? "marked todo" : "toggled";
+          summary = targets.length === 1
+            ? `Task "${targets[0].text}" is now ${targets[0].done ? "DONE" : "todo"}`
+            : `${targets.length} task(s) ${verb}: ${targets.map((t) => `"${t.text}"`).join(", ")}`;
         }
+
         await notesSave(contextId, s);
-        const verb = action === "delete" ? "deleted" : action === "done" ? "marked done" : action === "undone" ? "marked todo" : "toggled";
-        const list = targets.map((t) => `"${t.text}"`).join(", ");
-        return `SUCCESS: ${targets.length} task(s) ${verb}: ${list}. Tell the user.`;
+        return `SUCCESS: ${summary}. Tell the user.`;
+      }
+      case "workspace_notes": {
+        const s = await notesLoad(contextId);
+        const action = String(input.action ?? "").toLowerCase().trim();
+
+        if (action === "get") {
+          const taskLines = s.tasks.length ? s.tasks.map(notesFormatTask).join("\n") : "(no tasks)";
+          const notesBlock = s.notes.trim() ? `\n\n## Free-form notes\n${s.notes}` : "";
+          return `## Tasks (${s.tasks.length})\n${taskLines}${notesBlock}`;
+        }
+        if (action !== "set" && action !== "append") {
+          return `FAILURE: Unknown action "${action}". Use get | set | append.`;
+        }
+
+        const content = String(input.content ?? "");
+        s.notes = action === "set"
+          ? content
+          : (s.notes.trim() ? `${s.notes}\n\n${content}` : content);
+        await notesSave(contextId, s);
+        return `✓ Notes ${action === "set" ? "replaced" : "appended"} (${s.notes.length} chars total).`;
       }
 
       default:
@@ -1490,7 +1743,7 @@ function buildSystemPrompt(ctx: PromptCtx): string {
   const { currentPath, listEntries, tags, tagStats, rootPaths, contexts, activeContextId, selectedPaths, viewMode, memories, userInstructions, workspaceNotes } = ctx;
 
   // Render the current workspace's tasks + free notes so the model can act on them
-  // without an extra round-trip to get_workspace_notes. Kept compact: no padding,
+  // without an extra round-trip to workspace_notes(action="get"). Kept compact: no padding,
   // no labels, and we omit empty sections entirely to keep token cost minimal.
   // Empty workspace → empty string, prompt drops the whole CURRENT TASKS section.
   const notesBlock = (() => {
@@ -1591,15 +1844,16 @@ CLEANUP & MAINTENANCE:
 - "Find duplicates" / "any copies?" → find_duplicates(dir). Reports groups of files with same name + size.
 - "Old files / haven't been used / what can I delete?" → find_unused(dir, days=N). Uses the local activity log.
 
-NOTES & TASKS:
-- SINGLE task: "coche/check/mark done X" → toggle_task(match=X). "supprime X" → delete_task(match=X). "ajoute X [date]" → add_task.
-- MULTIPLE tasks at once: ALWAYS use bulk_task_action. Triggers: "les deux/both", "tous/all", "tous les non finis/all undone", "tous ceux qui contiennent X", "all the X", etc.
+NOTES & TASKS — all task changes go through manage_tasks(action, ...):
+- SINGLE task: "coche/check/mark done X" → manage_tasks(action="toggle", match=X). "supprime X" → action="delete". "ajoute X [date]" → action="add", text=X.
+- MULTIPLE tasks at once: same tool, put a SCOPE KEYWORD in match. Triggers: "les deux/both", "tous/all", "tous les non finis/all undone", "all the X", etc.
   Examples:
-    "coche les deux" → bulk_task_action(action="done", scope="all")
-    "supprime tous les test" → bulk_task_action(action="delete", scope="test")
-    "marque tous les non finis comme faits" → bulk_task_action(action="done", scope="undone")
-- NEVER ask the user to clarify when intent is clearly plural — just call bulk_task_action.
-- When the user refers to "the task", "le todo", "it", "the previous one" — they mean a task that ALREADY EXISTS. Look at CURRENT TASKS below. DO NOT call add_task — call toggle_task/set_task_due/edit_task_text/delete_task with the EXACT text or id from CURRENT TASKS.
+    "coche les deux" → manage_tasks(action="done", match="all")
+    "supprime tous les test" → manage_tasks(action="delete", match="test", all_matching=true)
+    "marque tous les non finis comme faits" → manage_tasks(action="done", match="undone")
+- NEVER ask the user to clarify when intent is clearly plural — just use a scope keyword.
+- When the user refers to "the task", "le todo", "it", "the previous one" — they mean a task that ALREADY EXISTS. Look at CURRENT TASKS below. DO NOT use action="add" — use toggle/set_due/rename/delete with the EXACT text or id from CURRENT TASKS.
+- Free-form notes (NOT tasks) → workspace_notes(action="set"|"append", content=...).
 - Resolved dates appear in user msg as "[Resolved: ...]" — use those values as-is.
 ${notesBlock ? `\nCURRENT TASKS (live):\n${notesBlock}` : ""}
 
@@ -1647,6 +1901,108 @@ ${memories.length
 
 type ConfirmFn = (msg: string) => Promise<boolean>;
 
+/**
+ * Maximum model round-trips per user message.
+ *
+ * Each step is one API call plus its tool executions. A well-behaved run
+ * finishes in a handful; the cap only catches a model stuck in a tool cycle
+ * (repeatedly listing/searching without converging). Without it the loop is
+ * `while (true)` and the only exits are the model finishing or the user
+ * noticing and pressing Stop — with the full system prompt and the growing
+ * history re-billed on every iteration.
+ *
+ * 25 is deliberately generous: legitimate multi-step work (organize a folder,
+ * tag a batch) uses 10–15, so this stops runaways without truncating real work.
+ */
+const MAX_AGENT_STEPS = 25;
+
+/** What an agent loop returns: the reply, what it cost, and whether it was cut off. */
+interface LoopResult {
+  text: string;
+  usage: TokenUsage;
+  /** True when the loop stopped at MAX_AGENT_STEPS rather than finishing. */
+  hitLimit?: boolean;
+}
+
+/**
+ * The message shown when a run is cut off at the step cap. Keeps whatever the
+ * model last said (it's usually partial progress worth reading) and tells the
+ * user plainly what happened and what to do — rather than silently returning a
+ * truncated answer that looks like a complete one.
+ */
+function agentLimitNotice(lastText: string): string {
+  const notice =
+    `⚠️ I stopped after ${MAX_AGENT_STEPS} steps without finishing — I may be stuck in a loop. ` +
+    `Nothing further was run. Try asking for a smaller piece of the task.`;
+  return lastText.trim() ? `${lastText.trim()}\n\n${notice}` : notice;
+}
+
+/** Accumulate one call's tokens into a running total. */
+function addUsage(total: TokenUsage, call?: TokenUsage): void {
+  if (!call) return;
+  total.input += call.input;
+  total.output += call.output;
+  total.cacheWrite += call.cacheWrite;
+  total.cacheRead += call.cacheRead;
+}
+
+/** Every input token we were billed for, at any rate — for display. */
+function totalInputTokens(u: TokenUsage): number {
+  return u.input + u.cacheWrite + u.cacheRead;
+}
+
+/**
+ * Anthropic list prices in USD per million tokens, as published on
+ * 2026-08-20. Used only to show the user a running estimate — Anthropic bills
+ * from their own meter, not from this table.
+ *
+ * These WILL drift. When adding a model to `AppSettings.claudeModel`, add its
+ * price here too; an unknown model falls back to showing tokens with no cost,
+ * which is the safe failure (no number beats a wrong number).
+ */
+const MODEL_PRICES: Record<string, { in: number; out: number }> = {
+  "claude-haiku-4-5-20251001": { in: 1, out: 5 },
+  "claude-sonnet-5": { in: 3, out: 15 },
+  "claude-opus-4-8": { in: 5, out: 25 },
+};
+
+/**
+ * Estimated USD for a token count, or null when the model has no known price.
+ *
+ * The three input kinds bill at different multiples of the base input rate:
+ * fresh input 1×, a cache write 1.25×, a cache read 0.1×. Charging them all at
+ * 1× would overstate a cached conversation by roughly the cache hit rate.
+ */
+const CACHE_WRITE_MULTIPLIER = 1.25;
+const CACHE_READ_MULTIPLIER = 0.1;
+
+function estimateCost(model: string, usage: TokenUsage): number | null {
+  const p = MODEL_PRICES[model];
+  if (!p) return null;
+  const inputCost =
+    usage.input * p.in +
+    usage.cacheWrite * p.in * CACHE_WRITE_MULTIPLIER +
+    usage.cacheRead * p.in * CACHE_READ_MULTIPLIER;
+  return (inputCost + usage.output * p.out) / 1_000_000;
+}
+
+/** Compact token count: 1234 → "1.2k". Keeps the status line short. */
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+/**
+ * Cost estimates are tiny numbers; "$0.00" reads as free and is misleading, so
+ * anything above zero but below a cent shows as "<$0.01".
+ */
+function formatCost(usd: number): string {
+  if (usd === 0) return "$0.00";
+  if (usd < 0.01) return "<$0.01";
+  return `$${usd.toFixed(2)}`;
+}
+
 async function runAnthropicLoop(
   apiKey: string, model: string, system: string,
   history: AnthropicMsg[],
@@ -1659,29 +2015,41 @@ async function runAnthropicLoop(
   requestPlan?: PlanFn,
   onTextDelta?: (chunk: string) => void,
   abortController?: AbortController,
-): Promise<string> {
+): Promise<LoopResult> {
   let msgs: AnthropicMsg[] = [...history];
+  const usage: TokenUsage = emptyUsage();
+  let lastText = "";
 
-  while (true) {
-    if (abortRef.current) return "";
+  for (let step = 0; ; step++) {
+    if (abortRef.current) return { text: "", usage };
+
+    // Hard stop on runaway tool loops. A model that keeps calling tools without
+    // converging (small models are prone to this — see CLAUDE.md §8) would
+    // otherwise run until the user notices and hits Stop, re-billing the full
+    // system prompt and the growing history on every single iteration.
+    if (step >= MAX_AGENT_STEPS) {
+      return { text: agentLimitNotice(lastText), usage, hitLimit: true };
+    }
     // Streaming call: text deltas flow to the UI live; tool calls accumulate and
     // surface at end of stream (same shape as the non-streaming response).
     const resp = onTextDelta && abortController
       ? await callAnthropicStream(apiKey, model, system, msgs, onTextDelta, abortController.signal)
       : await callAnthropic(apiKey, model, system, msgs);
+    addUsage(usage, resp.usage);
 
     const texts = resp.content.filter((b): b is { type: "text"; text: string } => b.type === "text");
     const toolCalls = resp.content.filter(
       (b): b is { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } => b.type === "tool_use"
     );
+    lastText = texts.map((b) => b.text).join("\n");
 
     if (resp.stop_reason !== "tool_use" || !toolCalls.length) {
-      return texts.map((b) => b.text).join("\n");
+      return { text: lastText, usage };
     }
 
     const results: AnthropicBlock[] = [];
     for (const tc of toolCalls) {
-      if (abortRef.current) return texts.map((b) => b.text).join("\n");
+      if (abortRef.current) return { text: lastText, usage };
       onToolActivity(tc.name);
       const result = await executeTool(tc.name, tc.input, tags, contextId, onNavigate,
         DESTRUCTIVE_TOOLS.has(tc.name) ? requestConfirm : undefined,
@@ -1700,6 +2068,7 @@ async function runAnthropicLoop(
 
 async function runOllamaLoop(
   baseUrl: string, model: string, system: string,
+  contextTokens: number,
   history: OllamaMsg[],
   tags: Tag[], contextId: number, onNavigate: (p: string) => void,
   onToolActivity: (name: string | null) => void,
@@ -1710,23 +2079,33 @@ async function runOllamaLoop(
   requestPlan?: PlanFn,
   onTextDelta?: (chunk: string) => void,
   abortController?: AbortController,
-): Promise<string> {
+): Promise<LoopResult> {
   let msgs: OllamaMsg[] = [...history];
+  const usage: TokenUsage = emptyUsage();
+  let lastText = "";
 
-  while (true) {
-    if (abortRef.current) return "";
+  for (let step = 0; ; step++) {
+    if (abortRef.current) return { text: "", usage };
+
+    // Same runaway guard as the Anthropic loop — and it matters more here:
+    // small local models are the ones that lose track of a tool chain.
+    if (step >= MAX_AGENT_STEPS) {
+      return { text: agentLimitNotice(lastText), usage, hitLimit: true };
+    }
     const resp = onTextDelta && abortController
-      ? await callOllamaStream(baseUrl, model, system, msgs, onTextDelta, abortController.signal)
-      : await callOllama(baseUrl, model, system, msgs);
+      ? await callOllamaStream(baseUrl, model, system, msgs, contextTokens, onTextDelta, abortController.signal)
+      : await callOllama(baseUrl, model, system, msgs, contextTokens);
+    addUsage(usage, resp.usage);
     const { content, tool_calls } = resp.message;
+    lastText = content;
 
     if (!tool_calls?.length) {
-      return content;
+      return { text: content, usage };
     }
 
     msgs = [...msgs, { role: "assistant", content, tool_calls }];
     for (const tc of tool_calls) {
-      if (abortRef.current) return content;
+      if (abortRef.current) return { text: content, usage };
       const args = typeof tc.function.arguments === "string"
         ? (JSON.parse(tc.function.arguments) as Record<string, unknown>)
         : tc.function.arguments;
@@ -1758,6 +2137,15 @@ export function AiPanel({ onClose, onNavigate, onRefreshDir }: Props) {
 
   const [memories, setMemories] = useState<{ id: number; content: string }[]>([]);
   const [memoriesOpen, setMemoriesOpen] = useState(false);
+  // Running token total for this conversation. Resets with the conversation —
+  // it answers "what has this chat cost me so far", not a lifetime figure.
+  const [sessionUsage, setSessionUsage] = useState<TokenUsage>(emptyUsage);
+  const addSessionUsage = (u: TokenUsage) =>
+    setSessionUsage((prev) => {
+      const next = { ...prev };
+      addUsage(next, u);
+      return next;
+    });
   const [workspaceNotes, setWorkspaceNotes] = useState<NotesState>({ tasks: [], notes: "" });
   const [messages, setMessages] = useState<DisplayMsg[]>([]);
   const [input, setInput] = useState("");
@@ -1895,24 +2283,36 @@ export function AiPanel({ onClose, onNavigate, onRefreshDir }: Props) {
       let assistantText = "";
 
       if (settings.aiProvider === "anthropic") {
+        // Fetch the key at call time from the OS credential store. It is
+        // deliberately NOT kept in settings/Zustand — that object is readable
+        // from any DevTools console, and it used to be persisted in cleartext.
+        const apiKey = await invoke<string | null>("get_api_key");
+        if (!apiKey) {
+          throw new Error("No Anthropic API key configured. Add one in Settings → AI.");
+        }
         const history = anthropicHistoryRef.current;
         history.push({ role: "user", content: resolvedText });
-        assistantText = await runAnthropicLoop(
-          settings.claudeApiKey, settings.claudeModel, system,
+        const result = await runAnthropicLoop(
+          apiKey, settings.claudeModel, system,
           history, tags, activeContextId ?? 0, onNavigate,
           (name) => setToolActivity(name), abortRef, requestConfirm, refreshTags, onRefreshDir, requestPlan,
           onTextDelta, streamController,
         );
+        assistantText = result.text;
+        addSessionUsage(result.usage);
         history.push({ role: "assistant", content: assistantText });
       } else {
         const history = ollamaHistoryRef.current;
         history.push({ role: "user", content: resolvedText });
-        assistantText = await runOllamaLoop(
+        const result = await runOllamaLoop(
           settings.ollamaUrl, settings.ollamaModel, system,
+          settings.ollamaContextTokens,
           history, tags, activeContextId ?? 0, onNavigate,
           (name) => setToolActivity(name), abortRef, requestConfirm, refreshTags, onRefreshDir, requestPlan,
           onTextDelta, streamController,
         );
+        assistantText = result.text;
+        addSessionUsage(result.usage);
         history.push({ role: "assistant", content: assistantText });
       }
 
@@ -1955,6 +2355,34 @@ export function AiPanel({ onClose, onNavigate, onRefreshDir }: Props) {
       <div className="flex items-center gap-2 px-3 h-[48px] border-b border-border-subtle shrink-0">
         <Sparkles size={14} className="text-accent shrink-0" />
         <span className="text-[12px] font-semibold text-text-primary flex-1">{t.aiTitle}</span>
+        {/* Running usage for this conversation. Anthropic shows an estimated
+            cost; Ollama runs locally, so it shows tokens only — there is no
+            bill to estimate. Hidden until the first reply so a fresh panel
+            isn't cluttered with zeros. */}
+        {totalInputTokens(sessionUsage) + sessionUsage.output > 0 && (
+          <span
+            className="text-[10px] text-text-muted tabular-nums shrink-0"
+            title={
+              `This conversation so far:\n` +
+              `${totalInputTokens(sessionUsage).toLocaleString()} input tokens\n` +
+              `${sessionUsage.output.toLocaleString()} output tokens` +
+              (settings.aiProvider === "anthropic"
+                // Cache line is the "is caching actually working" readout: a run
+                // with several steps and 0 read means the prefix is being
+                // invalidated somewhere.
+                ? `\n${sessionUsage.cacheRead.toLocaleString()} of those were read from cache (≈10× cheaper)` +
+                  `\n\nEstimated from Anthropic's list prices — your actual bill comes from Anthropic.`
+                : `\n\nOllama runs locally, so there is no cost.`)
+            }
+          >
+            {(() => {
+              const tokens = `${formatTokens(totalInputTokens(sessionUsage) + sessionUsage.output)} tok`;
+              if (settings.aiProvider !== "anthropic") return tokens;
+              const cost = estimateCost(settings.claudeModel, sessionUsage);
+              return cost === null ? tokens : `${tokens} · ~${formatCost(cost)}`;
+            })()}
+          </span>
+        )}
         <span className="text-[10px] text-text-muted bg-surface-3 px-1.5 py-0.5 rounded max-w-[100px] truncate" title={modelLabel}>
           {modelLabel}
         </span>
