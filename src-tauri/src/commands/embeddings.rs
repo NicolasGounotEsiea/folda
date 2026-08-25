@@ -159,9 +159,14 @@ pub fn unpack(bytes: &[u8]) -> Vec<f32> {
     if !bytes.len().is_multiple_of(4) {
         return Vec::new();
     }
+    // The multiple-of-4 guard above is load-bearing: `as_chunks` puts a
+    // trailing partial chunk in `.1` and would silently yield a TRUNCATED
+    // vector, where the contract here is an empty one for a corrupt blob.
     bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
 
